@@ -1,0 +1,39 @@
+{
+  "current_stages": [
+    "BFI",
+    "岳麓山",
+    "明场"
+  ],
+  "issue_report_path": "D:\\01.code\\06.AIProjectManager\\AIProjectManager\\doc",
+  "issue_api_script_path": "D:\\01.code\\06.AIProjectManager\\AIProjectManager\\backend\\scripts\\fetch_issues_api.py",
+  "issue_api_projects": [
+    "YLS3000",
+    "YLS5000",
+    "YLS8000"
+  ],
+  "issue_snapshot_dir": "D:\\01.code\\06.AIProjectManager\\AIProjectManager\\backend\\data\\issue_snapshots",
+  "issue_stat_departments": [],
+  "issue_groups": [],
+  "about_content": "岳麓山项目管理系统\n\n负责统一管理客户面状态、版本发布与迭代规划，让团队成员实时同步进度、关键问题与变更。\n\n维护：项目管理组",
+  "hero_badges": [
+    "C00",
+    "C10",
+    "C20",
+    "C10"
+  ],
+  "product_features": [],
+  "hw_issue_sources": [
+    "设计缺陷",
+    "来料问题"
+  ],
+  "hw_machine_cell_options": [
+    "已清零",
+    "未清零",
+    "不涉及"
+  ],
+  "hw_machine_cell_colors": {
+    "已清零": "#67c23a",
+    "未清零": "#e6a23c",
+    "不涉及": "#909399"
+  }
+}

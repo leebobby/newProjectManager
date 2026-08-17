@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>单元格多行复选框 · 原型</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    background: #f4f6f9;
+    padding: 32px;
+    color: #303133;
+    font-size: 13px;
+  }
+
+  h2 {
+    font-size: 18px;
+    margin-bottom: 6px;
+    color: #1d3a6b;
+  }
+
+  .subtitle {
+    color: #909399;
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+
+  /* ── 表格容器 ── */
+  .table-wrap {
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 2px 12px -4px rgba(31,45,61,.15);
+    overflow: hidden;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  thead th {
+    background: #f5f7fa;
+    padding: 10px 12px;
+    font-weight: 600;
+    font-size: 13px;
+    color: #606266;
+    border-bottom: 1px solid #ebeef5;
+    text-align: center;        /* ← 表头居中 */
+    white-space: nowrap;
+  }
+
+  tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid #ebeef5;
+    vertical-align: top;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  tbody tr:hover td { background: #fafbfc; }
+
+  /* 普通文本列居中 */
+  td.center { text-align: center; vertical-align: middle; }
+
+  /* 机台编号粗体 */
+  td.machine-id { font-weight: 600; color: #303133; }
+
+  /* ── 阶段徽标 ── */
+  .stage-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 500;
+    background: #ecf5ff;
+    color: #409eff;
+    border: 1px solid #c6e2ff;
+  }
+
+  /* ── 复选框列表（核心样式）── */
+  .checklist {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 200px;
+  }
+
+  .checklist-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    cursor: pointer;
+    user-select: none;
+    line-height: 1.5;
+  }
+
+  /* 隐藏原生 checkbox，用自定义样式 */
+  .checklist-item input[type="checkbox"] {
+    display: none;
+  }
+
+  .check-box {
+    width: 15px;
+    height: 15px;
+    border: 1.5px solid #c0c4cc;
+    border-radius: 3px;
+    background: #fff;
+    flex-shrink: 0;
+    margin-top: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all .15s;
+  }
+
+  .check-box svg {
+    display: none;
+    width: 9px;
+    height: 9px;
+  }
+
+  /* 选中状态 */
+  .checklist-item.done .check-box {
+    background: #67c23a;
+    border-color: #67c23a;
+  }
+
+  .checklist-item.done .check-box svg {
+    display: block;
+  }
+
+  .checklist-item.done .check-text {
+    color: #b0b3b8;
+    text-decoration: line-through;
+  }
+
+  .check-text {
+    flex: 1;
+    transition: color .15s;
+  }
+
+  /* ── 添加条目按钮 ── */
+  .add-item-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px dashed #c0c4cc;
+    background: transparent;
+    color: #909399;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+
+  .add-item-btn:hover {
+    border-color: #409eff;
+    color: #409eff;
+    background: #ecf5ff;
+  }
+
+  /* ── 内联编辑输入框 ── */
+  .add-input-row {
+    display: flex;
+    gap: 5px;
+    margin-top: 6px;
+    align-items: center;
+  }
+
+  .add-input-row input {
+    flex: 1;
+    border: 1px solid #dcdfe6;
+    border-radius: 4px;
+    padding: 3px 7px;
+    font-size: 12px;
+    outline: none;
+    color: #303133;
+    font-family: inherit;
+  }
+
+  .add-input-row input:focus { border-color: #409eff; }
+
+  .btn-confirm, .btn-cancel {
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .btn-confirm {
+    background: #409eff;
+    border-color: #409eff;
+    color: #fff;
+  }
+
+  .btn-cancel {
+    background: #fff;
+    border-color: #dcdfe6;
+    color: #606266;
+  }
+
+  /* ── 进展条 ── */
+  .progress-bar {
+    width: 100%;
+    height: 4px;
+    background: #e4e7ed;
+    border-radius: 2px;
+    margin-top: 7px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #67c23a, #95d475);
+    border-radius: 2px;
+    transition: width .3s ease;
+  }
+
+  .progress-text {
+    font-size: 11px;
+    color: #909399;
+    margin-top: 3px;
+  }
+
+  /* ── 说明区 ── */
+  .note {
+    margin-top: 24px;
+    padding: 14px 18px;
+    background: #fdf6ec;
+    border: 1px solid #faecd8;
+    border-radius: 8px;
+    color: #7d5a1e;
+    font-size: 13px;
+    line-height: 1.8;
+  }
+
+  .note strong { color: #e6a23c; }
+</style>
+</head>
+<body>
+
+<h2>单元格多行复选框 · 效果原型</h2>
+<p class="subtitle">现场关键事务 / 软件类风险和问题 — 支持勾选完成、新增条目、进度可视化</p>
+
+<div class="table-wrap">
+  <table id="demo-table">
+    <thead>
+      <tr>
+        <th>机台编号</th>
+        <th>客户</th>
+        <th>型号</th>
+        <th>当前阶段</th>
+        <th>现场关键事务</th>
+        <th>软件类风险和问题</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<div class="note">
+  <strong>交互说明：</strong><br>
+  · 点击复选框 → 标记为已完成（划线 + 变灰），再次点击取消<br>
+  · 点击「+ 新增」→ 内联输入新条目，回车或点「确认」保存，Esc 取消<br>
+  · 底部细线为完成进度条，实际集成时状态存入数据库
+</div>
+
+<script>
+/* ── 示例数据 ── */
+const rows = [
+  {
+    id: 1,
+    machine: 'M-001',
+    customer: '华东客户A',
+    model: 'X-100',
+    stage: 'BFI',
+    tasks: [
+      { text: '确认本周良率数据并同步给客户', done: true },
+      { text: '安排 T3 验收会议（定于 5/22）', done: false },
+      { text: '跟进备品备件采购申请', done: false },
+    ],
+    risks: [
+      { text: '主控板偶发复位 — 已抓取 log，等软件分析', done: false },
+      { text: 'v2.1.3 兼容性问题已验证通过', done: true },
+    ],
+  },
+  {
+    id: 2,
+    machine: 'M-002',
+    customer: '华南客户B',
+    model: 'X-200',
+    stage: '岳麓山',
+    tasks: [
+      { text: '驻场工程师本周到位', done: true },
+      { text: '与客户对齐停机问题根因', done: false },
+    ],
+    risks: [
+      { text: '偶发停机问题根因未定位，高优先级', done: false },
+      { text: '网络时延抖动影响通信稳定性', done: false },
+      { text: '旧版驱动兼容性已排查，无影响', done: true },
+    ],
+  },
+  {
+    id: 3,
+    machine: 'M-003',
+    customer: '西南客户C',
+    model: 'Y-50',
+    stage: '明场',
+    tasks: [
+      { text: '完成现场环境配置验收', done: true },
+      { text: '交付操作培训材料', done: true },
+    ],
+    risks: [],
+  },
+]
+
+/* ── 渲染 ── */
+function renderChecklist(items, rowId, field) {
+  const wrap = document.createElement('div')
+  wrap.className = 'checklist'
+  wrap.dataset.rowId = rowId
+  wrap.dataset.field = field
+
+  items.forEach((item, idx) => {
+    wrap.appendChild(makeItem(item, rowId, field, idx))
+  })
+
+  // 进度条
+  const barWrap = document.createElement('div')
+  barWrap.className = 'progress-bar'
+  const fill = document.createElement('div')
+  fill.className = 'progress-fill'
+  barWrap.appendChild(fill)
+  const pText = document.createElement('div')
+  pText.className = 'progress-text'
+  wrap.appendChild(barWrap)
+  wrap.appendChild(pText)
+
+  updateProgress(wrap)
+
+  // 新增按钮
+  const addBtn = document.createElement('button')
+  addBtn.className = 'add-item-btn'
+  addBtn.innerHTML = '＋ 新增'
+  addBtn.onclick = () => showAddInput(wrap, addBtn, rowId, field)
+  wrap.appendChild(addBtn)
+
+  return wrap
+}
+
+function makeItem(item, rowId, field, idx) {
+  const label = document.createElement('label')
+  label.className = 'checklist-item' + (item.done ? ' done' : '')
+
+  const cb = document.createElement('input')
+  cb.type = 'checkbox'
+  cb.checked = item.done
+
+  const box = document.createElement('span')
+  box.className = 'check-box'
+  box.innerHTML = `<svg viewBox="0 0 10 8" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1,4 4,7 9,1"/></svg>`
+
+  const text = document.createElement('span')
+  text.className = 'check-text'
+  text.textContent = item.text
+
+  label.appendChild(cb)
+  label.appendChild(box)
+  label.appendChild(text)
+
+  label.onclick = (e) => {
+    e.preventDefault()
+    item.done = !item.done
+    cb.checked = item.done
+    label.classList.toggle('done', item.done)
+    updateProgress(label.closest('.checklist'))
+  }
+
+  return label
+}
+
+function updateProgress(wrap) {
+  const items = wrap.querySelectorAll('.checklist-item')
+  const fill  = wrap.querySelector('.progress-fill')
+  const pText = wrap.querySelector('.progress-text')
+  const total = items.length
+  const done  = wrap.querySelectorAll('.checklist-item.done').length
+  const pct   = total ? Math.round(done / total * 100) : 0
+  fill.style.width = pct + '%'
+  pText.textContent = total ? `${done} / ${total} 已完成` : ''
+}
+
+function showAddInput(wrap, addBtn, rowId, field) {
+  addBtn.style.display = 'none'
+
+  const row = document.createElement('div')
+  row.className = 'add-input-row'
+
+  const input = document.createElement('input')
+  input.placeholder = '输入新条目…'
+  input.autofocus = true
+
+  const confirmBtn = document.createElement('button')
+  confirmBtn.className = 'btn-confirm'
+  confirmBtn.textContent = '确认'
+
+  const cancelBtn = document.createElement('button')
+  cancelBtn.className = 'btn-cancel'
+  cancelBtn.textContent = '取消'
+
+  row.appendChild(input)
+  row.appendChild(confirmBtn)
+  row.appendChild(cancelBtn)
+
+  // 插在 addBtn 前面
+  wrap.insertBefore(row, addBtn)
+  input.focus()
+
+  function confirm() {
+    const val = input.value.trim()
+    if (!val) { cancel(); return }
+    const newItem = { text: val, done: false }
+    const newLabel = makeItem(newItem, rowId, field, -1)
+    wrap.insertBefore(newLabel, row)
+    cancel()
+    updateProgress(wrap)
+  }
+
+  function cancel() {
+    wrap.removeChild(row)
+    addBtn.style.display = ''
+  }
+
+  confirmBtn.onclick = confirm
+  cancelBtn.onclick  = cancel
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirm()
+    if (e.key === 'Escape') cancel()
+  })
+}
+
+/* ── 填充表格 ── */
+const tbody = document.getElementById('tbody')
+rows.forEach(r => {
+  const tr = document.createElement('tr')
+
+  function td(content, cls) {
+    const cell = document.createElement('td')
+    if (cls) cell.className = cls
+    if (typeof content === 'string') {
+      cell.innerHTML = content
+    } else {
+      cell.appendChild(content)
+    }
+    return cell
+  }
+
+  tr.appendChild(td(r.machine, 'center machine-id'))
+  tr.appendChild(td(r.customer, 'center'))
+  tr.appendChild(td(r.model, 'center'))
+  tr.appendChild(td(`<span class="stage-badge">${r.stage}</span>`, 'center'))
+  tr.appendChild(td(renderChecklist(r.tasks, r.id, 'tasks')))
+  tr.appendChild(td(renderChecklist(r.risks, r.id, 'risks')))
+
+  tbody.appendChild(tr)
+})
+</script>
+</body>
+</html>

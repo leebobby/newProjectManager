@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+sqlalchemy==2.0.36
+alembic==1.13.2
+pydantic==2.9.2
+python-jose[cryptography]==3.3.0
+bcrypt==4.2.0
+python-multipart==0.0.12
+python-pptx==1.0.2
+openpyxl==3.1.5
+pillow>=9.0.0
+apscheduler==3.10.4
+requests==2.32.3
+pytest>=8.0  # 回归测试（backend/tests/，python -m pytest tests -q）

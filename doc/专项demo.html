@@ -1,0 +1,968 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>专项页面 Excel 驱动 Demo v2</title>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<style>
+  :root{
+    --brand:#4073BA;--brand-dark:#2f5a96;--border:#dcdfe6;--bg:#f5f7fa;
+    --table-head:#eef2f8;--danger:#f56c6c;--success:#67c23a;
+  }
+  *{box-sizing:border-box}
+  body{font-family:"Microsoft YaHei","微软雅黑",sans-serif;margin:0;background:var(--bg);color:#303133;line-height:1.5;}
+  .topbar{
+    position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--border);
+    padding:12px 24px;display:flex;align-items:center;gap:12px;
+    box-shadow:0 1px 4px rgba(0,0,0,0.04);
+  }
+  .topbar h1{margin:0;font-size:16px;font-weight:600;margin-right:16px}
+  .btn{padding:7px 14px;border:1px solid var(--border);background:#fff;border-radius:4px;
+       cursor:pointer;font-size:13px;color:#606266;transition:all .15s;}
+  .btn:hover{color:var(--brand);border-color:var(--brand);background:#ecf2fb}
+  .btn-primary{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .btn-primary:hover{background:var(--brand-dark);color:#fff;border-color:var(--brand-dark)}
+  .btn-danger{color:var(--danger);border-color:#fbc4c4}
+  .btn-danger:hover{background:var(--danger);color:#fff;border-color:var(--danger)}
+  .btn-sm{padding:3px 10px;font-size:12px}
+  .container{max-width:1200px;margin:24px auto;padding:0 24px}
+  .project-title{
+    background:var(--brand);color:#fff;padding:16px 24px;border-radius:6px 6px 0 0;
+    font-size:20px;font-weight:600;text-align:center;
+  }
+  .blocks{background:#fff;border:1px solid var(--border);border-top:0;border-radius:0 0 6px 6px;}
+  .block{border-bottom:1px solid var(--border)}
+  .block:last-child{border-bottom:none}
+  .block-header{
+    background:var(--table-head);padding:10px 16px;border-left:3px solid var(--brand);
+    font-weight:600;color:var(--brand-dark);display:flex;align-items:center;gap:8px;
+  }
+  .block-header .title-text{flex:1;outline:none}
+  .block-header .title-text:focus{background:#fff;padding:2px 6px;border-radius:3px}
+  .block-header select{
+    padding:3px 8px;border:1px solid var(--border);border-radius:3px;font-size:12px;background:#fff;color:#606266;
+  }
+  .block-header .del-block{font-size:12px;color:var(--danger);background:none;border:none;cursor:pointer;}
+  .block-body{padding:14px 16px}
+  .text-content{
+    width:100%;min-height:60px;padding:8px 12px;border:1px solid var(--border);border-radius:4px;
+    font-family:inherit;font-size:14px;color:#303133;resize:vertical;line-height:1.6;
+  }
+  .text-content:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 2px rgba(64,115,186,.15)}
+  table.bk{width:100%;border-collapse:collapse;font-size:13px}
+  table.bk th,table.bk td{border:1px solid var(--border);padding:6px 8px;vertical-align:top}
+  table.bk th{background:var(--table-head);font-weight:600;color:#606266;text-align:left;white-space:nowrap}
+  table.bk td[contenteditable="true"]:focus{outline:2px solid var(--brand);outline-offset:-2px;background:#fffbe6}
+  .row-tools{width:60px;text-align:center}
+  .row-del{color:var(--danger);cursor:pointer;background:none;border:none;font-size:14px;}
+  .table-foot{padding:8px 0 0;text-align:left}
+  .image-area{
+    border:2px dashed var(--border);border-radius:4px;padding:12px;text-align:center;background:#fafbfc;
+    min-height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  }
+  .image-area img{max-width:100%;max-height:360px;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,.08);}
+  .image-area .tip{color:#909399;font-size:12px}
+  .empty{padding:60px 24px;text-align:center;color:#909399;background:#fff;border:2px dashed var(--border);border-radius:6px;}
+  .empty h2{font-size:18px;color:#606266;margin:0 0 12px}
+  .empty p{margin:6px 0;font-size:13px}
+  .hint{font-size:12px;color:#909399;margin-left:auto}
+  input[type=file]{display:none}
+  .add-block-bar{
+    padding:12px 16px;background:#fafbfc;border-top:1px dashed var(--border);
+    display:flex;gap:8px;align-items:center;
+  }
+
+  /* 邮件模态框 */
+  .modal-mask{
+    position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:99;
+  }
+  .modal-mask.show{display:flex}
+  .modal{
+    background:#fff;border-radius:6px;max-width:1000px;width:95vw;max-height:92vh;display:flex;flex-direction:column;
+    box-shadow:0 8px 32px rgba(0,0,0,.18);overflow:hidden;
+  }
+  .modal-head{
+    padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;
+  }
+  .modal-head h2{margin:0;font-size:16px;font-weight:600;flex:1}
+  .modal-head .close{background:none;border:none;font-size:18px;cursor:pointer;color:#909399}
+  .modal-body{padding:16px 20px;overflow:auto;flex:1;background:#fafbfc}
+  .modal-foot{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:#fff}
+  .mail-fields{display:grid;grid-template-columns:80px 1fr;gap:10px 12px;margin-bottom:16px;}
+  .mail-fields label{align-self:center;color:#606266;font-size:13px;text-align:right}
+  .mail-fields input{padding:7px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;font-family:inherit;}
+  .mail-fields input:focus{outline:none;border-color:var(--brand)}
+  .preview-frame{
+    width:100%;height:520px;border:1px solid var(--border);border-radius:4px;background:#fff;
+  }
+  .preview-label{font-size:12px;color:#909399;margin:8px 0 4px;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>专项页面 Demo v2</h1>
+  <label class="btn btn-primary" for="fileInput">📤 上传 .xlsx</label>
+  <input type="file" id="fileInput" accept=".xlsx" />
+  <button class="btn" id="exportBtn" disabled>📥 导出当前内容 .xlsx</button>
+  <button class="btn" id="mailBtn" disabled>📧 邮件预览/下载</button>
+  <span class="hint" id="statusHint">未加载</span>
+</div>
+
+<div class="modal-mask" id="mailModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>📧 邮件预览</h2>
+      <button class="close" id="mailCloseBtn">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="mail-fields">
+        <label>主题</label><input id="mailSubject" placeholder="例: 【XXX专项】周报 - 2026-W21" />
+        <label>收件人</label><input id="mailTo" placeholder="多个用 ; 或 , 分隔, 例: a@x.com; b@x.com" />
+        <label>抄送</label><input id="mailCc" placeholder="(可选)" />
+      </div>
+      <div class="preview-label">📨 邮件正文预览(Outlook 实际渲染会接近这个效果):</div>
+      <iframe class="preview-frame" id="mailPreview" sandbox="allow-same-origin"></iframe>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="mailCancelBtn">取消</button>
+      <button class="btn btn-primary" id="mailDownloadBtn">💾 下载 .eml</button>
+    </div>
+  </div>
+</div>
+
+<div class="container" id="root">
+  <div class="empty">
+    <h2>把你的 .xlsx 拖进来试试</h2>
+    <p>点「上传 .xlsx」选择 <code>doc/专项模板.xlsx</code></p>
+    <p>v2 改动：导出带表格样式 / 每个区块可切换 文本/表格/图片 类型 / 图片块可上传并嵌入 xlsx</p>
+  </div>
+</div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const TABLE_COLS = 18;  // 模板的 B..S 列宽度
+
+let state = { title:'', blocks:[] };
+
+/* ===========================================================
+   PARSE: ExcelJS 读 + 解析为 blocks
+   =========================================================== */
+function rangeFromMergeStr(s) {
+  // s like "B2:S2"
+  const [tl, br] = s.split(':');
+  const tlC = colNum(tl), tlR = parseInt(tl.match(/\d+/)[0]);
+  const brC = colNum(br||tl), brR = parseInt((br||tl).match(/\d+/)[0]);
+  return {s:{r:tlR-1, c:tlC-1}, e:{r:brR-1, c:brC-1}};
+}
+function colNum(addr) {
+  const letters = addr.match(/[A-Z]+/)[0];
+  let n = 0;
+  for (const ch of letters) n = n*26 + (ch.charCodeAt(0)-64);
+  return n;  // 1-based
+}
+function colLetter(n) {
+  let s = '';
+  while (n>0) { const r = (n-1)%26; s = String.fromCharCode(65+r) + s; n = Math.floor((n-1)/26); }
+  return s;
+}
+
+function getMerges(ws) {
+  const merges = [];
+  const m = ws.model?.merges || [];
+  m.forEach(str => merges.push(rangeFromMergeStr(str)));
+  return merges;
+}
+
+function isFullMerge(merges, r, sc, ec) {
+  return merges.some(m => m.s.r===r && m.e.r===r && m.s.c<=sc && m.e.c>=ec);
+}
+function getMergeFrom(merges, r, c) {
+  return merges.find(m => m.s.r===r && m.s.c===c);
+}
+
+function cellText(ws, r, c) {
+  const cell = ws.getCell(r+1, c+1);  // ExcelJS 1-based
+  const v = cell.value;
+  if (v == null) return '';
+  if (typeof v === 'object') {
+    if (v.richText) return v.richText.map(p=>p.text).join('');
+    if (v.text) return v.text;
+    if (v.result != null) return String(v.result);
+    if (v.formula != null) return '';
+  }
+  return String(v);
+}
+function rowHasAny(ws, r, sc, ec) {
+  for (let c=sc; c<=ec; c++) if (cellText(ws,r,c) !== '') return true;
+  return false;
+}
+
+async function parseWorkbook(buf) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const ws = wb.worksheets[0];
+  if (!ws) return {title:'', blocks:[]};
+  const merges = getMerges(ws);
+
+  const sc = 1, ec = TABLE_COLS;
+
+  // 分块转 base64, 避免大图触发 "Maximum call stack size exceeded"
+  function bufferToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    const chunk = 0x8000;  // 32KB / 次
+    for (let i=0; i<bytes.length; i+=chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+    }
+    return btoa(binary);
+  }
+
+  // 读图片 — 收集所有图片的 (top row, bottom row, dataUrl)
+  const imagesList = [];  // {tlR, brR, dataUrl}
+  const imgs = ws.getImages() || [];
+  for (const im of imgs) {
+    try {
+      const media = wb.getImage(im.imageId);
+      if (!media || !media.buffer) continue;
+      const base64 = bufferToBase64(media.buffer);
+      let ext = (media.extension || 'png').toLowerCase();
+      if (ext === 'jpg') ext = 'jpeg';
+      const dataUrl = `data:image/${ext};base64,${base64}`;
+      const tlR = im.range?.tl?.nativeRow ?? 0;
+      const brR = im.range?.br?.nativeRow ?? tlR;
+      imagesList.push({tlR, brR, dataUrl, _used:false});
+    } catch(e){ console.warn('image read fail', e); }
+  }
+  console.log('[parse] images loaded:', imagesList.map(i => `r${i.tlR}-${i.brR}`));
+
+  // helpers
+  function isSingleRowFullMerge(rr) {
+    return merges.some(m => m.s.r===rr && m.e.r===rr && m.s.c<=sc && m.e.c>=ec);
+  }
+  function findMultiRowFullMerge(rr) {
+    return merges.find(m => m.s.r===rr && m.e.r>rr && m.s.c<=sc && m.e.c>=ec);
+  }
+  function findAnyMultiRowMergeAt(rr) {
+    return merges.find(m => m.s.r<=rr && m.e.r>=rr && m.e.r>m.s.r);
+  }
+  // 容差匹配 — 图片的锚点行/底行有任何一个落进 [sR-2, eR+2] 都算
+  function takeImageForRange(sR, eR) {
+    const tol = 2;
+    const cand = imagesList.find(img => !img._used && (
+      (img.tlR >= sR-tol && img.tlR <= eR+tol) ||
+      (img.brR >= sR-tol && img.brR <= eR+tol) ||
+      (img.tlR <= sR && img.brR >= eR)  // 图片范围覆盖了合并区
+    ));
+    if (cand) { cand._used = true; return cand.dataUrl; }
+    return null;
+  }
+
+  const blocks = [];
+  let title = '';
+  let r = 0;
+  const last = ws.rowCount - 1;
+
+  while (r <= last) {
+    // 跳过纯空白行
+    if (!rowHasAny(ws, r, sc, ec)
+        && !isSingleRowFullMerge(r)
+        && !findAnyMultiRowMergeAt(r)) { r++; continue; }
+
+    // 章节标题必须是单行全宽合并 + 有值
+    if (!isSingleRowFullMerge(r)) { r++; continue; }
+    const v = cellText(ws, r, sc);
+    if (!v) { r++; continue; }
+
+    if (!title) { title = v; r++; continue; }
+
+    const blockTitle = v;
+    // 找到该块的内容行 — 跳过完全空白且无任何合并的行
+    let cur = r + 1;
+    while (cur <= last) {
+      if (rowHasAny(ws, cur, sc, ec)) break;
+      if (isSingleRowFullMerge(cur)) break;
+      if (findMultiRowFullMerge(cur)) break;
+      cur++;
+    }
+
+    if (cur > last) {
+      blocks.push({type:'text', title:blockTitle, content:'', image:null});
+      r = cur; continue;
+    }
+
+    // 多行全宽合并 → 图片块
+    const multiMerge = findMultiRowFullMerge(cur);
+    if (multiMerge) {
+      const img = takeImageForRange(multiMerge.s.r, multiMerge.e.r);
+      console.log(`[parse] image block "${blockTitle}" merge=r${multiMerge.s.r}-${multiMerge.e.r} matched=${img?'yes':'NO'}`);
+      blocks.push({type:'image', title:blockTitle, image:img, content:''});
+      r = multiMerge.e.r + 1;
+      continue;
+    }
+
+    // 单行全宽合并 → 文本块
+    if (isSingleRowFullMerge(cur)) {
+      blocks.push({type:'text', title:blockTitle, content: cellText(ws, cur, sc), image:null});
+      r = cur + 1;
+      continue;
+    }
+
+    // 否则为表格 — cur 为表头行
+    const columns = [], colStarts = [];
+    let c = sc;
+    while (c<=ec) {
+      const cv = cellText(ws, cur, c);
+      if (cv) {
+        const mg = getMergeFrom(merges, cur, c);
+        const cend = mg ? mg.e.c : c;
+        columns.push(cv); colStarts.push(c); c = cend+1;
+      } else c++;
+    }
+    const rows = [];
+    let dr = cur + 1;
+    while (dr<=last) {
+      // 下一节的标题 (单行全宽合并 + 有值)
+      if (isSingleRowFullMerge(dr) && cellText(ws, dr, sc)) break;
+      // 下一节的图片占位 (多行全宽合并)
+      if (findMultiRowFullMerge(dr)) break;
+      const rd = colStarts.map(s => cellText(ws, dr, s));
+      if (rd.some(x=>x!=='')) rows.push(rd);
+      dr++;
+    }
+    blocks.push({type:'table', title:blockTitle, columns, rows});
+    r = dr;
+  }
+  return {title, blocks};
+}
+
+/* ===========================================================
+   RENDER
+   =========================================================== */
+function render() {
+  const root = $('#root'); root.innerHTML = '';
+  if (!state.blocks.length && !state.title) {
+    root.innerHTML = `<div class="empty"><h2>未解析到任何区块</h2></div>`;
+    return;
+  }
+  const titleEl = document.createElement('div');
+  titleEl.className = 'project-title';
+  titleEl.contentEditable = true;
+  titleEl.textContent = state.title || '未命名专项';
+  titleEl.addEventListener('blur', () => { state.title = titleEl.textContent.trim(); });
+  root.appendChild(titleEl);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'blocks';
+  state.blocks.forEach((b, idx) => wrap.appendChild(renderBlock(b, idx)));
+  root.appendChild(wrap);
+}
+
+function renderBlock(block, idx) {
+  const el = document.createElement('div');
+  el.className = 'block';
+
+  const header = document.createElement('div');
+  header.className = 'block-header';
+  const ttl = document.createElement('span');
+  ttl.className = 'title-text';
+  ttl.contentEditable = true;
+  ttl.textContent = block.title;
+  ttl.addEventListener('blur', () => { state.blocks[idx].title = ttl.textContent.trim(); });
+  header.appendChild(ttl);
+
+  const typeSel = document.createElement('select');
+  ['text','table','image'].forEach(t=>{
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = ({text:'文本',table:'表格',image:'图片'})[t];
+    if (block.type === t) opt.selected = true;
+    typeSel.appendChild(opt);
+  });
+  typeSel.addEventListener('change', () => {
+    const newType = typeSel.value;
+    const b = state.blocks[idx];
+    if (newType === 'text' && b.type !== 'text') {
+      b.type = 'text'; if (b.content==null) b.content = '';
+    } else if (newType === 'table' && b.type !== 'table') {
+      b.type = 'table';
+      if (!b.columns) b.columns = ['列1','列2'];
+      if (!b.rows) b.rows = [];
+    } else if (newType === 'image' && b.type !== 'image') {
+      b.type = 'image';
+      if (b.image == null) b.image = null;
+    }
+    render();
+  });
+  header.appendChild(typeSel);
+
+  const del = document.createElement('button');
+  del.className = 'del-block';
+  del.textContent = '🗑 删除块';
+  del.title = '删除此区块';
+  del.onclick = () => {
+    if (confirm(`确认删除「${block.title}」?`)) {
+      state.blocks.splice(idx, 1); render();
+    }
+  };
+  header.appendChild(del);
+  el.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'block-body';
+
+  if (block.type === 'text') {
+    const ta = document.createElement('textarea');
+    ta.className = 'text-content';
+    ta.value = block.content || '';
+    ta.rows = Math.max(2, (block.content||'').split('\n').length);
+    ta.addEventListener('input', () => { state.blocks[idx].content = ta.value; });
+    body.appendChild(ta);
+  } else if (block.type === 'image') {
+    body.appendChild(renderImageArea(idx, block));
+  } else {
+    body.appendChild(renderTable(idx, block));
+  }
+  el.appendChild(body);
+  return el;
+}
+
+function renderImageArea(idx, block) {
+  const wrap = document.createElement('div');
+  wrap.className = 'image-area';
+  const refresh = () => {
+    wrap.innerHTML = '';
+    const b = state.blocks[idx];
+    if (b.image) {
+      const img = document.createElement('img');
+      img.src = b.image;
+      wrap.appendChild(img);
+      const tip = document.createElement('div'); tip.className='tip'; tip.textContent='点击下方更换图片';
+      wrap.appendChild(tip);
+    } else {
+      const tip = document.createElement('div'); tip.className='tip';
+      tip.textContent = '尚未上传图片 — 支持 png/jpg/svg';
+      wrap.appendChild(tip);
+    }
+    const inp = document.createElement('input');
+    inp.type='file'; inp.accept='image/*';
+    inp.style.display='block';
+    inp.addEventListener('change', async e => {
+      const f = e.target.files[0]; if (!f) return;
+      const dataUrl = await fileToDataUrl(f);
+      state.blocks[idx].image = dataUrl;
+      state.blocks[idx]._ext = f.name.split('.').pop().toLowerCase();
+      refresh();
+    });
+    const lbl = document.createElement('label');
+    lbl.className = 'btn btn-sm'; lbl.textContent = b.image?'更换图片':'选择图片';
+    lbl.appendChild(inp);
+    wrap.appendChild(lbl);
+    if (b.image) {
+      const rm = document.createElement('button');
+      rm.className='btn btn-sm btn-danger';
+      rm.textContent='移除';
+      rm.onclick = () => { state.blocks[idx].image=null; refresh(); };
+      wrap.appendChild(rm);
+    }
+  };
+  refresh();
+  return wrap;
+}
+
+function fileToDataUrl(f){
+  return new Promise(res => { const r = new FileReader(); r.onload=()=>res(r.result); r.readAsDataURL(f); });
+}
+
+function renderTable(idx, block) {
+  const wrap = document.createElement('div');
+  const tbl = document.createElement('table'); tbl.className='bk';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  block.columns.forEach((c, k) => {
+    const th = document.createElement('th');
+    th.contentEditable = true; th.textContent = c;
+    th.addEventListener('blur', () => { state.blocks[idx].columns[k] = th.textContent; });
+    trh.appendChild(th);
+  });
+  const thOps = document.createElement('th'); thOps.className='row-tools'; thOps.textContent='';
+  trh.appendChild(thOps);
+  thead.appendChild(trh); tbl.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  block.rows.forEach((row, rIdx) => tbody.appendChild(renderRow(block, idx, rIdx, row)));
+  tbl.appendChild(tbody);
+  wrap.appendChild(tbl);
+
+  const foot = document.createElement('div'); foot.className='table-foot';
+  const addBtn = document.createElement('button'); addBtn.className='btn btn-sm';
+  addBtn.textContent = '+ 添加一行';
+  addBtn.onclick = () => {
+    const newRow = block.columns.map(()=>'');
+    state.blocks[idx].rows.push(newRow);
+    tbody.appendChild(renderRow(block, idx, state.blocks[idx].rows.length-1, newRow));
+  };
+  foot.appendChild(addBtn);
+  wrap.appendChild(foot);
+  return wrap;
+}
+
+function renderRow(block, bIdx, rIdx, row) {
+  const tr = document.createElement('tr');
+  block.columns.forEach((_, cIdx) => {
+    const td = document.createElement('td');
+    td.contentEditable = true; td.textContent = row[cIdx] || '';
+    td.addEventListener('blur', () => { state.blocks[bIdx].rows[rIdx][cIdx] = td.textContent; });
+    tr.appendChild(td);
+  });
+  const opTd = document.createElement('td'); opTd.className='row-tools';
+  const delBtn = document.createElement('button'); delBtn.className='row-del'; delBtn.textContent='🗑';
+  delBtn.onclick = () => { state.blocks[bIdx].rows.splice(rIdx, 1); render(); };
+  opTd.appendChild(delBtn);
+  tr.appendChild(opTd);
+  return tr;
+}
+
+/* ===========================================================
+   EXPORT: ExcelJS 写, 带样式 + 嵌图片
+   =========================================================== */
+async function exportXlsx() {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Sheet1');
+
+  // 列宽: A 留 4 字符做装饰边, B..S 共 18 列, 平均 8
+  ws.getColumn(1).width = 4;
+  for (let i=2;i<=TABLE_COLS+1;i++) ws.getColumn(i).width = 8;
+
+  const colorBrand = 'FF4073BA';
+  const colorBrandLight = 'FFEEF2F8';
+  const fontYaHei = { name:'微软雅黑', size:11 };
+
+  function mergeRow(rowNum, sc, ec){
+    ws.mergeCells(rowNum, sc, rowNum, ec);
+  }
+  function styleSectionHeader(cell) {
+    cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb: colorBrand} };
+    cell.font = { ...fontYaHei, bold:true, color:{argb:'FFFFFFFF'} };
+    cell.alignment = { horizontal:'left', vertical:'center', indent:1 };
+    cell.border = thinBorder('FF4073BA');
+  }
+  function styleProjectTitle(cell) {
+    cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb: colorBrand} };
+    cell.font = { ...fontYaHei, bold:true, size:16, color:{argb:'FFFFFFFF'} };
+    cell.alignment = { horizontal:'center', vertical:'center' };
+  }
+  function styleTableHeader(cell) {
+    cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb: colorBrandLight} };
+    cell.font = { ...fontYaHei, bold:true, color:{argb:'FF303133'} };
+    cell.alignment = { horizontal:'center', vertical:'center', wrapText:true };
+    cell.border = thinBorder('FFC0C4CC');
+  }
+  function styleTableCell(cell) {
+    cell.font = { ...fontYaHei };
+    cell.alignment = { horizontal:'left', vertical:'center', wrapText:true };
+    cell.border = thinBorder('FFC0C4CC');
+  }
+  function styleTextContent(cell) {
+    cell.font = { ...fontYaHei };
+    cell.alignment = { horizontal:'left', vertical:'top', wrapText:true, indent:1 };
+    cell.border = thinBorder('FFDCDFE6');
+  }
+  function thinBorder(argb) {
+    return {
+      top:{style:'thin', color:{argb}},
+      left:{style:'thin', color:{argb}},
+      right:{style:'thin', color:{argb}},
+      bottom:{style:'thin', color:{argb}},
+    };
+  }
+
+  // 项目标题
+  let rowNum = 1;
+  ws.getRow(rowNum).height = 32;
+  ws.getCell(rowNum, 2).value = state.title || '';
+  mergeRow(rowNum, 2, 1+TABLE_COLS);
+  styleProjectTitle(ws.getCell(rowNum, 2));
+  rowNum++;
+
+  for (const b of state.blocks) {
+    // 区块标题
+    ws.getRow(rowNum).height = 24;
+    ws.getCell(rowNum, 2).value = b.title;
+    mergeRow(rowNum, 2, 1+TABLE_COLS);
+    styleSectionHeader(ws.getCell(rowNum, 2));
+    rowNum++;
+
+    if (b.type === 'text') {
+      const content = b.content || '';
+      const lines = content.split('\n').length;
+      ws.getRow(rowNum).height = Math.max(36, Math.min(160, lines*22));
+      ws.getCell(rowNum, 2).value = content;
+      mergeRow(rowNum, 2, 1+TABLE_COLS);
+      styleTextContent(ws.getCell(rowNum, 2));
+      rowNum++;
+    } else if (b.type === 'image') {
+      // 占 8 行高用于图片 — 注意: 只能 merge 一次, 不能先合并一行再合并整块
+      const startR = rowNum, endR = rowNum + 7;
+      for (let rr=startR; rr<=endR; rr++) ws.getRow(rr).height = 22;
+      ws.mergeCells(startR, 2, endR, 1+TABLE_COLS);
+      const tlCell = ws.getCell(startR, 2);
+      tlCell.border = thinBorder('FFDCDFE6');
+      tlCell.alignment = { horizontal:'center', vertical:'middle' };
+      tlCell.font = { ...fontYaHei, color:{argb:'FF909399'} };
+
+      if (b.image) {
+        try {
+          const m = /^data:image\/([\w+\-.]+);base64,(.+)$/.exec(b.image);
+          if (!m) throw new Error('图片不是 data URL 格式');
+          let ext = m[1].toLowerCase();
+          const base64Data = m[2];
+          if (ext === 'jpg') ext = 'jpeg';
+          // ExcelJS 仅支持 png/jpeg/gif 三种嵌入格式
+          if (!['png','jpeg','gif'].includes(ext)) {
+            tlCell.value = `(.${ext} 格式 ExcelJS 暂不支持嵌入)`;
+          } else {
+            const imageId = wb.addImage({
+              base64: base64Data,
+              extension: ext,
+            });
+            ws.addImage(imageId, {
+              tl: { col: 1.1, row: startR - 1 + 0.1 },
+              br: { col: 1 + TABLE_COLS - 0.1, row: endR - 0.1 },
+              editAs: 'oneCell',
+            });
+          }
+        } catch(e){
+          console.warn('embed image fail', e);
+          tlCell.value = '(图片嵌入失败: ' + e.message + ')';
+        }
+      } else {
+        tlCell.value = '(暂无图片)';
+      }
+      rowNum = endR + 1;
+    } else if (b.type === 'table') {
+      // 把 18 列平均分给 N 个字段, 最后一个吃完剩余
+      const nCols = b.columns.length;
+      const groupSize = Math.max(1, Math.floor(TABLE_COLS / nCols));
+      const colSpans = [];
+      let cursor = 2;
+      for (let k=0; k<nCols; k++) {
+        const start = cursor;
+        const end = (k===nCols-1) ? (1+TABLE_COLS) : (cursor + groupSize - 1);
+        colSpans.push([start, end]);
+        cursor = end + 1;
+      }
+      // 表头
+      ws.getRow(rowNum).height = 26;
+      b.columns.forEach((cn, k) => {
+        const [s,e] = colSpans[k];
+        ws.getCell(rowNum, s).value = cn;
+        if (e>s) ws.mergeCells(rowNum, s, rowNum, e);
+        // 设置该范围所有单元格样式
+        for (let cc=s; cc<=e; cc++) styleTableHeader(ws.getCell(rowNum, cc));
+      });
+      rowNum++;
+      // 数据行
+      for (const row of b.rows) {
+        ws.getRow(rowNum).height = 22;
+        row.forEach((v, k) => {
+          const [s,e] = colSpans[k];
+          ws.getCell(rowNum, s).value = v;
+          if (e>s) ws.mergeCells(rowNum, s, rowNum, e);
+          for (let cc=s; cc<=e; cc++) styleTableCell(ws.getCell(rowNum, cc));
+        });
+        rowNum++;
+      }
+    }
+  }
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `专项内容_${new Date().toISOString().slice(0,10)}.xlsx`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ===========================================================
+   事件
+   =========================================================== */
+$('#fileInput').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const buf = await f.arrayBuffer();
+  try {
+    state = await parseWorkbook(buf);
+    // 启发式: 模板里的 专项计划 / 专项阵型 / 专项全景图 默认推荐图片
+    state.blocks.forEach(b => {
+      if (['专项计划','专项阵型','专项全景图'].includes(b.title) && !b.image && b.type === 'text') {
+        b.type = 'image';
+      }
+    });
+    $('#statusHint').textContent = `已加载: ${f.name} (${state.blocks.length} 个区块)`;
+    $('#exportBtn').disabled = false;
+    $('#mailBtn').disabled = false;
+    render();
+  } catch(err) {
+    alert('解析失败: ' + err.message);
+    console.error(err);
+  }
+});
+$('#exportBtn').addEventListener('click', async () => {
+  try {
+    await exportXlsx();
+  } catch(err) {
+    console.error('export error:', err);
+    alert('导出失败: ' + (err && err.message ? err.message : err) + '\n详细错误请按 F12 看控制台');
+  }
+});
+
+/* ===========================================================
+   邮件 — Outlook 友好 HTML + 纯文本 + .eml
+   关键策略 (针对 Outlook/Word 渲染引擎):
+   - 所有文字 inline 写 font-family: 微软雅黑
+   - 表格用 HTML border/cellpadding/cellspacing 属性, 不靠 CSS
+   - banner 用 bgcolor 纯色, 不用渐变
+   - 图片用 multipart/related + Content-ID 引用, 不用 data URL (Outlook 默认会阻塞 data URL)
+   =========================================================== */
+const MAIL = {
+  brand: '#4073BA',
+  brandDark: '#2f5a96',
+  brandLight: '#eef2f8',
+  border: '#c0c4cc',
+  borderLight: '#dcdfe6',
+  text: '#303133',
+  textGray: '#909399',
+  font: "font-family:'Microsoft YaHei','微软雅黑','SimSun',sans-serif;",
+};
+
+function esc(s){
+  return String(s==null?'':s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function renderMailHtml() {
+  const f = MAIL.font;
+  const blocksHtml = state.blocks.map((b, i) => renderMailBlock(b, i)).join('\n');
+  return `<!DOCTYPE html>
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head>
+<body style="margin:0;padding:18px;background:#f5f7fa;${f}">
+<table width="820" cellpadding="0" cellspacing="0" border="0" align="center" style="background:#ffffff;border:1px solid ${MAIL.borderLight};">
+  <tr>
+    <td bgcolor="${MAIL.brand}" style="padding:20px 24px;text-align:center;">
+      <font face="Microsoft YaHei,微软雅黑,SimSun" color="#ffffff" size="5"><b>${esc(state.title || '专项')}</b></font>
+    </td>
+  </tr>
+  ${blocksHtml}
+  <tr>
+    <td style="padding:10px 20px;background:#fafbfc;border-top:1px solid ${MAIL.borderLight};text-align:right;">
+      <font face="Microsoft YaHei,微软雅黑,SimSun" color="${MAIL.textGray}" size="2">${new Date().toLocaleString('zh-CN')}</font>
+    </td>
+  </tr>
+</table>
+</body></html>`;
+}
+
+function renderMailBlock(b, i) {
+  const f = MAIL.font;
+  let body = '';
+  if (b.type === 'text') {
+    const content = (b.content || '').trim() || '(空)';
+    // 用 <br> 替换换行而不是 white-space:pre-wrap (Outlook 支持有限)
+    const html = esc(content).replace(/\n/g, '<br>');
+    body = `<font face="Microsoft YaHei,微软雅黑,SimSun" color="${MAIL.text}" size="3">${html}</font>`;
+  } else if (b.type === 'image') {
+    if (b.image) {
+      body = `<img src="cid:img${i}" alt="${esc(b.title)}" style="display:block;max-width:100%;border:1px solid ${MAIL.borderLight};" />`;
+    } else {
+      body = `<font face="Microsoft YaHei,微软雅黑,SimSun" color="${MAIL.textGray}" size="2"><i>(无图)</i></font>`;
+    }
+  } else if (b.type === 'table') {
+    if (!b.rows || b.rows.length === 0) {
+      body = `<font face="Microsoft YaHei,微软雅黑,SimSun" color="${MAIL.textGray}" size="2"><i>(暂无数据)</i></font>`;
+    } else {
+      const ths = b.columns.map(c =>
+        `<th align="left" bgcolor="${MAIL.brandLight}" style="padding:8px 10px;border:1px solid ${MAIL.border};${f}font-size:13px;color:${MAIL.text};">${esc(c)}</th>`
+      ).join('');
+      const trs = b.rows.map((row, ri) => {
+        const bg = ri%2===0 ? '#ffffff' : '#f7f9fc';
+        const tds = b.columns.map((_, ci) =>
+          `<td bgcolor="${bg}" style="padding:8px 10px;border:1px solid ${MAIL.border};${f}font-size:13px;color:${MAIL.text};vertical-align:top;">${esc(row[ci]||'')}</td>`
+        ).join('');
+        return `<tr>${tds}</tr>`;
+      }).join('');
+      body = `<table width="100%" cellpadding="0" cellspacing="0" border="1" bordercolor="${MAIL.border}" style="border-collapse:collapse;">
+<thead><tr>${ths}</tr></thead>
+<tbody>${trs}</tbody>
+</table>`;
+    }
+  }
+  // 表格块紧贴左右边缘, 其它块留 14/20 padding
+  const bodyPadding = b.type === 'table' ? '0' : '14px 20px';
+  return `<tr><td style="padding:0;">
+  <table width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr><td bgcolor="${MAIL.brand}" style="padding:9px 18px;border-top:1px solid ${MAIL.brandDark};border-bottom:1px solid ${MAIL.brandDark};">
+      <font face="Microsoft YaHei,微软雅黑,SimSun" color="#ffffff" size="3"><b>${esc(b.title)}</b></font>
+    </td></tr>
+    <tr><td style="padding:${bodyPadding};">${body}</td></tr>
+  </table>
+</td></tr>`;
+}
+
+function renderMailText() {
+  let txt = `${state.title || '专项'}\n${'='.repeat(50)}\n\n`;
+  state.blocks.forEach(b => {
+    txt += `【${b.title}】\n`;
+    if (b.type === 'text') {
+      txt += (b.content || '(空)').trim() + '\n';
+    } else if (b.type === 'image') {
+      txt += b.image ? '(图片 — 详见 HTML 版本)\n' : '(无图)\n';
+    } else if (b.type === 'table') {
+      if (!b.rows || b.rows.length === 0) {
+        txt += '(暂无数据)\n';
+      } else {
+        const lines = [b.columns.join(' | '), '-'.repeat(50)];
+        b.rows.forEach(r => lines.push(r.join(' | ')));
+        txt += lines.join('\n') + '\n';
+      }
+    }
+    txt += '\n';
+  });
+  txt += `\n---\n生成时间: ${new Date().toLocaleString('zh-CN')}`;
+  return txt;
+}
+
+function collectMailImages() {
+  const imgs = [];
+  state.blocks.forEach((b, i) => {
+    if (b.type === 'image' && b.image) {
+      const m = /^data:image\/([\w+\-.]+);base64,(.+)$/.exec(b.image);
+      if (m) {
+        let ext = m[1].toLowerCase();
+        if (ext === 'jpg') ext = 'jpeg';
+        // svg/webp 等 Outlook 兼容差, 这里仍然按原格式塞进去, 不显示就算了
+        imgs.push({cid:`img${i}`, ext, base64:m[2], idx:i});
+      }
+    }
+  });
+  return imgs;
+}
+
+// RFC 2047 编码非 ASCII 邮件头 (Subject, To 等)
+function encodeMailHeader(s) {
+  if (!s) return '';
+  if (/^[\x00-\x7F]*$/.test(s)) return s;
+  // UTF-8 → bytes → base64
+  const b64 = btoa(unescape(encodeURIComponent(s)));
+  return `=?UTF-8?B?${b64}?=`;
+}
+function chunkBase64(b64, len=76) {
+  return b64.match(new RegExp('.{1,'+len+'}', 'g')).join('\r\n');
+}
+function utf8Base64(s) {
+  return chunkBase64(btoa(unescape(encodeURIComponent(s))));
+}
+
+function buildEml({subject, to, cc, html, text, images}) {
+  const stamp = Date.now().toString(36);
+  const bAlt = `----=alt_${stamp}`;
+  const bRel = `----=rel_${stamp}`;
+  let eml = '';
+  eml += 'MIME-Version: 1.0\r\n';
+  eml += 'X-Unsent: 1\r\n';              // Outlook: 打开为草稿
+  eml += `Date: ${new Date().toUTCString()}\r\n`;
+  if (to) eml += `To: ${encodeMailHeader(to)}\r\n`;
+  if (cc) eml += `Cc: ${encodeMailHeader(cc)}\r\n`;
+  eml += `Subject: ${encodeMailHeader(subject||'(无主题)')}\r\n`;
+
+  const hasImg = images && images.length > 0;
+  if (!hasImg) {
+    eml += `Content-Type: multipart/alternative; boundary="${bAlt}"\r\n\r\n`;
+    eml += `--${bAlt}\r\n`;
+    eml += 'Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n';
+    eml += utf8Base64(text) + '\r\n';
+    eml += `--${bAlt}\r\n`;
+    eml += 'Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n';
+    eml += utf8Base64(html) + '\r\n';
+    eml += `--${bAlt}--\r\n`;
+  } else {
+    eml += `Content-Type: multipart/alternative; boundary="${bAlt}"\r\n\r\n`;
+    eml += `--${bAlt}\r\n`;
+    eml += 'Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n';
+    eml += utf8Base64(text) + '\r\n';
+    eml += `--${bAlt}\r\n`;
+    eml += `Content-Type: multipart/related; boundary="${bRel}"; type="text/html"\r\n\r\n`;
+    eml += `--${bRel}\r\n`;
+    eml += 'Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n';
+    eml += utf8Base64(html) + '\r\n';
+    for (const im of images) {
+      eml += `--${bRel}\r\n`;
+      eml += `Content-Type: image/${im.ext}\r\n`;
+      eml += `Content-Transfer-Encoding: base64\r\n`;
+      eml += `Content-ID: <${im.cid}>\r\n`;
+      eml += `Content-Disposition: inline; filename="${im.cid}.${im.ext}"\r\n\r\n`;
+      eml += chunkBase64(im.base64) + '\r\n';
+    }
+    eml += `--${bRel}--\r\n`;
+    eml += `--${bAlt}--\r\n`;
+  }
+  return eml;
+}
+
+function openMailModal() {
+  // 默认填充主题
+  if (!$('#mailSubject').value) {
+    const today = new Date();
+    const week = Math.ceil(((today - new Date(today.getFullYear(),0,1))/86400000 + new Date(today.getFullYear(),0,1).getDay()+1) / 7);
+    $('#mailSubject').value = `【${state.title||'专项'}】周报 - ${today.getFullYear()}-W${String(week).padStart(2,'0')}`;
+  }
+  refreshMailPreview();
+  $('#mailModal').classList.add('show');
+}
+function closeMailModal(){ $('#mailModal').classList.remove('show'); }
+
+function refreshMailPreview() {
+  const html = renderMailHtml();
+  // 预览用 — cid: 引用在浏览器不工作, 替换成 dataUrl
+  const previewHtml = html.replace(/cid:img(\d+)/g, (_m, idx) => {
+    return state.blocks[+idx]?.image || '';
+  });
+  const ifr = $('#mailPreview');
+  const doc = ifr.contentDocument || ifr.contentWindow.document;
+  doc.open(); doc.write(previewHtml); doc.close();
+}
+
+function downloadEml() {
+  const subject = $('#mailSubject').value.trim();
+  const to = $('#mailTo').value.trim();
+  const cc = $('#mailCc').value.trim();
+  if (!to) { alert('请填写收件人'); return; }
+  const html = renderMailHtml();
+  const text = renderMailText();
+  const images = collectMailImages();
+  const eml = buildEml({subject, to, cc, html, text, images});
+  const blob = new Blob([eml], {type:'message/rfc822'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  // 文件名: 主题截断
+  const safe = (subject||'mail').replace(/[\\/:*?"<>|]/g,'_').slice(0,60);
+  a.href = url; a.download = `${safe}.eml`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+$('#mailBtn').addEventListener('click', () => {
+  try { openMailModal(); } catch(e){ console.error(e); alert('打开邮件预览失败: '+e.message); }
+});
+$('#mailCloseBtn').addEventListener('click', closeMailModal);
+$('#mailCancelBtn').addEventListener('click', closeMailModal);
+$('#mailDownloadBtn').addEventListener('click', () => {
+  try { downloadEml(); } catch(e){ console.error(e); alert('生成 .eml 失败: '+e.message); }
+});
+// 点遮罩关闭
+$('#mailModal').addEventListener('click', (e) => {
+  if (e.target.id === 'mailModal') closeMailModal();
+});
+</script>
+</body>
+</html>
