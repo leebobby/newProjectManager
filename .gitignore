@@ -1,0 +1,30 @@
+# ── Python / 后端 ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── 前端 ────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+*.local
+
+# ── 运行时数据（部署时由后端自动创建，不入库）──────────────────
+# 注：backend/app.db 与 backend/uploads/ 下的历史文件此前已被跟踪，
+# 这里的规则只对新文件生效；如需彻底移出版本管理，另需 git rm --cached。
+backend/app.db-journal
+backend/app.db-wal
+backend/app.db-shm
+
+# ── 编辑器 / 操作系统 ────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── 测试 / 工具缓存 ──────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
