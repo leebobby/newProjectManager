@@ -20,7 +20,8 @@
 │   ├── automigrate.py           启动时自动 alembic upgrade head（失败只记日志）
 │   ├── alembic/                 结构变更的正式通道（改名/删列/改类型/加约束/数据回填）
 │   │   ├── env.py               render_as_batch=True，SQLite 靠表重建完成 ALTER
-│   │   └── versions/            0001_baseline … 0007_hw_extra_fields
+│   │   └── versions/            0001_baseline … 0008_special_section_config
+│   ├── special_layout.py        专项详情页「版式」解析（分段顺序/标题/启停 + 模板套用）
 │   ├── xlsx_io.py               清单类 Excel 导出的统一外观（style_header + beautify）
 │   ├── xlsx_utils.py            专项/攻关的单页图文混排 Excel 导出
 │   ├── pptx_utils.py            PPT 导出工具
@@ -67,6 +68,7 @@
 │       ├── stakeholders.py          /stakeholders 沟通地图 / 战场矩阵
 │       ├── project_formation.py     /project-formation 项目阵型图 + 工时名单
 │       ├── specials.py              /specials 专项与攻关：内容 / 事务 / 风险 / 编辑锁 / 周报
+│       ├── special_templates.py     /special-templates 专项版式模板（主数据，仅 admin 可写）
 │       ├── handbook.py              /handbook 一本通分类 + 条目 + 文件
 │       ├── notifications.py         /notifications 通知列表 / 已读 / 订阅 / 广播
 │       ├── mapping.py               /mapping 数据对账：字符串字段批量绑主数据（仅 admin）
@@ -87,6 +89,7 @@
         │   └── storage.js           localStorage 读写封装
         ├── utils/
         │   ├── featureStatus.js     关键特性状态 → 点灯颜色
+        │   ├── gridLight.js         自由表格「点灯」列的取值词表与红黄绿档位
         │   └── format.js            日期 / 文件大小格式化
         ├── components/
         │   ├── CustomerDetailPanel.vue  机台详情主面板（里程碑/SOW/license/自定义块/定制需求）
@@ -95,7 +98,7 @@
         │   ├── VersionTimeline.vue      版本时间线
         │   ├── VersionMergeDialog.vue   版本合入内容对话框
         │   ├── IssueApiPanel.vue        单项目问题单面板（采集 / 趋势 / 明细）
-        │   ├── RichGrid.vue             可增删行列的自由表格（专项自定义分段）
+        │   ├── RichGrid.vue             可增删行列的自由表格（专项自定义分段；列格式含点灯）
         │   ├── RichTextEditor.vue       富文本编辑器
         │   ├── FormationGrid.vue        阵型格子表
         │   ├── MilestoneTimeline.vue    水平里程碑时间线
@@ -119,6 +122,7 @@
             ├── RoadmapTimeline.vue *        StakeholderManagement.vue
             ├── ResourceGroupManagement.vue  ProjectHandbook.vue
             ├── SpecialList.vue              SpecialDetail.vue
+            ├── SpecialTemplates.vue *
             ├── DataMapping.vue              UserManagement.vue
             └── OperationLogs.vue
                 * 无独立路由，作为子组件嵌入：前两者是 CustomerStatus 的
@@ -182,7 +186,8 @@ npm run dev
 | 进度管理 | 领域管理 | `/domains` | 登录用户 | 两个 Tab：**领域总览**（按 PL 组聚合需求情况 / 问题单情况 / 最近主要工作 / 风险与求助，可下钻明细、可移除不管理的组）、**事务与风险跟踪**（跨领域逐条，带责任领域列） |
 | 进度管理 | 关键特性 | `/key-features` | 登录用户（删除 admin） | 全局特性目录：交付状态六档＝点灯、需求度量（总 SR/已验收/已转测）、责任人（FO/SE）、简介、附件与链接；机台按需勾选引用 |
 | 进度管理 | 专项管理 | `/specials` | 仅 admin | 增删改专项 / 攻关（kind/name/owner/sort_order/is_active + 周报收件人默认值）。侧栏二级菜单按启用项动态展开 |
-| 进度管理 | 专项详情 | `/specials/:id` | 登录用户 | 一专项一页：目标 / 里程碑时间线 / 整体进展 / 求助 / 全景图 / 事务表 / 风险问题表 / 阵型 / 自定义分段（自由表格、图片），分段顺序可调；带**编辑锁**（同一时刻仅一人可编辑，TTL 180s 心跳续期，admin 可强制接管）；可导出 Excel、生成周报 .eml |
+| 进度管理 | 专项详情 | `/specials/:id` | 登录用户 | 一专项一页：8 个内置分段（目标 / 里程碑时间线 / 整体进展 / 求助 / 全景图 / 风险问题表 / 事务表 / 阵型）+ 任意个自定义分段（自由表格、文本框、图片）。**分段可改标题、可整段停用、可调顺序，逐专项独立**；admin 可「套用模板」一次性换版式。带**编辑锁**（同一时刻仅一人可编辑，TTL 180s 心跳续期，admin 可强制接管）；导出 Excel 与周报 .eml 均按当前版式生成 |
+| 进度管理 | 专项模板 | `/special-templates` | 仅 admin | 维护可复用的**版式预设**：内置分段改标题/停用、自定义表格定义列（文本/下拉/日期/**点灯**）。建专项时可直接套用；套用后与模板脱钩，改模板不影响已建专项 |
 | 质量管理 | 度量看板 | `/metrics` | 登录用户 | 四个 Tab：版本完成率 / 迭代质量 / 组级负载 / 调试版本。完成率按进展子项加权（已完成 1.0、进行中 0.5、不涉及不计入） |
 | 组织管理 | 干系人管理 | `/stakeholders` | 登录用户（写 admin） | 项目组沟通地图 + 战场沟通矩阵 + **项目阵型**（阵型图上传 / 工时名单，支持 Excel 导入导出） |
 | 组织管理 | 组织架构 | `/resource-groups` | 仅 admin | 部门 / PL 组两级资源组主数据；组长挂 users，删除前拦截仍有成员或子组的组 |
@@ -309,6 +314,15 @@ npm run dev
 - **专项编辑锁**：`special_edit_locks` 保证同一专项同一时刻仅一人处于编辑态
   （TTL 180s 心跳续期，超时可接管，admin 可强制接管），写操作冲突返回 **423**；
   另加专项 Excel 导出与周报 `.eml` 生成。
+- **专项版式模板**（Alembic `0008`）：不同专项需要不同分段，故分两层——
+  运行层 `special_contents.section_config_json` 存每个分段的标题覆盖与启停
+  （空对象＝默认标题、全部启用，存量专项行为不变）；授权层新增主数据表
+  `special_templates` 存可复用的版式预设，建专项时可套、事后可
+  `POST /specials/{id}/apply-template`。套用**只增不删**（按 `tkey` 认领分段，重复套用
+  幂等，已填内容与模板外的分段一律保留），套完即与模板脱钩。
+  顺序/标题/启停的解析收口到 [special_layout.py](backend/special_layout.py)，
+  详情页、Excel 导出、周报三处共用；此前导出与周报写死「一、目标 二、整体进展…」，
+  自定义分段进不了周报。自由表格新增**点灯**列格式（页面 / 周报 HTML / Excel 同一套红黄绿）。
 - **并发与运维**：SQLite 连接挂 `journal_mode=WAL` / `busy_timeout=5000` /
   `synchronous=NORMAL`，连接池放宽到 15+25；启动路径接入
   [automigrate.py](backend/automigrate.py) 自动 `alembic upgrade head`；新增 pytest

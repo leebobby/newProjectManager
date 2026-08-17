@@ -138,6 +138,60 @@ def test_invalid_layout_rejected(client, admin_headers):
         assert resp.status_code == 400, f"{why} 应被拒：{resp.text}"
 
 
+@pytest.fixture(scope="module")
+def normal_headers(client, admin_headers):
+    """普通登录用户，用来验证权限分档而不是只测 admin 路径。"""
+    client.post("/api/users", headers=admin_headers, json={
+        "username": "tpl_tester", "full_name": "分段测试员",
+        "password": "test1234", "role": "normal", "can_login": True,
+    })
+    resp = client.post("/api/auth/login",
+                       json={"username": "tpl_tester", "password": "test1234"})
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
+def test_permission_tiers(client, admin_headers, normal_headers, solution_tpl):
+    """分段改名/停用是协作编辑（登录用户），改模板与套模板是配置（仅 admin）。"""
+    sid = client.post("/api/specials", headers=admin_headers, json={
+        "name": "权限分档验证", "kind": "special",
+    }).json()["id"]
+    content = _content(client, normal_headers, sid)
+
+    # 普通用户可以改本专项的分段标题与启停（走 PUT /content 的乐观锁）
+    cfg = {"sections": {"goal": {"title": "我改的标题", "enabled": True},
+                        "formation": {"title": "", "enabled": False}}}
+    resp = client.put(f"/api/specials/{sid}/content", headers=normal_headers, json={
+        "version": content["version"],
+        "section_config_json": json.dumps(cfg, ensure_ascii=False),
+    })
+    assert resp.status_code == 200, resp.text
+    body = client.get(f"/api/specials/{sid}/report-draft",
+                      headers=normal_headers).json()["body"]
+    assert "我改的标题" not in body, "目标是空的，空段不该只因改了标题就出现"
+
+    client.put(f"/api/specials/{sid}/content", headers=normal_headers, json={
+        "version": resp.json()["version"], "goal": "<p>有内容了</p>",
+    })
+    body = client.get(f"/api/specials/{sid}/report-draft",
+                      headers=normal_headers).json()["body"]
+    assert "一、我改的标题" in body
+
+    # 但套模板 / 改模板是 admin 的事
+    ver = _content(client, normal_headers, sid)["version"]
+    resp = client.post(f"/api/specials/{sid}/apply-template", headers=normal_headers,
+                       json={"template_id": solution_tpl["id"], "version": ver})
+    assert resp.status_code == 403, resp.text
+    resp = client.post("/api/special-templates", headers=normal_headers,
+                       json={"name": "普通用户建的模板"})
+    assert resp.status_code == 403
+    resp = client.delete(f"/api/special-templates/{solution_tpl['id']}",
+                         headers=normal_headers)
+    assert resp.status_code == 403
+    # 读是开放的：建专项对话框和详情页都要用
+    assert client.get("/api/special-templates", headers=normal_headers).status_code == 200
+
+
 def test_export_and_report_follow_layout(client, admin_headers, solution_tpl):
     """分段改名/停用后，Excel 与周报要跟着变。"""
     sid = client.post("/api/specials", headers=admin_headers, json={

@@ -36,11 +36,11 @@
           <el-option v-for="t in COL_TYPES" :key="t.value" :label="t.label" :value="t.value" />
         </el-select>
         <el-input
-          v-if="isBodySel && selColType === 'select'"
+          v-if="isBodySel && (selColType === 'select' || selColType === 'light')"
           v-model="selColOptionsText"
           size="small"
           class="rg-optinput"
-          placeholder="下拉选项，逗号分隔"
+          :placeholder="selColType === 'light' ? '点灯取值，逗号分隔' : '下拉选项，逗号分隔'"
         />
       </span>
       <div class="spacer" />
@@ -103,12 +103,12 @@
             v-for="(cell, ci) in row"
             :key="'c' + ri + '-' + ci"
             :class="{ selected: isSel('body', ri, ci) }"
-            :style="{ textAlign: cell.align || 'left', color: cell.color || '#303133', fontWeight: cell.bold ? 700 : 400 }"
+            :style="cellStyle(cell, ci)"
             @click="editable && selectCell('body', ri, ci)"
           >
             <template v-if="editable">
               <el-select
-                v-if="colTypeAt(ci) === 'select'"
+                v-if="isChoiceCol(ci)"
                 v-model="cell.text"
                 size="small"
                 clearable
@@ -163,13 +163,16 @@
  *     headers: [{ text, colspan, align }],   // sum(colspan) === 正文列数
  *     rows: [ [{ text, align, color, bold }, ...], ... ],
  *     colWidths:  [number, ...],             // 长度 = 正文列数
- *     colTypes:   ['text'|'select'|'date', ...],  // 每个物理列的输入格式
- *     colOptions: [ [string, ...], ... ],    // 下拉列的候选项（其余列为 []）
+ *     colTypes:   ['text'|'select'|'date'|'light', ...],  // 每个物理列的输入格式
+ *     colOptions: [ [string, ...], ... ],    // 下拉/点灯列的候选项（其余列为 []）
  *   }
+ * light（点灯）＝取值受限的下拉 + 按取值给整格上红黄绿底色，词表见 utils/gridLight.js；
+ * 后端在周报 HTML 与 Excel 里用同一套映射着色（enums.GRID_LIGHT_COLORS）。
  * 兼容旧格式：headers 为 string[]、rows 为 string[][]（由父级 normalize）；
  * 旧数据无 colTypes/colOptions 时按 'text' / [] 补齐。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { LIGHT_DEFAULT_OPTIONS, lightStyle } from '../utils/gridLight'
 
 const DEFAULT_W = 130
 
@@ -200,7 +203,22 @@ const COL_TYPES = [
   { value: 'text', label: '文本' },
   { value: 'select', label: '下拉' },
   { value: 'date', label: '日期' },
+  { value: 'light', label: '点灯' },
 ]
+// 点灯列＝取值受限的下拉 + 按取值给整格上底色，故两者共用编辑控件
+function isChoiceCol(ci) {
+  const t = colTypeAt(ci)
+  return t === 'select' || t === 'light'
+}
+function cellStyle(cell, ci) {
+  const base = {
+    textAlign: cell.align || 'left',
+    color: cell.color || '#303133',
+    fontWeight: cell.bold ? 700 : 400,
+  }
+  // 点灯列的着色覆盖单元格自身的字色/对齐：整列口径一致才看得出灯
+  return colTypeAt(ci) === 'light' ? { ...base, ...(lightStyle(cell.text) || {}) } : base
+}
 function colTypeAt(ci) {
   const t = model.value.colTypes
   return (Array.isArray(t) && t[ci]) || 'text'
@@ -228,6 +246,10 @@ const selColType = computed({
     if (selPhysCol.value < 0) return
     ensureColMeta()
     model.value.colTypes[selPhysCol.value] = v
+    // 切成点灯列时没有候选项就给一份红黄绿，否则下拉是空的、看不出该填什么
+    if (v === 'light' && !colOptionsAt(selPhysCol.value).length) {
+      model.value.colOptions[selPhysCol.value] = [...LIGHT_DEFAULT_OPTIONS]
+    }
     emitUpdate()
   },
 })

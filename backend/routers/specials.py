@@ -5,7 +5,6 @@
 """
 import email.utils
 import html
-import json
 import pathlib
 import re
 import uuid

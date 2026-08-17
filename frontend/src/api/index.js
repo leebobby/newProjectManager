@@ -128,6 +128,20 @@ export const specialApi = {
   reportDraft: (id) => http.get(`/specials/${id}/report-draft`),
   reportEml: (id, payload) => http.post(`/specials/${id}/report.eml`, payload, { responseType: 'blob' }),
   exportXlsx: (id) => http.get(`/specials/${id}/export.xlsx`, { responseType: 'blob' }),
+  // 套用版式模板（仅 admin）：只增不删，version 走乐观锁
+  applyTemplate: (id, template_id, version) =>
+    http.post(`/specials/${id}/apply-template`, { template_id, version }),
+}
+
+// 专项版式模板（主数据）：读开放给登录用户，增删改仅 admin
+export const specialTemplateApi = {
+  list: (params = {}) => http.get('/special-templates', { params }),
+  get: (id) => http.get(`/special-templates/${id}`),
+  create: (data) => http.post('/special-templates', data),
+  update: (id, data) => http.put(`/special-templates/${id}`, data),
+  remove: (id) => http.delete(`/special-templates/${id}`),
+  // 内置分段清单（key / 默认标题 / 可选列格式），模板编辑页列选项用
+  sections: () => http.get('/special-templates/sections'),
 }
 
 export const userApi = {

@@ -36,7 +36,7 @@ cd frontend && npm install && npm run dev
 | 档位 | 依赖 | 适用 |
 | --- | --- | --- |
 | **登录用户**（协作编辑域） | `Depends(get_current_user)` | 日常填报与记录：进展、事务、风险、问题条目、出差、调试版本、领域内容、关键特性…… |
-| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、一本通、干系人、阵型、`config.json`、数据对账 |
+| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、专项版式模板、一本通、干系人、阵型、`config.json`、数据对账 |
 | **字段级白名单** | 路由内按角色逐字段判 | 同一行里不同字段权限不同，见 [routers/customer_status.py](backend/routers/customer_status.py) |
 
 配套硬规则：
@@ -65,6 +65,35 @@ cd frontend && npm install && npm run dev
   前端心跳续期，TTL 180s 过期可被接管，admin 可强制接管；他人持锁时写操作返回 **423**。
   只有「整页多字段联动编辑」的场景才值得上编辑锁，普通表格用乐观锁就够。
 
+## 专项详情页：版式（分段）与模板
+
+专项详情页不是固定表单，是**若干「分段」按配置拼起来的**。改这块前先读
+[special_layout.py](backend/special_layout.py) 顶部说明。三份 JSON 决定一个专项长什么样：
+
+| 列（`special_contents`） | 内容 |
+| --- | --- |
+| `section_order_json` | 分段顺序 `["goal", "grid:<gid>", "risks", …]` |
+| `section_config_json` | 分段标题覆盖与启停 + 套过的模板名 |
+| `extra_grids_json` | 自定义分段本体（`kind` = grid / text / images） |
+
+- 8 个内置分段的 key 与默认顺序在 [enums.py](backend/enums.py) `SPECIAL_SECTIONS`，
+  须与前端 `SpecialDetail.vue` 的 `FIXED_KEYS` 一致。内置分段各有专属交互
+  （里程碑时间轴、事务/风险表、阵型网格），所以**只能改标题或整段停用，不能动态增删**；
+  要新表格就加自定义分段。
+- **顺序与标题的解析只有一份实现**：`special_layout.resolve_sections()`。详情页、Excel 导出、
+  周报三处都走它。前端 `reconcileOrder()` 的规则必须与 `resolve_order()` 保持一致——
+  两边分叉的表现是「页面顺序和周报顺序不一样」，很难被测出来。
+- 新增内置分段时：`SPECIAL_SECTIONS` 加一条 + 详情页 `v-if` 链加一段 +
+  `_section_text()` / `_section_html()` / `build_special_xlsx()` 各加一个分支。
+  **缺任何一处的后果是那段在页面上有、在周报/导出里没有。**
+- 空分段不占章节编号：导出与周报里「启用但没内容」的段整段跳过，避免一串「三、—」。
+- **模板（`special_templates`）只是录入期的便利，不是运行期依赖**：套用时把版式写进上面三列，
+  之后与模板脱钩。改模板、删模板都不影响已建专项——不要反过来做成「详情页读模板渲染」。
+- 套用语义是**只增不删**（`apply_template()`）：按 `tkey` 认领已挂上的分段，重复套用幂等；
+  模板外的分段与已填的行一律保留。版式是配置，填进去的内容不是。
+- 权限分档：改模板、套模板＝**仅 admin**（配置类主数据 / 改的是整页版式）；
+  某专项内部的分段改名、停用、排序＝**登录用户**（协作编辑，走 `PUT /content` 的乐观锁）。
+
 ## 枚举：单一来源
 
 所有状态 / 优先级词表收口在 [backend/enums.py](backend/enums.py)，**不要在 router 或前端
@@ -75,6 +104,10 @@ cd frontend && npm install && npm run dev
   并走 `from_attributes` 读库，老库里的历史脏值会让读取直接 422。
 - 前端下拉值必须与 `enums.py` 一致；关键特性的颜色映射在
   [utils/featureStatus.js](frontend/src/utils/featureStatus.js)，顺序须与后端六档一致。
+- 自由表格的列格式白名单 `GRID_COL_TYPES`（text / select / date / **light**）在两端各有一份：
+  后端 `enums.py`、前端 [utils/gridLight.js](frontend/src/utils/gridLight.js)。
+  **前端漏加一项的后果是该格式的列每次加载被静默重置成 text**（`normGrid()` 按白名单过滤）。
+  点灯的取值词表与红黄绿档位同理两端各一份，页面 / 周报 HTML / Excel 三处着色必须同款。
 
 ## 数据库结构变更
 

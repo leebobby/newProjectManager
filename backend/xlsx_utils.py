@@ -9,7 +9,6 @@
 - 单元格统一自动换行 + 按内容估算行高，长文本不再溢出/挤压。
 """
 import io
-import json
 import math
 import os
 import pathlib

@@ -116,6 +116,12 @@ const routes = [
     meta: { title: '专项详情', hidden: true },
   },
   {
+    path: '/special-templates',
+    name: 'SpecialTemplates',
+    component: () => import('../views/SpecialTemplates.vue'),
+    meta: { title: '专项模板', icon: 'Files', requireAdmin: true, group: '进度管理' },
+  },
+  {
     path: '/resource-groups',
     name: 'ResourceGroupManagement',
     component: () => import('../views/ResourceGroupManagement.vue'),
