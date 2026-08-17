@@ -32,10 +32,12 @@
 │   ├── tests/                   pytest 回归（conftest 起临时库，不碰开发库）
 │   ├── data/issue_snapshots/    问题单快照明细 JSON（库里只存聚合数字）
 │   ├── uploads/                 用户上传文件（已 gitignore，运行时创建）
-│   │   ├── handbook/<yyyymm>/           一本通文件
-│   │   ├── specials/<id>/               专项全景图 / 分段图片
-│   │   ├── key_features/<id>/           关键特性附件
-│   │   └── licenses/ customer_extra/    机台 license / 自定义信息块附件
+│   │   ├── handbook/<yyyymm>/    一本通文件
+│   │   ├── specials/<id>/        专项全景图 / 分段图片
+│   │   ├── key_features/<id>/    关键特性附件
+│   │   ├── licenses/             机台 license
+│   │   ├── customer_extra/       机台自定义信息块附件
+│   │   └── project_formation/    项目阵型图
 │   └── routers/                 全部挂 /api 前缀；写操作记 op_log，协作编辑域带乐观锁
 │       ├── auth.py                  /auth/login /logout /register(admin) /me /change-password
 │       ├── users.py                 /users 用户与人员档案（仅 admin）
@@ -194,11 +196,31 @@ npm run dev
 
 ### 客户面状态特性
 
-- **机台编号 / 战场** 创建后锁定（编辑时禁用），且新建时机台编号唯一校验。
-- **当前阶段** 下拉选择，候选项来自 [backend/config.json](backend/config.json) 中的 `current_stages`，运维改文件即可调整选项，前端无需发版。
-- **现场版本** 紧跟在「当前阶段」之后，记录机台目前部署的软件版本号；表格内双击可改。
-- **近期关注度** 1-5 星，表格内点击星星即时保存。
-- **近期重点事务 / 关键问题** 表格内 **双击单元格** 直接编辑，回车保存、ESC 取消。
+「机台总览」Tab 的列结构：序号 / 机台编号 / 客户 / 型号 / 当前阶段 / 现场版本 /
+近期关注度 / 当前进展 / 现场关键事务 / 软件类风险和问题 / 关键特性 / 硬件清零 / 操作。
+
+- **编辑 / 完成 开关**：默认只读，各字段纯展示、不显示行操作；点「编辑」才进入可改状态
+  （新增按钮还要求 admin）。**精简 / 详细** 另一组开关控制两个清单列的展开密度。
+- **机台编号 / 客户 / 型号** 创建后锁定：编辑弹窗禁用，`CustomerStatusUpdate` schema
+  也不接受，路由层再拒一次；新建时机台编号做唯一校验。
+- **仅 admin 可改**（`_ADMIN_ONLY_FIELDS`，越权返回 403）：
+  - **当前阶段** 下拉，候选项来自 [backend/config.json](backend/config.json) 的 `current_stages`，运维改文件即可调整，前端无需发版；
+  - **现场版本** 记录机台当前部署的软件版本号，下拉源为「大版本 + 迭代版本」合并列表，可 allow-create 手填；
+  - **近期关注度** 1-5 星，点击星星即时保存（0 = 未评估）。
+- **所有登录用户可改**（`_USER_FIELDS`）：**当前进展** 双击单元格行内编辑，回车保存、ESC 取消。
+- **现场关键事务 / 软件类风险和问题** 这两列已不再是 `customer_status.recent_focus` /
+  `key_issues` 里的 JSON 清单——自 Alembic `0004_customer_issues` 起提升为实体表
+  `customer_issues`，一行一条，靠 `kind` 区分（`task` = 现场关键事务，`issue` = 软件类问题，
+  `demand` = 客户需求），额外承载责任人 / 责任领域 / 重要程度 / 提出与计划解决时间 /
+  进展记录 / 状态。表格内由 `CustomerIssueCell` 渲染，跨战场汇总见同页「问题跟踪」Tab。
+  两个旧文本列仅作回滚保险留在模型与白名单里，现有前端不再写入。
+- **关键特性** 列按机台勾选的特性点灯，颜色取自 [featureStatus.js](frontend/src/utils/featureStatus.js)，
+  取值与顺序须与后端 `enums.KEY_FEATURE_STATUSES` 六档一致。
+- **硬件清零** 列显示 `已清零 / 需清零` 比值（数据源 `GET /api/hardware-issues/machine-summary`，
+  状态为「不涉及」的不计入分母，判定集合可用 config 的 `hw_machine_cell_done_options` /
+  `hw_machine_cell_na_options` 覆盖）；点数字跳到同页「硬件问题清零」Tab。
+- 表头居中，机台编号 / 客户 / 型号 / 当前阶段 四列支持排序。整行更新走乐观锁，
+  冲突返回 409。
 
 ### 配置文件示例 [backend/config.json](backend/config.json)
 
@@ -229,6 +251,70 @@ npm run dev
 - Docker Compose 一键部署 + Nginx 反向代理
 
 ## 更新日志
+
+> **两处已知空档，下面「补记」一节说明。** 日志缺 v0.14 – v0.24 的条目（v0.25.0 直接
+> 接到 v0.13.0），且 v0.26.0 之后陆续合入的功能未登记。git 历史在导入本仓库时被压缩成
+> 单个 `first upload` 提交，逐版本的日期与边界已无法还原，因此补记按**功能域**归并、
+> **不编造版本号与日期**；证据来自 `migrate.py` 里带版本号的迁移注释、
+> `alembic/versions/` 的 revision 说明与现有代码本身。后续发版请照常在此追加正式条目。
+
+### 补记 · 尚未编入版本号的变更
+
+**v0.14 – v0.24 空档**（依据 [migrate.py](backend/migrate.py) `_ADDITIONS` 中的版本注释重建）
+
+| 版本 | 变更 |
+| --- | --- |
+| v0.14 | 专项/攻关拓展：`kind` 区分专项/攻关、周报默认收件人（`email_to`/`email_cc`/`email_subject_tpl`）、事务与风险加 `status`、专项内容加自定义分段 `extra_grids_json` |
+| v0.15 | 迭代需求增加「责任人所属小组」`owner_group` |
+| v0.16 | 引入**客户主数据** `customers` + `customer_aliases`（code 业务主键 + 多别名），并扩展 `industry` / `intro` / `key_focus` |
+| v0.18 | `users` 表扩为人员档案：工号 `emp_no`、岗位 `job_title`、资源组归属 `group_id`、纯档案标记 `can_login`；引入两级**资源组** `resource_groups`（部门 → PL 组） |
+| v0.19 | 客户主数据 FK 化：`customer_status` / `stakeholder_battlefields` 挂 `customer_id`；阵型成员挂 `user_id` |
+| v0.20 | 业务表 owner / 版本 字符串 → FK（迭代、领域需求、产品需求、专项、事务、风险、一本通条目），反查逻辑收口到 [routers/_lookups.py](backend/routers/_lookups.py) |
+| v0.21 | 领域需求增加版本质量统计：合入链接 / 代码量 / 自验证用例数 / 转测后问题单数 |
+| v0.22 | 机台里程碑 `milestones_json`；机台自定义信息块（`customer_extra_fields` / `customer_extra_values`）；SOW（`sow_field_defs` / `sow_rows`）与机台 license |
+| v0.23 | 专项「一句话进展&求助」拆分为「整体进展」+「求助」两个字段 |
+| v0.24 | 专项/攻关详情页分段顺序可调（`section_order_json`，对齐 Alembic `0003`） |
+
+**v0.26.0 之后**（依据 `alembic/versions/0004`–`0007` 与现有代码）
+
+- **客户面问题条目实体化**（Alembic `0004` / `0005`）：`customer_status.recent_focus` /
+  `key_issues` 的 JSON 清单提升为实体表 `customer_issues`，一表三类（`issue` / `task` /
+  `demand`），补齐责任人 / 责任领域 / 重要程度 / 提出与计划解决时间 / 进展 / 分类专项；
+  重要程度旧词表「紧急」迁移为「重要」。新增「问题跟踪」汇总视图与 Excel 导入导出。
+- **关键特性重构**（Alembic `0006`）：从机台级单表改为全局特性目录 `key_features` +
+  `machine_key_features` 多对多引用；交付状态六档＝点灯、需求度量三数、FO/SE、附件与链接。
+- **硬件问题清零**（Alembic `0007`）：`hardware_issues` 一行一问题、尾部按机台展开清零状态
+  （`machine_cells_json`，机台增删不改表结构），自定义列值走 `extra_fields_json`，
+  列定义在 `config.hw_extra_columns`。
+- **问题单 API 采集**：新增按项目（`config.issue_api_projects`）的每日快照体系——
+  `issue_snapshots`（库存数字）+ `issue_snapshot_stats`（维度聚合，趋势数据源）+
+  `issue_collect_logs`（采集执行日志，成功失败都记），明细 JSON 落
+  `backend/data/issue_snapshots/`；采集脚本 [scripts/fetch_issues_api.py](backend/scripts/fetch_issues_api.py)，
+  由 [scheduler.py](backend/scheduler.py) 按 `config.issue_snapshot_time` 定时执行（改配置热更新，不用重启）。
+  本地 Excel 报表口径保留为「历史数据」Tab，并加 `issue_report_daily` 按天聚合缓存。
+- **站内通知**：`notifications` / `notification_reads` / `subscriptions` 三表 +
+  [notify.py](backend/notify.py) 分发器（定向 / 广播 / 按订阅），顶栏通知铃与广播跑马灯；
+  调度器每天扫描临期与逾期项（专项事务、专项风险、客户面问题）通知责任人。
+- **现场调试版本**：`debug_versions` + `debug_demands` + `debug_version_recipients`
+  （接收人可从战场沟通矩阵自动带出并逐人勾选），作为版本管理的一个 Tab。
+- **度量看板**：版本完成率 / 迭代质量 / 组级负载 / 调试版本四个视图；完成率按进展子项
+  加权（已完成 1.0、进行中 0.5、未开始与已延期 0、不涉及不计入分母）。
+- **领域管理增强**：事务与风险跟踪 `domain_risks`（跨领域、带责任领域列）、
+  不管理的 PL 组软删除 `domain_hidden`。
+- **客户面支撑情况**：`business_trips` 出差记录（人 / 战场 / 起止 / 事由），状态按日期
+  实时推导不入库，另有支撑看板。
+- **数据对账**：[routers/mapping.py](backend/routers/mapping.py) 把历史字符串字段批量绑定到
+  主数据（客户 battlefield → `customer_id`；阵型成员姓名/工号 → `users`），支持自动回填 /
+  手动指定 / 一键建档。
+- **专项编辑锁**：`special_edit_locks` 保证同一专项同一时刻仅一人处于编辑态
+  （TTL 180s 心跳续期，超时可接管，admin 可强制接管），写操作冲突返回 **423**；
+  另加专项 Excel 导出与周报 `.eml` 生成。
+- **并发与运维**：SQLite 连接挂 `journal_mode=WAL` / `busy_timeout=5000` /
+  `synchronous=NORMAL`，连接池放宽到 15+25；启动路径接入
+  [automigrate.py](backend/automigrate.py) 自动 `alembic upgrade head`；新增 pytest
+  回归（`backend/tests/`）与 Excel 导出统一样式模块 [xlsx_io.py](backend/xlsx_io.py)。
+
+---
 
 ### v0.26.0 — 2026-06-07
 
