@@ -208,6 +208,14 @@ def _snapshot_schedule() -> tuple[bool, int, int]:
 
 _scheduler: Optional[BackgroundScheduler] = None
 
+# APScheduler 默认 misfire_grace_time=1 秒：到点那一刻调度线程若没被及时唤醒
+# （机器休眠/睡眠、进程被别的活儿占满），这次触发就被判为 misfire 直接丢弃，
+# 只在日志里留一行 warning，页面上表现为"定时采集没跑，也没有失败记录"。
+# 放宽到 1 小时：晚一点跑也比整天不跑好。
+# 注意它救不了"到点时后端进程根本没起来"——内存 jobstore 每次启动重算下次触发
+# 时间，进程没运行过的那次触发调度器压根不知道，事后不会补跑。
+_MISFIRE_GRACE = 3600
+
 
 def apply_issue_snapshot_schedule() -> str:
     """按当前 config 重建每日采集任务。改完配置立即调用，无需重启后端。
@@ -215,7 +223,7 @@ def apply_issue_snapshot_schedule() -> str:
     返回一句人话描述，方便调用方回给前端。
     """
     if _scheduler is None:
-        return "调度器未启动"
+        return "调度器未启动，配置已存但定时采集不会执行"
     enabled, hour, minute = _snapshot_schedule()
     if not enabled:
         try:
@@ -225,9 +233,44 @@ def apply_issue_snapshot_schedule() -> str:
         logger.info("daily_issue_snapshot 已停用")
         return "每日自动采集已停用"
     _scheduler.add_job(daily_issue_snapshot, "cron", hour=hour, minute=minute,
-                       id="daily_issue_snapshot", replace_existing=True)
+                       id="daily_issue_snapshot", replace_existing=True,
+                       misfire_grace_time=_MISFIRE_GRACE)
     logger.info("daily_issue_snapshot 已排期 @%02d:%02d", hour, minute)
     return f"每日自动采集时间已设为 {hour:02d}:{minute:02d}"
+
+
+def snapshot_job_status() -> dict:
+    """定时采集的真实运行态，给页面/排障用。
+
+    "采集日志里只有手动记录"有好几种成因，光看配置分不出来，必须看调度器自己怎么说：
+      scheduler_running=False  → 调度器没起来（main.py 那段 try 吞了异常，看后端日志）
+      job_registered=False     → 任务没注册：config.issue_snapshot_enabled 被关了
+      next_run_at=None         → 任务在但没有下次触发时间（异常态）
+      三者都正常但日志里没有 auto 记录 → 到点时后端进程不在运行
+    """
+    enabled, hour, minute = _snapshot_schedule()
+    job = None
+    if _scheduler is not None:
+        try:
+            job = _scheduler.get_job("daily_issue_snapshot")
+        except Exception:
+            job = None
+    next_run = getattr(job, "next_run_time", None) if job else None
+    try:
+        from routers.config import _load as _load_config
+        cfg = _load_config()
+    except Exception:
+        cfg = {}
+    return {
+        "scheduler_running": bool(_scheduler is not None and _scheduler.running),
+        "enabled": enabled,
+        "time": f"{hour:02d}:{minute:02d}",
+        "job_registered": job is not None,
+        "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None,
+        # 这两项为空时 daily_issue_snapshot 会直接 return，连失败日志都不留
+        "script_path": (cfg.get("issue_api_script_path") or "").strip(),
+        "projects": cfg.get("issue_api_projects") or [],
+    }
 
 
 def start() -> None:
@@ -238,7 +281,7 @@ def start() -> None:
     sched = BackgroundScheduler(timezone="Asia/Shanghai")
     # 每天早上 8:00：临期/逾期扫描
     sched.add_job(daily_ddl_scan, "cron", hour=8, minute=0, id="daily_ddl_scan",
-                  replace_existing=True)
+                  replace_existing=True, misfire_grace_time=_MISFIRE_GRACE)
     sched.start()
     _scheduler = sched
     # 问题单快照采集：时刻来自 config，可在页面「配置」中改

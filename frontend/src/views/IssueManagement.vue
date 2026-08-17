@@ -277,6 +277,12 @@
                 </div>
                 <div class="cfg-hint">建议放在上班前（如 07:30）；采集耗时取决于问题单数量。</div>
               </el-form-item>
+              <!-- 光看上面两项分不出"排期了但没跑"和"压根没排期"，把调度器的实际状态摊开 -->
+              <el-form-item label="当前状态">
+                <el-alert v-if="schedStatus" :type="schedType" :closable="false" show-icon
+                  :title="schedTitle" :description="schedDesc" />
+                <el-button link type="primary" @click="loadSchedule">刷新状态</el-button>
+              </el-form-item>
               <el-form-item label="脚本超时">
                 <div class="cfg-row">
                   <el-input-number v-model="cfg.scriptTimeout" :min="30" :max="7200" :step="30" style="width: 160px" />
@@ -537,15 +543,51 @@ async function saveCfg(key) {
 }
 
 // ── 定时采集配置（管理员）────────────────────────────
+// 调度器的实际状态。后端把 config 存进文件和把任务挂进 APScheduler 是两件事，
+// 只报"已保存"会掩盖第二件没成功——那正是"日志里只有手动记录"的成因之一。
+const schedStatus = ref(null)
+async function loadSchedule() {
+  try {
+    const { data } = await issueApi.collectSchedule()
+    schedStatus.value = data
+  } catch { schedStatus.value = null }
+}
+const schedType = computed(() => {
+  const s = schedStatus.value
+  if (!s) return 'info'
+  if (!s.scheduler_running || (s.enabled && !s.job_registered)) return 'error'
+  if (!s.enabled || !s.script_path || !s.projects?.length) return 'warning'
+  return 'success'
+})
+const schedTitle = computed(() => {
+  const s = schedStatus.value
+  if (!s) return '状态未知'
+  if (!s.scheduler_running) return '调度器未运行 —— 定时采集不会执行'
+  if (!s.enabled) return '每日自动采集已停用（仅手动采集）'
+  if (!s.job_registered) return '已启用，但任务未注册到调度器'
+  return `已启用，下次自动采集：${s.next_run_at || '未知'}`
+})
+const schedDesc = computed(() => {
+  const s = schedStatus.value
+  if (!s) return ''
+  if (!s.scheduler_running) return '后端启动时 APScheduler 装载失败，请查后端日志里的「scheduler 启动失败」。'
+  if (!s.enabled) return '把上面的开关打开并保存即可恢复排期。'
+  if (!s.script_path) return '未配置 API 脚本路径，定时任务会直接跳过、连失败记录都不留。'
+  if (!s.projects?.length) return '未配置项目列表，定时任务会直接跳过。'
+  return '若到点后「采集日志」里仍没有 auto 记录，说明那一刻后端进程不在运行（内存排期不会事后补跑）。'
+})
+
 async function saveSchedule() {
   try {
-    await configApi.save({
+    const { data } = await configApi.save({
       issue_snapshot_enabled: cfg.value.snapshotEnabled,
       issue_snapshot_time: cfg.value.snapshotTime,
     })
-    ElMessage.success(cfg.value.snapshotEnabled
+    // 以后端的排期结论为准，而不是照抄我们提交的值
+    ElMessage.success(data?._schedule_message || (cfg.value.snapshotEnabled
       ? `已保存：每天 ${cfg.value.snapshotTime} 自动采集`
-      : '已保存：已停用每日自动采集')
+      : '已保存：已停用每日自动采集'))
+    loadSchedule()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
   }
@@ -958,6 +1000,7 @@ onMounted(async () => {
   if (cfg.value.apiProjects.length) topTab.value = cfg.value.apiProjects[0]
   await loadDates()   // 先拿到日期列表，selectedDate 会自动设为最新
   await loadToday()
+  if (auth.isAdmin.value) loadSchedule()   // 只有管理员能看到「配置」tab
   window.addEventListener('resize', onResize)
 })
 

@@ -4,6 +4,11 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, ConfigDict, field_validator
 
 import enums
+# 审计时间戳（created_at / updated_at / uploaded_at）用 LocalDT：库里存 UTC，
+# 出接口转成带 +08:00 的 ISO。用户手填的日期列（planned_date / range_* /
+# release_date / planned_close_date …）保持 datetime——那些本来就是本地时间，
+# 转换会凭空加 8 小时。详见 timeutil.py 顶部说明。
+from timeutil import LocalDT
 
 
 # Pydantic v2 把 model_ 视为受保护命名空间，CustomerStatus 里有个 `model` 列，
@@ -54,8 +59,8 @@ class CustomerOut(CustomerBase):
     id: int
     version: int
     aliases: List[CustomerAliasOut] = []
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDT
+    updated_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -104,7 +109,7 @@ class CustomerStatusOut(CustomerStatusBase):
     id: int
     customer_id: Optional[int] = None
     version: int
-    updated_at: datetime
+    updated_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
@@ -185,7 +190,7 @@ class CustomerIssueOut(CustomerIssueBase):
     machine_status_id: int
     customer_id: Optional[int] = None
     version: int
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[LocalDT] = None
     # 汇总页展示用的冗余字段，由路由层填充（非 ORM 列）
     machine_id: Optional[str] = ""
     battlefield: Optional[str] = ""
@@ -245,7 +250,7 @@ class HardwareIssueUpdate(BaseModel):
 class HardwareIssueOut(HardwareIssueBase):
     id: int
     version: int
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[LocalDT] = None
     owner_display: Optional[str] = ""
     group_name: Optional[str] = ""
 
@@ -295,7 +300,7 @@ class KeyFeatureUpdate(BaseModel):
 class KeyFeatureOut(KeyFeatureBase):
     id: int
     version: int
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[LocalDT] = None
     attachments: List[dict] = []          # 由路由解析 attachments_json
     machine_ids: List[int] = []           # 引用该特性的机台（路由批量填充）
 
@@ -370,8 +375,8 @@ class SowRowOut(SowRowBase):
     id: int
     machine_status_id: int
     version: int
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDT
+    updated_at: LocalDT
 
 
 class MachineLicenseOut(BaseModel):
@@ -381,7 +386,7 @@ class MachineLicenseOut(BaseModel):
     file_size: int = 0
     remark: Optional[str] = ""
     uploaded_by: Optional[str] = ""
-    uploaded_at: datetime
+    uploaded_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -534,7 +539,7 @@ class AnnualIterationUpdate(BaseModel):
 
 class AnnualIterationOut(AnnualIterationBase):
     id: int
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[LocalDT] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -970,7 +975,7 @@ class UserOut(BaseModel):
     is_active: bool
     can_login: bool = True
     auth_provider: str
-    created_at: datetime
+    created_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -988,7 +993,7 @@ class NotificationOut(BaseModel):
     is_broadcast: bool = False
     actor_id: Optional[int] = None
     actor_name: Optional[str] = None
-    created_at: datetime
+    created_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -1011,7 +1016,7 @@ class SubscriptionOut(BaseModel):
     source_type: str
     source_id: Optional[int]
     events: str = "*"
-    created_at: datetime
+    created_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -1053,8 +1058,8 @@ class ResourceGroupOut(ResourceGroupBase):
     parent_name: Optional[str] = None
     leader_name: Optional[str] = None
     member_count: Optional[int] = 0
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDT
+    updated_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -1084,7 +1089,7 @@ class TokenResponse(BaseModel):
 # ===== OperationLog =====
 class OperationLogOut(BaseModel):
     id: int
-    created_at: datetime
+    created_at: LocalDT
     user_id: Optional[int] = None
     username: str
     action: str
@@ -1146,8 +1151,8 @@ class HandbookItemOut(HandbookItemBase):
     file_path: str = ""
     file_name: str = ""
     file_size: int = 0
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDT
+    updated_at: LocalDT
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -1216,7 +1221,7 @@ class SpecialContentOut(BaseModel):
     extra_grids_json: str = "[]"
     section_order_json: str = "[]"
     version: int = 0
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[LocalDT] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -1264,7 +1269,9 @@ class SpecialLockOut(BaseModel):
     mine: bool = False
     by: Optional[str] = None
     by_user_id: Optional[int] = None
-    since: Optional[datetime] = None
+    # acquired_at 也是服务端盖的（utcnow），同样走 LocalDT。前端 fmtSince() 里
+    # 那段"无时区后缀就补 Z"的兜底因此不再被触发，留着不影响。
+    since: Optional[LocalDT] = None
     ttl: int = 180
 
 
@@ -1303,7 +1310,7 @@ class FormationMemberOut(FormationMemberBase):
 class FormationImageOut(BaseModel):
     image_path: str = ""
     image_name: str = ""
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[LocalDT] = None
 
     model_config = ConfigDict(from_attributes=True)
 

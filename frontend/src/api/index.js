@@ -194,6 +194,8 @@ export const issueApi = {
   snapshotCollect: (project)            => http.post('/issues/snapshot-collect', null, { params: project ? { project } : {} }),
   collectStatus:   ()                   => http.get('/issues/collect-status'),
   collectLogs:     (project, limit = 50) => http.get('/issues/collect-logs', { params: project ? { project, limit } : { limit } }),
+  // 定时采集运行态：排查"采集日志里只有手动记录"用，见 scheduler.snapshot_job_status()
+  collectSchedule: ()                   => http.get('/issues/collect-schedule'),
   snapshotExport:  (project, date)      => http.get('/issues/snapshot-export', { responseType: 'blob', params: date ? { project, date } : { project } }),
 }
 

@@ -10,6 +10,7 @@ import models
 import schemas
 from auth import require_admin
 from database import get_db
+from timeutil import local_to_utc
 
 router = APIRouter(
     prefix="/api/op-logs",
@@ -37,10 +38,12 @@ def list_logs(
         q = q.filter(models.OperationLog.action == action)
     if target:
         q = q.filter(models.OperationLog.target == target)
+    # created_at 列存的是 UTC，而前端时间选择器给的是北京时间：不换算的话
+    # 「筛今天」会筛出昨天 16:00 起的记录，整体错 8 小时
     if date_from:
-        q = q.filter(models.OperationLog.created_at >= date_from)
+        q = q.filter(models.OperationLog.created_at >= local_to_utc(date_from))
     if date_to:
-        q = q.filter(models.OperationLog.created_at <= date_to)
+        q = q.filter(models.OperationLog.created_at <= local_to_utc(date_to))
     if keyword:
         like = f"%{keyword}%"
         q = q.filter(or_(

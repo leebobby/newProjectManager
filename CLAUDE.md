@@ -100,6 +100,23 @@ cd frontend && npm install && npm run dev
   + `Subscription` 订阅表投递。
 - 两者目的不同，**不要相互替代或合并**；两者的异常都被吞掉，绝不阻塞主业务。
 
+## 时间：库里存 UTC，出接口转北京时间
+
+DateTime 列有两类，**口径不同，别混**：
+
+| 类别 | 例子 | 存的是 | 出接口 |
+| --- | --- | --- | --- |
+| 服务端盖章 | `created_at` / `updated_at` / `uploaded_at` / `started_at` / `acquired_at` | 朴素 UTC（`datetime.utcnow`） | 转 `+08:00` |
+| 用户填写 | `planned_date` / `range_start` / `release_date` / `planned_close_date` / `start_date` | 前端传的本地时间，原样存 | **不转** |
+
+- 转换收口在 [timeutil.py](backend/timeutil.py)：Pydantic 出口字段标 `LocalDT`，
+  手写 dict 的接口用 `fmt_local()` / `iso_local()`，**查询条件**用 `local_to_utc()`。
+- 新增服务端时间戳字段：`Out` schema 里写 `LocalDT`，不要写 `datetime`。
+  写成 `datetime` 会输出**不带时区后缀**的串，前端 `new Date()` 按本地时间解析，页面早 8 小时。
+- 反过来，把用户填的日期标成 `LocalDT` 会凭空加 8 小时。判断依据是**这个值是谁写进去的**。
+- 用 `date`/`datetime.now()` 生成的**日期字符串**（`snapshot_date`、导出文件名、报告日期）
+  本来就是本地时间，不要动。
+
 ## 主数据与 FK 反查
 
 `customers` / `users` / `resource_groups` / `iteration_versions` 是主数据，业务表逐步从
