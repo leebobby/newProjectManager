@@ -19,8 +19,10 @@ from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
+import enums
 import models
 import schemas
+import special_layout
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
@@ -204,6 +206,8 @@ def create_special(
     current_admin: models.User = Depends(require_admin),
 ):
     data = payload.model_dump()
+    # template_id 不是 Special 的列，取出来单独用（建完后套版式）
+    template_id = data.pop("template_id", None)
     if data.get("kind") not in ("special", "assault"):
         data["kind"] = "special"
     fill_user_fk(db, data, "owner", "owner_user_id")
@@ -212,10 +216,21 @@ def create_special(
     db.commit()
     db.refresh(item)
     # 创建对应的空 content
-    db.add(models.SpecialContent(special_id=item.id))
+    content = models.SpecialContent(special_id=item.id)
+    db.add(content)
     db.commit()
+    tpl_note = ""
+    if template_id:
+        tpl = db.query(models.SpecialTemplate).filter(
+            models.SpecialTemplate.id == template_id).first()
+        if not tpl:
+            raise HTTPException(400, "指定的模板不存在")
+        special_layout.apply_template(content, tpl)
+        content.version += 1
+        db.commit()
+        tpl_note = f" template={tpl.name}"
     log_op(db, action="新增", target=_kind_label(item.kind), target_id=item.id,
-           detail=f"name={item.name}",
+           detail=f"name={item.name}{tpl_note}",
            user=current_admin, request=request)
     return item
 
@@ -305,6 +320,43 @@ def update_content(
            user=current_user, request=request)
     if data:
         _notify_special_change(db, special, summary=f"内容更新：{'、'.join(data.keys())}", actor=current_user)
+    return content
+
+
+@router.post("/{sid}/apply-template", response_model=schemas.SpecialContentOut)
+def apply_template(
+    sid: int,
+    payload: schemas.SpecialApplyTemplate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+):
+    """给已存在的专项套一份版式模板（仅 admin）。
+
+    权限落「仅 admin」：改的是整页版式，对所有看这个专项的人生效，
+    与「分段改名/停用/排序」（登录用户可做，走 PUT /content）不是一档。
+    套用是**只增不删**的——已填的分段与数据一律保留，详见 special_layout.apply_template。
+    """
+    special = _get_or_404(db, sid)
+    _require_not_locked_by_other(db, sid, current_admin)
+    content = _ensure_content(db, special)
+    if content.version != payload.version:
+        raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    tpl = db.query(models.SpecialTemplate).filter(
+        models.SpecialTemplate.id == payload.template_id).first()
+    if not tpl:
+        raise HTTPException(404, "模板不存在")
+
+    stat = special_layout.apply_template(content, tpl)
+    content.version += 1
+    db.commit()
+    db.refresh(content)
+    log_op(db, action="修改", target=f"{_kind_label(special.kind)}版式", target_id=sid,
+           detail=f"name={special.name} template={tpl.name} "
+                  f"added={stat['added']} reused={stat['reused']}",
+           user=current_admin, request=request)
+    _notify_special_change(db, special, summary=f"版式已套用模板「{tpl.name}」",
+                           actor=current_admin)
     return content
 
 
@@ -759,76 +811,162 @@ _MS_STATUS_LABEL = {
 }
 
 
+# ─── 周报 / 导出：一律按「版式」走 ─────────────────────────────────
+# 章节标题、顺序、有没有这一段，全部来自 special_layout.resolve_sections()。
+# 以前这里写死「一、目标 / 二、整体进展 / …」，自定义分段完全不进周报；
+# 分段可改名可停用之后，写死的编号和标题必然和页面对不上。
+
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _cn_index(n: int) -> str:
+    """1→一、10→十、11→十一、21→二十一。分段数不会多到需要更复杂的规则。"""
+    if n <= 0:
+        return str(n)
+    if n < 10:
+        return _CN_DIGITS[n]
+    if n < 20:
+        return "十" + (_CN_DIGITS[n - 10] if n > 10 else "")
+    tens, ones = divmod(n, 10)
+    return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
+
+
+# 内置文本类分段 -> content 上的列
+_TEXT_FIELD = {"goal": "goal", "progress": "progress_summary", "help": "help_request"}
+
+
+def _cell_text(c) -> str:
+    """RichGrid 单元格（{text,...} 或裸字符串）→ 纯文本。"""
+    if isinstance(c, dict):
+        return _strip_html(str(c.get("text") or ""))
+    return _strip_html(str(c or ""))
+
+
+def _grid_matrix(block: dict):
+    """自定义表格分段 → (表头名, 文本化数据行)。
+
+    colspan 展开成同名的多列——邮件/纯文本里没有合并单元格的表达力，
+    与其丢掉表头层级不如让跨列表头在每列重复出现。
+    模板预留的整行空白丢掉：空行进汇报只是噪音。
+    """
+    headers: List[str] = []
+    for h in (block.get("headers") or []):
+        if isinstance(h, dict):
+            headers.extend([str(h.get("text") or "")] * max(1, int(h.get("colspan") or 1)))
+        else:
+            headers.append(str(h or ""))
+    rows = [[_cell_text(c) for c in (r or [])] for r in (block.get("rows") or [])]
+    return headers, [r for r in rows if any(x.strip() for x in r)]
+
+
+def _milestones_of(content) -> list:
+    return [m for m in special_layout.loads(getattr(content, "milestones_json", None), [])
+            if isinstance(m, dict)]
+
+
+def _formation_of(content):
+    obj = special_layout.loads(getattr(content, "formation_json", None), {})
+    headers = [str(h) for h in (obj.get("headers") or [])]
+    rows = [[_cell_text(c) for c in (r or [])] for r in (obj.get("rows") or [])]
+    return headers, [r for r in rows if any(x.strip() for x in r)]
+
+
+def _section_text(special: models.Special, sec) -> List[str]:
+    """一个分段在纯文本周报里的正文行。返回空 = 该段无内容，整段跳过。"""
+    content = special.content
+    if sec.is_custom:
+        if sec.kind == "text":
+            body = _strip_html(sec.block.get("html") or "")
+            return [body] if body.strip() else []
+        if sec.kind == "images":
+            n = len([i for i in (sec.block.get("items") or []) if isinstance(i, dict)])
+            return [f"  （{n} 张图片，见 HTML 版本）"] if n else []
+        headers, rows = _grid_matrix(sec.block)
+        if not rows:
+            return []
+        out = ["  " + " | ".join(headers)] if any(headers) else []
+        return out + ["  " + " | ".join(r) for r in rows]
+
+    if sec.key in _TEXT_FIELD:
+        val = getattr(content, _TEXT_FIELD[sec.key], "") if content else ""
+        body = _strip_html(val or "")
+        return [body] if body.strip() else []
+
+    if sec.key == "plan":
+        out = []
+        for m in _milestones_of(content):
+            st = _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))
+            out.append(f"  · {m.get('name', '')}  {m.get('date', '')}  [{st}]")
+        return out
+
+    if sec.key == "panorama":
+        name = getattr(content, "panorama_image_name", "") if content else ""
+        return [f"  （见 HTML 版本：{name}）"] if name else []
+
+    if sec.key == "risks":
+        out = []
+        for i, r in enumerate(special.risks or [], 1):
+            out.append(f"  {i}. {_strip_html(r.content)}")
+            if r.progress:
+                out.append(f"     当前进展：{_strip_html(r.progress)}")
+            meta = []
+            if r.owner:
+                meta.append(f"责任人：{r.owner}")
+            if r.planned_close_date:
+                meta.append(f"计划闭环：{r.planned_close_date}")
+            if meta:
+                out.append("     " + " / ".join(meta))
+        return out
+
+    if sec.key == "tasks":
+        open_tasks = [t for t in (special.tasks or []) if (t.status or "open") == "open"]
+        closed = [t for t in (special.tasks or []) if (t.status or "open") == "closed"]
+        out = []
+        if open_tasks:
+            out.append(f"  ◇ 进行中（{len(open_tasks)} 项）")
+            for i, t in enumerate(open_tasks, 1):
+                out.append(f"    {i}. {_strip_html(t.content)}")
+                if t.progress:
+                    out.append(f"       进展：{_strip_html(t.progress)}")
+                meta = []
+                if t.owner:
+                    meta.append(f"责任人：{t.owner}")
+                if t.planned_close_date:
+                    meta.append(f"计划闭环：{t.planned_close_date}")
+                if meta:
+                    out.append("       " + " / ".join(meta))
+        if closed:
+            out.append(f"  ◇ 本期已闭环（{len(closed)} 项）")
+            for i, t in enumerate(closed, 1):
+                out.append(f"    {i}. {_strip_html(t.content)}")
+        return out
+
+    if sec.key == "formation":
+        headers, rows = _formation_of(content)
+        if not rows:
+            return []
+        out = ["  " + " | ".join(headers)] if any(headers) else []
+        return out + ["  " + " | ".join(r) for r in rows]
+
+    return []
+
+
 def _render_report_body(special: models.Special) -> str:
     label = _kind_label(special.kind)
-    content = special.content
-    parts: List[str] = []
-
-    parts.append(f"[{label}名称] {special.name}")
-    parts.append(f"[责任人] {special.owner or '-'}")
-    parts.append(f"[报告日期] {datetime.now().strftime('%Y-%m-%d')}")
-    parts.append("")
-
-    if content and content.goal:
-        parts.append(f"一、{label}目标")
-        parts.append(_strip_html(content.goal))
-        parts.append("")
-
-    if content and content.progress_summary:
-        parts.append("二、整体进展")
-        parts.append(_strip_html(content.progress_summary))
-        parts.append("")
-
-    if content and content.help_request:
-        parts.append("三、求助")
-        parts.append(_strip_html(content.help_request))
-        parts.append("")
-
-    # 里程碑
-    milestones = []
-    if content and content.milestones_json:
-        try:
-            milestones = json.loads(content.milestones_json) or []
-        except (ValueError, TypeError):
-            milestones = []
-    if milestones:
-        parts.append(f"四、{label}计划（里程碑）")
-        for m in milestones:
-            st = _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))
-            parts.append(f"  · {m.get('name','')}  {m.get('date','')}  [{st}]")
-        parts.append("")
-
-    # 风险（调整到事务之前）
-    risks = special.risks or []
-    if risks:
-        parts.append("五、风险和问题")
-        for i, r in enumerate(risks, 1):
-            parts.append(f"  {i}. {_strip_html(r.content)}")
-            if r.progress: parts.append(f"     当前进展：{_strip_html(r.progress)}")
-            meta = []
-            if r.owner: meta.append(f"责任人：{r.owner}")
-            if r.planned_close_date: meta.append(f"计划闭环：{r.planned_close_date}")
-            if meta: parts.append(f"     " + " / ".join(meta))
-        parts.append("")
-
-    # 事务
-    open_tasks = [t for t in (special.tasks or []) if (t.status or "open") == "open"]
-    closed_tasks = [t for t in (special.tasks or []) if (t.status or "open") == "closed"]
-    if open_tasks or closed_tasks:
-        parts.append(f"六、{label}事务")
-        if open_tasks:
-            parts.append(f"  ◇ 进行中（{len(open_tasks)} 项）")
-            for i, t in enumerate(open_tasks, 1):
-                parts.append(f"    {i}. {_strip_html(t.content)}")
-                if t.progress: parts.append(f"       进展：{_strip_html(t.progress)}")
-                meta = []
-                if t.owner: meta.append(f"责任人：{t.owner}")
-                if t.planned_close_date: meta.append(f"计划闭环：{t.planned_close_date}")
-                if meta: parts.append(f"       " + " / ".join(meta))
-        if closed_tasks:
-            parts.append(f"  ◇ 本期已闭环（{len(closed_tasks)} 项）")
-            for i, t in enumerate(closed_tasks, 1):
-                parts.append(f"    {i}. {_strip_html(t.content)}")
+    parts: List[str] = [
+        f"[{label}名称] {special.name}",
+        f"[责任人] {special.owner or '-'}",
+        f"[报告日期] {datetime.now().strftime('%Y-%m-%d')}",
+        "",
+    ]
+    n = 0
+    for sec in special_layout.resolve_sections(special):
+        lines = _section_text(special, sec)
+        if not lines:
+            continue  # 空段不占编号，避免周报里一串「三、（无）」
+        n += 1
+        parts.append(f"{_cn_index(n)}、{sec.title}")
+        parts.extend(lines)
         parts.append("")
 
     return "\n".join(parts).rstrip() + "\n"
@@ -896,103 +1034,177 @@ def _build_table_rich(headers: list, rows_html: list) -> str:
     return f'<table style="{_HTML_TABLE_CSS}">{head}{body}</table>'
 
 
-def _render_report_html(special: models.Special) -> str:
-    label = _kind_label(special.kind)
+def _h3(title: str, *, danger: bool = False) -> str:
+    color = "#F56C6C" if danger else "#4073BA"
+    return (f'<h3 style="color:{color};border-left:4px solid {color};'
+            f'padding-left:8px;margin:18px 0 8px;">{_e(title)}</h3>')
+
+
+# 点灯单元格底色：与前端 RichGrid 的 light 列、关键特性的着色思路一致
+_LIGHT_CSS = {
+    "red": "background:#FEF0F0;color:#F56C6C;font-weight:600;text-align:center;",
+    "yellow": "background:#FDF6EC;color:#E6A23C;font-weight:600;text-align:center;",
+    "green": "background:#F0F9EB;color:#67C23A;font-weight:600;text-align:center;",
+}
+
+
+def _grid_html(block: dict) -> str:
+    """自定义表格分段 → HTML 表格，点灯列按取值着色。"""
+    headers, rows = _grid_matrix(block)
+    if not rows:
+        return ""
+    col_types = block.get("colTypes") or []
+    head = ("<tr>" + "".join(f'<th style="{_HTML_TH_CSS}">{_e(h)}</th>' for h in headers)
+            + "</tr>") if any(headers) else ""
+    body = []
+    for i, r in enumerate(rows):
+        tds = []
+        for j, cell in enumerate(r):
+            css = _HTML_TD_ZEBRA if i % 2 else _HTML_TD_CSS
+            if j < len(col_types) and col_types[j] == "light":
+                light = enums.GRID_LIGHT_COLORS.get(cell.strip())
+                if light:
+                    css += _LIGHT_CSS[light]
+            tds.append(f'<td style="{css}">{_e(cell)}</td>')
+        body.append("<tr>" + "".join(tds) + "</tr>")
+    return f'<table style="{_HTML_TABLE_CSS}">{head}{"".join(body)}</table>'
+
+
+def _section_html(special: models.Special, sec, images: list) -> str:
+    """一个分段的 HTML 正文；返回空串 = 该段无内容。
+
+    images 是出参：需要内嵌的图片附加到这里，由 _build_eml 以 CID 关联，
+    否则邮件里的 <img> 指向服务器内网地址，收件人一律看不到。
+    """
     content = special.content
+    if sec.is_custom:
+        if sec.kind == "text":
+            inner = _rich_to_html(sec.block.get("html") or "")
+            return f"<div>{inner}</div>" if _strip_html(sec.block.get("html") or "").strip() else ""
+        if sec.kind == "images":
+            parts = []
+            for im in (sec.block.get("items") or []):
+                if not isinstance(im, dict) or not im.get("file"):
+                    continue
+                cid = _attach_image(special.id, im["file"], images)
+                if cid:
+                    width = im.get("width") or 50
+                    parts.append(
+                        f'<div style="display:inline-block;width:{width}%;'
+                        f'vertical-align:top;padding:2px;">'
+                        f'<img src="cid:{cid}" style="width:100%;border:1px solid #dcdfe6;" />'
+                        f'</div>')
+            return "".join(parts)
+        return _grid_html(sec.block)
+
+    if sec.key in _TEXT_FIELD:
+        val = getattr(content, _TEXT_FIELD[sec.key], "") if content else ""
+        if not _strip_html(val or "").strip():
+            return ""
+        return f"<div>{_rich_to_html(val)}</div>"
+
+    if sec.key == "plan":
+        ms = _milestones_of(content)
+        if not ms:
+            return ""
+        rows = [[m.get("name", ""), m.get("date", ""),
+                 _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))]
+                for m in ms]
+        return _build_table(["里程碑", "日期", "状态"], rows)
+
+    if sec.key == "panorama":
+        path = getattr(content, "panorama_image_path", "") if content else ""
+        if not path:
+            return ""
+        cid = _attach_image(special.id, pathlib.Path(path).name, images)
+        if not cid:
+            return ""
+        return (f'<div><img src="cid:{cid}" '
+                f'style="max-width:100%;border:1px solid #dcdfe6;" /></div>')
+
+    if sec.key == "risks":
+        risks = special.risks or []
+        if not risks:
+            return ""
+        rows = [[_rich_to_html(r.content), _rich_to_html(r.progress),
+                 _e(r.owner or ""), _e(r.planned_close_date or ""),
+                 "Open" if (r.status or "open") == "open" else "Closed"]
+                for r in risks]
+        return _build_table_rich(
+            ["问题内容", "当前进展", "责任人", "计划闭环时间", "状态"], rows)
+
+    if sec.key == "tasks":
+        open_tasks = [t for t in (special.tasks or []) if (t.status or "open") == "open"]
+        closed = [t for t in (special.tasks or []) if (t.status or "open") == "closed"]
+        if not (open_tasks or closed):
+            return ""
+        hdr = ["事务内容", "当前进展", "责任人", "计划闭环时间", "状态"]
+        out = []
+        for group, tone, note in ((open_tasks, "#E6A23C", "进行中"),
+                                  (closed, "#67C23A", "本期已闭环")):
+            if not group:
+                continue
+            rows = [[_rich_to_html(t.content), _rich_to_html(t.progress),
+                     _e(t.owner or ""), _e(t.planned_close_date or ""),
+                     "Open" if note == "进行中" else "Closed"] for t in group]
+            out.append(f'<div style="font-weight:600;margin:6px 0;color:{tone};">'
+                       f'◇ {note}（{len(group)} 项）</div>'
+                       + _build_table_rich(hdr, rows))
+        return "".join(out)
+
+    if sec.key == "formation":
+        headers, rows = _formation_of(content)
+        if not rows:
+            return ""
+        return _build_table(headers or [""] * len(rows[0]), rows)
+
+    return ""
+
+
+def _attach_image(sid: int, stored: str, images: list):
+    """把 uploads 里的图片读进内嵌附件清单，返回 cid；读不到返回 None。
+
+    图片不进邮件正文只会让收件人看到裂图，属于「宁可少一段也别出错」的场景，
+    所以任何异常都吞掉、当作这张图不存在。
+    """
+    if not _BLOCK_IMG_NAME_RE.match(stored or ""):
+        return None
+    path = (UPLOAD_ROOT / str(sid) / stored).resolve()
+    try:
+        if not path.exists() or UPLOAD_ROOT.resolve() not in path.parents:
+            return None
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) > 8 * 1024 * 1024:
+        return None  # 单张过大就不塞进邮件，免得草稿打不开
+    subtype = path.suffix.lower().lstrip(".") or "png"
+    subtype = {"jpg": "jpeg", "svg": "svg+xml"}.get(subtype, subtype)
+    cid = f"img{len(images)}@special"
+    images.append({"cid": cid, "data": data, "subtype": subtype})
+    return cid
+
+
+def _render_report_html(special: models.Special):
+    """返回 (html, inline_images)：图片以 cid: 引用，附件由调用方挂到邮件上。"""
+    label = _kind_label(special.kind)
     today = datetime.now().strftime("%Y-%m-%d")
 
+    images: List[dict] = []
     sections: List[str] = []
-
-    if content and content.goal:
-        sections.append(
-            f'<h3 style="color:#4073BA;border-left:4px solid #4073BA;padding-left:8px;margin:18px 0 8px;">'
-            f'一、{label}目标</h3>'
-            f'<div>{_rich_to_html(content.goal)}</div>'
-        )
-
-    if content and content.progress_summary:
-        sections.append(
-            f'<h3 style="color:#4073BA;border-left:4px solid #4073BA;padding-left:8px;margin:18px 0 8px;">'
-            f'二、整体进展</h3>'
-            f'<div>{_rich_to_html(content.progress_summary)}</div>'
-        )
-
-    if content and content.help_request:
-        sections.append(
-            f'<h3 style="color:#4073BA;border-left:4px solid #4073BA;padding-left:8px;margin:18px 0 8px;">'
-            f'三、求助</h3>'
-            f'<div>{_rich_to_html(content.help_request)}</div>'
-        )
-
-    # 里程碑
-    milestones = []
-    if content and content.milestones_json:
-        try:
-            milestones = json.loads(content.milestones_json) or []
-        except (ValueError, TypeError):
-            milestones = []
-    if milestones:
-        rows = [
-            [m.get("name", ""), m.get("date", ""),
-             _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))]
-            for m in milestones
-        ]
-        sections.append(
-            f'<h3 style="color:#4073BA;border-left:4px solid #4073BA;padding-left:8px;margin:18px 0 8px;">'
-            f'四、{label}计划（里程碑）</h3>'
-            + _build_table(["里程碑", "日期", "状态"], rows)
-        )
-
-    # 风险（调整到事务之前）
-    risks = special.risks or []
-    if risks:
-        rows = [
-            [_rich_to_html(r.content), _rich_to_html(r.progress),
-             _e(r.owner or ""), _e(r.planned_close_date or ""),
-             "Open" if (r.status or "open") == "open" else "Closed"]
-            for r in risks
-        ]
-        sections.append(
-            f'<h3 style="color:#F56C6C;border-left:4px solid #F56C6C;padding-left:8px;margin:18px 0 8px;">'
-            f'五、风险和问题</h3>'
-            + _build_table_rich(["问题内容", "当前进展", "责任人", "计划闭环时间", "状态"], rows)
-        )
-
-    # 事务
-    open_tasks = [t for t in (special.tasks or []) if (t.status or "open") == "open"]
-    closed_tasks = [t for t in (special.tasks or []) if (t.status or "open") == "closed"]
-    if open_tasks or closed_tasks:
-        block = [
-            f'<h3 style="color:#4073BA;border-left:4px solid #4073BA;padding-left:8px;margin:18px 0 8px;">'
-            f'六、{label}事务</h3>'
-        ]
-        if open_tasks:
-            rows = [
-                [_rich_to_html(t.content), _rich_to_html(t.progress),
-                 _e(t.owner or ""), _e(t.planned_close_date or ""), "Open"]
-                for t in open_tasks
-            ]
-            block.append(
-                f'<div style="font-weight:600;margin:6px 0;color:#E6A23C;">'
-                f'◇ 进行中（{len(open_tasks)} 项）</div>'
-                + _build_table_rich(["事务内容", "当前进展", "责任人", "计划闭环时间", "状态"], rows)
-            )
-        if closed_tasks:
-            rows = [
-                [_rich_to_html(t.content), _rich_to_html(t.progress),
-                 _e(t.owner or ""), _e(t.planned_close_date or ""), "Closed"]
-                for t in closed_tasks
-            ]
-            block.append(
-                f'<div style="font-weight:600;margin:6px 0;color:#67C23A;">'
-                f'◇ 本期已闭环（{len(closed_tasks)} 项）</div>'
-                + _build_table_rich(["事务内容", "当前进展", "责任人", "计划闭环时间", "状态"], rows)
-            )
-        sections.append("".join(block))
+    n = 0
+    for sec in special_layout.resolve_sections(special):
+        inner = _section_html(special, sec, images)
+        if not inner:
+            continue  # 空段不占编号
+        n += 1
+        sections.append(_h3(f"{_cn_index(n)}、{sec.title}",
+                            danger=(sec.key == "risks"))
+                        + inner)
 
     body_inner = "".join(sections) or '<div style="color:#909399;">（该报告无内容）</div>'
 
-    return (
+    html_doc = (
         '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
         f'<body style="{_HTML_BASE_CSS} margin:0;padding:0;background:#f5f7fa;">'
         '<div style="max-width:880px;margin:0 auto;background:#fff;'
@@ -1009,10 +1221,11 @@ def _render_report_html(special: models.Special) -> str:
         f'<div style="padding:8px 24px 24px 24px;">{body_inner}</div>'
         '</div></body></html>'
     )
+    return html_doc, images
 
 
 def _build_eml(special: models.Special, subject: str, to: str, cc: str,
-               text_body: str, html_body: str) -> bytes:
+               text_body: str, html_body: str, images=None) -> bytes:
     msg = EmailMessage()
     msg["Subject"] = subject or _render_subject(special)
     if to:
@@ -1025,6 +1238,16 @@ def _build_eml(special: models.Special, subject: str, to: str, cc: str,
     msg["X-Unsent"] = "1"
     msg.set_content(text_body or "", charset="utf-8")
     msg.add_alternative(html_body or "", subtype="html", charset="utf-8")
+    # 全景图与图片分段以 CID 内嵌：add_related 会把 html 部分升级为
+    # multipart/related。失败不该让整封周报下载不下来，故整段兜底。
+    if images:
+        try:
+            html_part = msg.get_payload()[-1]
+            for im in images:
+                html_part.add_related(im["data"], maintype="image",
+                                      subtype=im["subtype"], cid=f"<{im['cid']}>")
+        except Exception:
+            pass
     return bytes(msg)
 
 
@@ -1096,9 +1319,9 @@ def export_report_eml(
     to = str(payload.get("to") or special.email_to or "")
     cc = str(payload.get("cc") or special.email_cc or "")
     text_body = str(payload.get("body") or _render_report_body(special))
-    html_body = _render_report_html(special)
+    html_body, inline_images = _render_report_html(special)
 
-    eml = _build_eml(special, subject, to, cc, text_body, html_body)
+    eml = _build_eml(special, subject, to, cc, text_body, html_body, inline_images)
 
     fname_base = "".join(
         c for c in (special.name or "report") if c not in '\\/:*?"<>|'

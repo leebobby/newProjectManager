@@ -1177,7 +1177,9 @@ class SpecialBase(BaseModel):
 
 
 class SpecialCreate(SpecialBase):
-    pass
+    # 建专项时可直接套一份版式模板（可空＝用默认版式）。仅创建时有意义，
+    # 故不出现在 SpecialUpdate 里；改版式走 POST /{sid}/apply-template
+    template_id: Optional[int] = None
 
 
 class SpecialUpdate(BaseModel):
@@ -1206,6 +1208,7 @@ class SpecialContentUpdate(BaseModel):
     formation_json: Optional[str] = None
     extra_grids_json: Optional[str] = None
     section_order_json: Optional[str] = None
+    section_config_json: Optional[str] = None
 
 
 class SpecialContentOut(BaseModel):
@@ -1220,6 +1223,7 @@ class SpecialContentOut(BaseModel):
     formation_json: str = '{"headers":[],"rows":[]}'
     extra_grids_json: str = "[]"
     section_order_json: str = "[]"
+    section_config_json: str = "{}"
     version: int = 0
     updated_at: Optional[LocalDT] = None
 
@@ -1273,6 +1277,49 @@ class SpecialLockOut(BaseModel):
     # 那段"无时区后缀就补 Z"的兜底因此不再被触发，留着不影响。
     since: Optional[LocalDT] = None
     ttl: int = 180
+
+
+# ─── 专项模板（版式预设，主数据）──────────────────────────────────────────────
+
+class SpecialTemplateBase(BaseModel):
+    name: str
+    kind: Optional[str] = ""          # special / assault / ""=通用
+    description: Optional[str] = ""
+    # {"order":[...], "config":{key:{title,enabled}}, "blocks":[...]}
+    # 结构校验在路由里做（要按内置分段白名单逐 key 判），此处只保证是字符串
+    layout_json: Optional[str] = '{"order":[],"config":{},"blocks":[]}'
+    is_active: Optional[bool] = True
+    sort_order: Optional[int] = 0
+
+
+class SpecialTemplateCreate(SpecialTemplateBase):
+    pass
+
+
+class SpecialTemplateUpdate(BaseModel):
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    description: Optional[str] = None
+    layout_json: Optional[str] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class SpecialTemplateOut(SpecialTemplateBase):
+    id: int
+    created_at: Optional[LocalDT] = None
+    updated_at: Optional[LocalDT] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SpecialApplyTemplate(BaseModel):
+    """套用模板到某专项。
+
+    version 走与 PUT /content 相同的乐观锁口径：不一致返回 409。
+    """
+    template_id: int
+    version: int
 
 
 class FormationMemberBase(BaseModel):

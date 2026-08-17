@@ -122,3 +122,37 @@ KEY_FEATURE_STATUS_DEFAULT = "分析"
 def norm_key_feature_status(v, *, partial: bool = False) -> Optional[str]:
     return _norm_choice(v, KEY_FEATURE_STATUSES, KEY_FEATURE_STATUS_DEFAULT,
                         "交付状态", partial=partial)
+
+
+# ── 专项详情页的内置分段（版式模板 / 分段配置的单一来源）───────────────────────
+# 专项详情页 = 若干「分段」拼起来：这 8 个内置分段（各有专属交互，见
+# SpecialDetail.vue）+ 任意个自定义分段（表格/文本框/图片，存 extra_grids_json）。
+# 内置分段的标题可被 section_config_json 覆盖、可整段停用，顺序由
+# section_order_json 决定——所以下面的 label 只是**默认**标题。
+# {label} 运行时替换为「专项」或「攻关」。
+# kind 决定导出/周报怎么渲染这一段，不要与自定义分段的 kind 混淆：
+#   text=富文本单字段 / milestones=里程碑 / image=单图 / items=事务风险表 / grid=阵型
+# 顺序即默认显示顺序，须与前端 FIXED_KEYS 一致。
+SPECIAL_SECTIONS = (
+    {"key": "goal", "label": "{label}目标", "kind": "text"},
+    {"key": "plan", "label": "{label}计划", "kind": "milestones"},
+    {"key": "progress", "label": "整体进展", "kind": "text"},
+    {"key": "help", "label": "求助", "kind": "text"},
+    {"key": "panorama", "label": "{label}全景图", "kind": "image"},
+    {"key": "risks", "label": "风险和问题", "kind": "items"},
+    {"key": "tasks", "label": "{label}事务", "kind": "items"},
+    {"key": "formation", "label": "{label}阵型", "kind": "grid"},
+)
+SPECIAL_SECTION_KEYS = tuple(s["key"] for s in SPECIAL_SECTIONS)
+
+# 自定义分段的形态。RichGrid 的列格式（colTypes）另有一套：text/select/date/light
+SPECIAL_BLOCK_KINDS = ("grid", "text", "images")
+# RichGrid 列格式。light=点灯：取值同 select，但渲染成红黄绿色块
+GRID_COL_TYPES = ("text", "select", "date", "light")
+# 点灯取值 → 颜色档位。键为单元格文本（去空白后精确匹配），未命中不着色
+GRID_LIGHT_COLORS = {
+    "红": "red", "黄": "yellow", "绿": "green",
+    "红灯": "red", "黄灯": "yellow", "绿灯": "green",
+    "R": "red", "Y": "yellow", "G": "green",
+}
+GRID_LIGHT_DEFAULT_OPTIONS = ("绿", "黄", "红")

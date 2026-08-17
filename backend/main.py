@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from fastapi import Depends, FastAPI
@@ -5,12 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import models
 from auth import get_current_user, hash_password
+from enums import SPECIAL_SECTION_KEYS
 from database import Base, SessionLocal, engine
 from migrate import ensure_schema
 from routers import annual_iterations, iteration_product_requirements, iteration_requirements
 from routers import auth as auth_router
 from routers import config as config_router
-from routers import business_trips, customer_custom_req, customer_extra, customer_issues, customer_status, customers, debug_versions, domains, handbook, hardware_issues, issues, key_features, licenses, major_versions, mapping, metrics, notifications, op_logs, project_formation, resource_groups, roadmap, sow, specials, stakeholders, system as system_router, users
+from routers import business_trips, customer_custom_req, customer_extra, customer_issues, customer_status, customers, debug_versions, domains, handbook, hardware_issues, issues, key_features, licenses, major_versions, mapping, metrics, notifications, op_logs, project_formation, resource_groups, roadmap, sow, special_templates, specials, stakeholders, system as system_router, users
 
 # 先做轻量迁移（给老库加列），再 create_all 补齐缺失的表，
 # 最后自动把 Alembic 迁移追平 head（数据迁移/改列类，create_all 覆盖不到）。
@@ -59,6 +61,7 @@ app.include_router(metrics.router, dependencies=authed)
 app.include_router(notifications.router, dependencies=authed)
 app.include_router(handbook.router, dependencies=authed)
 app.include_router(specials.router, dependencies=authed)
+app.include_router(special_templates.router, dependencies=authed)
 app.include_router(domains.router, dependencies=authed)
 app.include_router(project_formation.router, dependencies=authed)
 app.include_router(business_trips.router, dependencies=authed)
@@ -220,9 +223,69 @@ def seed_initial_data():
                 models.RoadmapMilestone(project_id=demo.id, year=current_year, month=9, title="Sharaly2.0", description="10 月的产品 PRD、原型"),
             ])
 
+        if db.query(models.SpecialTemplate).count() == 0:
+            for tpl in _default_special_templates():
+                db.add(models.SpecialTemplate(**tpl))
+
         db.commit()
     finally:
         db.close()
+
+
+def _default_special_templates() -> list:
+    """内置两份专项版式模板（仅在模板表为空时注入一次）。
+
+    「标准专项」＝改造前的固定版式，作为不改动任何东西的默认选项；
+    「解决方案专项」＝按解决方案类专项的实际汇报口径预置，自定义表格的列
+    只是起手式，admin 可在「专项模板」页自行增删列。
+    """
+    def _cols(*names):
+        return [{"text": n, "colspan": 1, "align": "center"} for n in names]
+
+    standard = {
+        "order": list(SPECIAL_SECTION_KEYS),
+        "config": {k: {"title": "", "enabled": True} for k in SPECIAL_SECTION_KEYS},
+        "blocks": [],
+    }
+    solution = {
+        "order": ["goal", "progress", "tpl:test-lights", "tpl:battlefield-risk",
+                  "risks", "tpl:req-handover", "help"],
+        "config": {
+            "goal": {"title": "解决方案专项目标", "enabled": True},
+            "progress": {"title": "整体进展和关键风险", "enabled": True},
+            "risks": {"title": "关键问题跟踪", "enabled": True},
+            "help": {"title": "求助", "enabled": True},
+            # 这类专项不按里程碑/阵型汇报，整段停用（停用只是不显示，数据列仍在）
+            "plan": {"title": "", "enabled": False},
+            "panorama": {"title": "", "enabled": False},
+            "tasks": {"title": "", "enabled": False},
+            "formation": {"title": "", "enabled": False},
+        },
+        "blocks": [
+            {"tkey": "test-lights", "kind": "grid", "title": "测试详细进展和点灯",
+             "headers": _cols("测试项", "责任人", "计划完成", "进展描述", "点灯"),
+             "colTypes": ["text", "text", "date", "text", "light"],
+             "colWidths": [180, 90, 110, 300, 80], "row_count": 3},
+            {"tkey": "battlefield-risk", "kind": "grid", "title": "战场关键风险评估",
+             "headers": _cols("战场/客户", "风险描述", "影响", "应对措施", "责任人", "评估"),
+             "colTypes": ["text", "text", "text", "text", "text", "light"],
+             "colWidths": [120, 240, 160, 240, 90, 80], "row_count": 3},
+            {"tkey": "req-handover", "kind": "grid", "title": "需求转测和规范度评估",
+             "headers": _cols("需求编号", "需求名称", "转测状态", "规范度评估", "备注"),
+             "colTypes": ["text", "text", "select", "light", "text"],
+             "colOptions": [[], [], ["未转测", "已转测", "测试中", "已完成"], [], []],
+             "colWidths": [130, 240, 110, 100, 200], "row_count": 3},
+        ],
+    }
+    return [
+        {"name": "标准专项", "kind": "", "sort_order": 0,
+         "description": "系统默认版式：目标 / 计划 / 整体进展 / 求助 / 全景图 / 风险 / 事务 / 阵型",
+         "layout_json": json.dumps(standard, ensure_ascii=False)},
+        {"name": "解决方案专项", "kind": "special", "sort_order": 1,
+         "description": "解决方案类：目标 / 整体进展和关键风险 / 测试点灯 / 战场风险 / "
+                        "关键问题跟踪 / 需求转测 / 求助（不含里程碑、阵型、全景图）",
+         "layout_json": json.dumps(solution, ensure_ascii=False)},
+    ]
 
 
 seed_initial_data()

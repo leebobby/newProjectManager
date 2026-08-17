@@ -12,10 +12,13 @@ import io
 import json
 import math
 import os
+import pathlib
 import re
 from datetime import datetime
 from typing import Optional
 
+import enums
+import special_layout
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -47,6 +50,13 @@ _STATUS_FILL = {
 
 _thin = Side(style="thin", color=_BORDER_RGB)
 _BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+# 点灯列的底色/字色，与前端 RichGrid 及周报 HTML 的三档保持一致
+_LIGHT_FILL = {"red": "FEF0F0", "yellow": "FDF6EC", "green": "F0F9EB"}
+_LIGHT_FONT = {"red": "F56C6C", "yellow": "E6A23C", "green": "67C23A"}
+
+# 分段图片 / 全景图的落盘根目录（与 routers/specials.py 的 UPLOAD_ROOT 同一处）
+UPLOAD_ROOT = pathlib.Path(__file__).resolve().parent / "uploads" / "specials"
 
 
 def _strip_html(s: str) -> str:
@@ -385,31 +395,15 @@ def build_special_xlsx(special) -> io.BytesIO:
          fill=_BRAND, font_color="FFFFFF", size=10, align="center", height=20)
     gap()
 
-    # ===== 目标 =====
-    section(f"一、{label}目标")
-    narrative(_strip_html(content.goal) if content else "")
-    gap()
-
-    # ===== 整体进展 =====
-    section("二、整体进展")
-    narrative(_strip_html(content.progress_summary) if content else "")
-    gap()
-
-    # ===== 求助 =====
-    section("三、求助")
-    narrative(_strip_html(content.help_request) if content else "")
-    gap()
-
-    # ===== 里程碑 =====
-    milestones = []
-    if content and content.milestones_json:
-        try:
-            milestones = json.loads(content.milestones_json) or []
-        except (ValueError, TypeError):
-            milestones = []
-    section(f"四、{label}计划（里程碑）")
     kept_images = []  # 持有 BytesIO 引用直到 wb.save，避免被 GC
-    if milestones:
+    # 6 列等分映射（序号/内容/进展/责任人/闭环/状态）
+    six = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]
+
+    def render_milestones():
+        milestones = [m for m in special_layout.loads(
+            getattr(content, "milestones_json", None), []) if isinstance(m, dict)]
+        if not milestones:
+            return False
         ms_img = _render_milestone_image(milestones)
         if ms_img is not None:
             r = state["row"]
@@ -427,54 +421,101 @@ def build_special_xlsx(special) -> io.BytesIO:
                     for m in milestones]
             table([(1, 3), (4, 4), (5, 6)], ["里程碑", "日期", "状态"], rows,
                   status_col=2, center_cols={1, 2})
-    else:
-        narrative("—")
-    gap()
+        return True
 
-    # 6 列等分映射（序号/内容/进展/责任人/闭环/状态）
-    six = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]
+    def render_items(rows_src, content_header):
+        if not rows_src:
+            return False
+        rows = []
+        for idx, it in enumerate(rows_src, 1):
+            st = "已闭环" if (it.status or "open") == "closed" else "进行中"
+            rows.append([idx, _strip_html(it.content), _strip_html(it.progress),
+                         it.owner or "", it.planned_close_date or "", st])
+        table(six, ["序号", content_header, "当前进展", "责任人", "计划闭环", "状态"],
+              rows, status_col=5, center_cols={0, 3, 4})
+        return True
 
-    # ===== 风险（调整到事务之前）=====
-    section("五、风险和问题")
-    risks = special.risks or []
-    if risks:
-        rrows = []
-        for idx, rk in enumerate(risks, 1):
-            st = "已闭环" if (rk.status or "open") == "closed" else "进行中"
-            rrows.append([idx, _strip_html(rk.content), _strip_html(rk.progress),
-                          rk.owner or "", rk.planned_close_date or "", st])
-        table(six, ["序号", "问题内容", "当前进展", "责任人", "计划闭环", "状态"],
-              rrows, status_col=5, center_cols={0, 3, 4})
-    else:
-        narrative("—")
-    gap()
+    def render_formation():
+        obj = special_layout.loads(getattr(content, "formation_json", None), {})
+        headers = [str(h) for h in (obj.get("headers") or [])]
+        rows = [[_cell_str(c) for c in (r or [])] for r in (obj.get("rows") or [])]
+        rows = [r for r in rows if any(x.strip() for x in r)]
+        if not rows:
+            return False
+        ncol = max(len(headers), max(len(r) for r in rows))
+        table(_partition_cols(ncol), headers or [""] * ncol, rows)
+        return True
 
-    # ===== 事务 =====
-    section(f"六、{label}事务")
-    tasks = sorted(special.tasks or [], key=lambda t: (t.sort_order or 0, t.id))
-    if tasks:
-        trows = []
-        for idx, t in enumerate(tasks, 1):
-            st = "已闭环" if (t.status or "open") == "closed" else "进行中"
-            trows.append([idx, _strip_html(t.content), _strip_html(t.progress),
-                          t.owner or "", t.planned_close_date or "", st])
-        table(six, ["序号", "事务内容", "当前进展", "责任人", "计划闭环", "状态"],
-              trows, status_col=5, center_cols={0, 3, 4})
-    else:
-        narrative("—")
+    def render_block_images(block):
+        items = [i for i in (block.get("items") or [])
+                 if isinstance(i, dict) and i.get("file")]
+        drawn = 0
+        for im in items:
+            if _place_image(ws, state, UPLOAD_ROOT / str(special.id) / str(im["file"])):
+                drawn += 1
+        if items and not drawn:
+            # SVG 等 openpyxl 塞不进去的格式：说清楚，别让人以为图丢了
+            narrative(f"（{len(items)} 张图片，Excel 无法内嵌，请见系统页面）")
+        return bool(items)
 
-    # ===== 附加自由表格（事务下方新增的表格）：每个表 → 独立工作表 =====
-    extra_grids = []
-    if content and content.extra_grids_json:
-        try:
-            extra_grids = json.loads(content.extra_grids_json) or []
-        except (ValueError, TypeError):
-            extra_grids = []
+    # ===== 各分段按「版式」顺序输出 =====
+    # 标题与顺序全部来自 special_layout；自定义表格因列宽差异过大仍走独立工作表，
+    # 但页签按分段序号命名，主表在对应位置留一行指引，顺序不丢。
     used_names = {ws.title}
-    for gi, grid in enumerate(extra_grids):
-        # 自定义分段现有三种：grid（表格，导出独立工作表）/ text / images（不导出 Excel）
-        if isinstance(grid, dict) and (grid.get("kind") or "grid") == "grid":
-            _render_extra_grid_sheet(wb, grid, gi, used_names)
+    grid_sheets = []          # [(序号, 标题, grid)] 主表遍历完再建，保证页签顺序
+    n = 0
+    for sec in special_layout.resolve_sections(special):
+        n += 1
+        title = f"{_cn_index(n)}、{sec.title}"
+        if sec.is_custom and sec.kind == "grid":
+            headers, rows = _grid_cells(sec.block)
+            if not rows:
+                n -= 1
+                continue
+            sheet_name = _safe_sheet_name(f"{n}.{sec.title}", used_names)
+            grid_sheets.append((sheet_name, sec.title, sec.block))
+            section(title)
+            narrative(f"→ 见工作表「{sheet_name}」（{len(rows)} 行）")
+            gap()
+            continue
+
+        section(title)
+        ok = True
+        if sec.is_custom and sec.kind == "text":
+            body = _strip_html(sec.block.get("html") or "")
+            ok = bool(body.strip())
+            if ok:
+                narrative(body)
+        elif sec.is_custom:
+            ok = render_block_images(sec.block)
+        elif sec.key in _TEXT_FIELD:
+            body = _strip_html(getattr(content, _TEXT_FIELD[sec.key], "") or "") if content else ""
+            ok = bool(body.strip())
+            if ok:
+                narrative(body)
+        elif sec.key == "plan":
+            ok = render_milestones()
+        elif sec.key == "panorama":
+            path = getattr(content, "panorama_image_path", "") if content else ""
+            ok = bool(path)
+            if ok and not _place_image(ws, state, UPLOAD_ROOT.parent / path):
+                narrative(f"（{getattr(content, 'panorama_image_name', '') or '全景图'}："
+                          f"Excel 无法内嵌该格式，请见系统页面）")
+        elif sec.key == "risks":
+            ok = render_items(special.risks or [], "问题内容")
+        elif sec.key == "tasks":
+            ok = render_items(sorted(special.tasks or [],
+                                     key=lambda t: (t.sort_order or 0, t.id)), "事务内容")
+        elif sec.key == "formation":
+            ok = render_formation()
+        else:
+            ok = False
+        if not ok:
+            narrative("—")
+        gap()
+
+    for sheet_name, sec_title, grid in grid_sheets:
+        _render_extra_grid_sheet(wb, grid, sheet_name, sec_title)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -482,17 +523,91 @@ def build_special_xlsx(special) -> io.BytesIO:
     return buf
 
 
-def _render_extra_grid_sheet(wb, grid, idx, used_names):
+# 内置文本类分段 -> content 上的列（与 routers/specials.py 的同名表一致）
+_TEXT_FIELD = {"goal": "goal", "progress": "progress_summary", "help": "help_request"}
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def _cn_index(n: int) -> str:
+    if n <= 0:
+        return str(n)
+    if n < 10:
+        return _CN_DIGITS[n]
+    if n < 20:
+        return "十" + (_CN_DIGITS[n - 10] if n > 10 else "")
+    tens, ones = divmod(n, 10)
+    return _CN_DIGITS[tens] + "十" + (_CN_DIGITS[ones] if ones else "")
+
+
+def _cell_str(c) -> str:
+    if isinstance(c, dict):
+        return str(c.get("text") or "")
+    return "" if c is None else str(c)
+
+
+def _grid_cells(block: dict):
+    """自定义表格 → (表头名, 非空数据行)。判断"这段有没有内容"用。"""
+    headers = []
+    for h in (block.get("headers") or []):
+        if isinstance(h, dict):
+            headers.extend([str(h.get("text") or "")] * max(1, int(h.get("colspan") or 1)))
+        else:
+            headers.append(str(h or ""))
+    rows = [[_cell_str(c) for c in (r or [])] for r in (block.get("rows") or [])]
+    return headers, [r for r in rows if any(x.strip() for x in r)]
+
+
+def _partition_cols(ncol: int):
+    """ncol 个逻辑列摊到主表的 6 个物理列上；超过 6 列则 1:1 直接展开。"""
+    if ncol >= _NCOL:
+        return [(i + 1, i + 1) for i in range(ncol)]
+    base, extra = divmod(_NCOL, ncol)
+    spans, c = [], 1
+    for i in range(ncol):
+        w = base + (1 if i < extra else 0)
+        spans.append((c, c + w - 1))
+        c += w
+    return spans
+
+
+def _place_image(ws, state, path) -> bool:
+    """把磁盘上的图片放到当前行并预留行高；放不进去（SVG/缺 PIL/文件丢失）返回 False。"""
+    try:
+        p = pathlib.Path(path).resolve()
+        if not p.exists() or p.suffix.lower() == ".svg":
+            return False
+        img = XLImage(str(p))
+    except Exception:
+        return False
+    try:
+        max_w = 700.0
+        if img.width and img.width > max_w:
+            ratio = max_w / float(img.width)
+            img.width = int(img.width * ratio)
+            img.height = int(img.height * ratio)
+        r = state["row"]
+        ws.add_image(img, f"A{r}")
+        state["row"] += max(6, math.ceil((img.height or 200) / 18) + 2)
+        return True
+    except Exception:
+        return False
+
+
+def _render_extra_grid_sheet(wb, grid, sheet_name, title):
     """把一个 RichGrid（{title, headers, rows, colWidths}）渲染成独立工作表。
 
     - 表头按 colspan 合并、**加粗**、华为红底白字；
-    - 正文单元格保留对齐（left/center）与字体颜色；
+    - 正文单元格保留对齐（left/center）与字体颜色；点灯列（colTypes=light）按取值上底色；
     - 列宽来自 colWidths（px → Excel 字符宽，约 px/7）。
     兼容旧格式：headers 为 str[]、rows 为 str[][]。
+
+    独立工作表而非内联进主表：主表列宽是为叙述段和 6 列事务表定的
+    （[6,36,30,12,14,10]），把一张 5~8 列、列宽各异的自由表格塞进去必然被压变形。
+    页签名由调用方按分段序号给出，故工作表顺序与页面分段顺序一致。
     """
     raw_headers = grid.get("headers") or []
     rows = grid.get("rows") or []
-    title = str(grid.get("title") or f"附加表格{idx + 1}")
+    col_types = grid.get("colTypes") or []
 
     hdrs = []
     for h in raw_headers:
@@ -510,7 +625,7 @@ def _render_extra_grid_sheet(wb, grid, idx, used_names):
         body_cols = max((len(r) for r in rows if isinstance(r, list)), default=1)
         hdrs = [{"text": f"列{i + 1}", "colspan": 1, "align": "center"} for i in range(body_cols)]
 
-    ws = wb.create_sheet(title=_safe_sheet_name(title, used_names))
+    ws = wb.create_sheet(title=sheet_name)
     ws.sheet_view.showGridLines = False
 
     col_widths = grid.get("colWidths") or []
@@ -570,11 +685,20 @@ def _render_extra_grid_sheet(wb, grid, idx, used_names):
                 align, color, bold = "left", "262626", False
             cap = max(4, int(_px(c - 1) / 7))
             max_lines = max(max_lines, _cell_lines(text, cap))
+            # 点灯列：取值命中红/黄/绿则整格上底色 + 同色粗体，与页面和周报一致
+            light = None
+            if c - 1 < len(col_types) and col_types[c - 1] == "light":
+                light = enums.GRID_LIGHT_COLORS.get(text.strip())
             cell = ws.cell(row=r, column=c, value=text)
-            cell.font = Font(name=_FONT, size=10, color=color, bold=bold)
-            cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+            cell.font = Font(name=_FONT, size=10,
+                             color=_LIGHT_FONT[light] if light else color,
+                             bold=bool(light) or bold)
+            cell.alignment = Alignment(horizontal="center" if light else align,
+                                       vertical="center", wrap_text=True)
             cell.border = _BORDER
-            if zebra:
+            if light:
+                cell.fill = PatternFill("solid", fgColor=_LIGHT_FILL[light])
+            elif zebra:
                 cell.fill = PatternFill("solid", fgColor=_ZEBRA)
         ws.row_dimensions[r].height = max(18, min(180, max_lines * 15 + 3))
         r += 1
