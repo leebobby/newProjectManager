@@ -602,12 +602,15 @@ async function openCustomerDetail(row) {
     const { data } = await customerApi.resolve(name)
     if (data && data.id) {
       router.push(`/customers/${data.id}`)
-    } else {
+    } else if (isAdmin.value) {
       ElMessageBox.confirm(
         `「${name}」尚未在客户管理中登记（或作为别名关联）。是否现在去客户管理新建？`,
         '客户未关联',
         { type: 'info', confirmButtonText: '去客户管理', cancelButtonText: '取消' }
       ).then(() => router.push('/customers')).catch(() => {})
+    } else {
+      // 客户管理限 admin（路由守卫会拦），普通用户别引到跳转后被弹回首页的死路
+      ElMessage.warning(`「${name}」尚未在客户管理中登记，请联系管理员补充客户主数据`)
     }
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '查询客户失败')

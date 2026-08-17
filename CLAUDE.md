@@ -141,7 +141,6 @@ cd frontend && npm install && npm run dev
 
 ## 已知待处理
 
-- `/customers` 路由没有 `requireAdmin`，普通用户敲 URL 可只读打开（写操作服务端已拦）。
 - `GET /api/system/storage` 无前端消费方。
 - `models.Version` / `models.Iteration` 是为兼容老库存量表保留的死模型，新代码勿用。
 - 单进程假设：APScheduler 与问题单采集锁都是进程内内存态，上多 worker 会重复执行。
