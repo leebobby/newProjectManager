@@ -1,15 +1,45 @@
 <template>
   <div class="rich-editor">
     <div class="toolbar" @mousedown="saveSelection">
-      <el-button
-        size="small"
-        :type="state.bold ? 'primary' : 'default'"
-        @mousedown.prevent
-        @click="exec('bold')"
-        title="加粗 (Ctrl+B)"
-      >
-        <b>B</b>
-      </el-button>
+      <el-button-group>
+        <el-button
+          size="small"
+          :type="state.bold ? 'primary' : 'default'"
+          @mousedown.prevent
+          @click="exec('bold')"
+          title="加粗 (Ctrl+B)"
+        ><b>B</b></el-button>
+        <el-button
+          size="small"
+          :type="state.italic ? 'primary' : 'default'"
+          @mousedown.prevent
+          @click="exec('italic')"
+          title="斜体 (Ctrl+I)"
+        ><i>I</i></el-button>
+        <el-button
+          size="small"
+          :type="state.underline ? 'primary' : 'default'"
+          @mousedown.prevent
+          @click="exec('underline')"
+          title="下划线 (Ctrl+U)"
+        ><u>U</u></el-button>
+        <el-button
+          size="small"
+          :type="state.strike ? 'primary' : 'default'"
+          @mousedown.prevent
+          @click="exec('strikeThrough')"
+          title="删除线"
+        ><s>S</s></el-button>
+      </el-button-group>
+      <el-button-group>
+        <el-button size="small" @mousedown.prevent @click="exec('justifyLeft')" title="左对齐">左</el-button>
+        <el-button size="small" @mousedown.prevent @click="exec('justifyCenter')" title="居中">中</el-button>
+        <el-button size="small" @mousedown.prevent @click="exec('justifyRight')" title="右对齐">右</el-button>
+      </el-button-group>
+      <el-button-group>
+        <el-button size="small" @mousedown.prevent @click="exec('insertUnorderedList')" title="无序列表">• 列表</el-button>
+        <el-button size="small" @mousedown.prevent @click="exec('insertOrderedList')" title="有序列表">1. 列表</el-button>
+      </el-button-group>
       <el-select
         v-model="fontFamily"
         size="small"
@@ -17,7 +47,7 @@
         placeholder="字体"
         @change="applyFontFamily"
       >
-        <el-option v-for="f in FONT_FAMILIES" :key="f.value" :label="f.label" :value="f.value" />
+        <el-option v-for="f in FONT_FAMILIES" :key="f.label" :label="f.label" :value="f.css" />
       </el-select>
       <el-select
         v-model="fontSize"
@@ -43,7 +73,15 @@
         v-model="color"
         size="small"
         :predefine="PREDEFINE_COLORS"
+        title="字体颜色"
         @change="applyColor"
+      />
+      <el-color-picker
+        v-model="bgColor"
+        size="small"
+        :predefine="PREDEFINE_BG_COLORS"
+        title="背景色（高亮）"
+        @change="applyBgColor"
       />
       <el-button
         size="small"
@@ -70,6 +108,7 @@
 
 <script setup>
 import { onMounted, reactive, ref, watch } from 'vue'
+import { FONTS } from '../utils/gridFormat'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -82,17 +121,18 @@ const editorRef = ref(null)
 const fontSize = ref('')
 const fontFamily = ref('')
 const color = ref('')
-const state = reactive({ bold: false })
+const bgColor = ref('')
+const state = reactive({ bold: false, italic: false, underline: false, strike: false })
 let savedRange = null
 
-const FONT_FAMILIES = [
-  // 用单引号包裹，避免后端富文本清洗器（拒绝双引号）丢弃 font-family
-  { label: '微软雅黑', value: "'Microsoft YaHei', 微软雅黑, sans-serif" },
-  { label: '宋体', value: 'SimSun, 宋体, serif' },
-]
+// 字体表与表格单元格共用（utils/gridFormat.js），后端 enums.GRID_FONTS 是同一份。
+// 这里存的是 CSS 串而不是 key —— 富文本产出的是 HTML，样式只能内联；
+// 单引号包裹是必须的：后端富文本清洗器拒收带双引号的 style 值，写成双引号会整条丢掉。
+const FONT_FAMILIES = FONTS.filter((f) => f.css)
 
 const FONT_SIZES = [
   { label: '小 12', value: '12px' },
+  { label: '13', value: '13px' },
   { label: '正常 14', value: '14px' },
   { label: '中 16', value: '16px' },
   { label: '大 18', value: '18px' },
@@ -103,6 +143,9 @@ const PREDEFINE_COLORS = [
   '#303133', '#C7000B', '#1565C0',
   '#606266', '#909399',
   '#409EFF', '#67C23A', '#E6A23C', '#F56C6C',
+]
+const PREDEFINE_BG_COLORS = [
+  '#FFF7E6', '#FEF0F0', '#F0F9EB', '#ECF5FF', '#F4F4F5', '#FFFF00',
 ]
 
 onMounted(() => {
@@ -155,7 +198,11 @@ function restoreSelection() {
 
 function onSelectionChanged() {
   saveSelection()
-  try { state.bold = document.queryCommandState('bold') } catch { state.bold = false }
+  // queryCommandState 在部分浏览器/选区下会抛，逐项兜底成 false
+  for (const [key, cmd] of [['bold', 'bold'], ['italic', 'italic'],
+                            ['underline', 'underline'], ['strike', 'strikeThrough']]) {
+    try { state[key] = document.queryCommandState(cmd) } catch { state[key] = false }
+  }
 }
 
 function exec(cmd, value = null) {
@@ -185,6 +232,17 @@ function applyFontFamily(family) {
 function applyColor(hex) {
   if (!hex) return
   exec('foreColor', hex)
+}
+
+function applyBgColor(hex) {
+  if (!hex) {
+    // 清空取色器＝去掉高亮：hiliteColor 不认空值，只能显式改回透明
+    restoreSelection()
+    wrapSelectionStyle('backgroundColor', 'transparent')
+    onInput()
+    return
+  }
+  exec('hiliteColor', hex)
 }
 
 function wrapSelectionStyle(prop, val) {

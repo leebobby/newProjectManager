@@ -74,12 +74,17 @@ cd frontend && npm install && npm run dev
 | --- | --- |
 | `section_order_json` | 分段顺序 `["goal", "grid:<gid>", "risks", …]` |
 | `section_config_json` | 分段标题覆盖与启停 + 套过的模板名 |
-| `extra_grids_json` | 自定义分段本体（`kind` = grid / text / images） |
+| `extra_grids_json` | 自定义分段本体（`kind` = grid / text / images / milestones） |
 
 - 8 个内置分段的 key 与默认顺序在 [enums.py](backend/enums.py) `SPECIAL_SECTIONS`，
   须与前端 `SpecialDetail.vue` 的 `FIXED_KEYS` 一致。内置分段各有专属交互
   （里程碑时间轴、事务/风险表、阵型网格），所以**只能改标题或整段停用，不能动态增删**；
-  要新表格就加自定义分段。
+  要新表格就加自定义分段。自定义分段有四种形态（`enums.SPECIAL_BLOCK_KINDS`）：
+  表格 / 文本框 / 图片 / 里程碑。**新增一种形态要同时接四处**：`_instantiate_block()`、
+  前端 `normBlock()` + 详情页 `v-if` 链、`_section_text()` / `_section_html()`、
+  `build_special_xlsx()` 的分段分派——漏一处就是「页面上有、周报里没有」。
+  自定义里程碑与内置「计划」是**同形态不同数据源**（块自带 `milestones` vs
+  `content.milestones_json`），但渲染函数必须共用，否则一个专项里两种里程碑长得不一样。
 - **顺序与标题的解析只有一份实现**：`special_layout.resolve_sections()`。详情页、Excel 导出、
   周报三处都走它。前端 `reconcileOrder()` 的规则必须与 `resolve_order()` 保持一致——
   两边分叉的表现是「页面顺序和周报顺序不一样」，很难被测出来。
@@ -87,6 +92,9 @@ cd frontend && npm install && npm run dev
   `_section_text()` / `_section_html()` / `build_special_xlsx()` 各加一个分支。
   **缺任何一处的后果是那段在页面上有、在周报/导出里没有。**
 - 空分段不占章节编号：导出与周报里「启用但没内容」的段整段跳过，避免一串「三、—」。
+  Excel 侧靠 `build_special_xlsx` 的 `section()` / `_flush_section()` 实现——标题先挂起，
+  等第一笔内容落笔才写。**别改回「先写标题、空了再补一行—」**：那样模板里多一个
+  空分段，Excel 的章节号就会和周报错位，而这种错没人会当成 bug 去查。
 - **模板（`special_templates`）只是录入期的便利，不是运行期依赖**：套用时把版式写进上面三列，
   之后与模板脱钩。改模板、删模板都不影响已建专项——不要反过来做成「详情页读模板渲染」。
 - 套用语义是**只增不删**（`apply_template()`）：按 `tkey` 认领已挂上的分段，重复套用幂等；
@@ -108,6 +116,23 @@ cd frontend && npm install && npm run dev
   后端 `enums.py`、前端 [utils/gridLight.js](frontend/src/utils/gridLight.js)。
   **前端漏加一项的后果是该格式的列每次加载被静默重置成 text**（`normGrid()` 按白名单过滤）。
   点灯的取值词表与红黄绿档位同理两端各一份，页面 / 周报 HTML / Excel 三处着色必须同款。
+- 单元格与富文本的**字体 / 字号 / 底色**同样是两端各一份：后端 `GRID_FONTS` /
+  `GRID_FONT_SIZES` / `GRID_CELL_BG`，前端 [utils/gridFormat.js](frontend/src/utils/gridFormat.js)。
+  单元格里**存 key 不存 CSS 串**（`font: "simsun"`），因为三个出口要的东西不一样：
+  页面与周报要 CSS、Excel 要字体名 + 磅值（px×0.75）。存 CSS 串会逼着 Excel 端去
+  反解析 font-family 列表。三处映射分别在 `formatStyle()` / `_fmt_css()` / `_cell_font_spec()`。
+
+## 富文本：入口清洗，出口也清洗
+
+详情页多处用 `v-html` 渲染用户填的 HTML（目标 / 整体进展 / 求助 / 事务 / 风险 / 文本框分段）。
+**写库前必须过 `_sanitize_rich()`**（`routers/specials.py` 的 `_sanitize_rich_fields()` /
+`_sanitize_blocks_json()`），只在导出周报时清洗等于只保护了收件人，页面本身仍是任何
+登录用户都能往别人的专项里存一段脚本。出口的清洗保留着——老数据还没洗过。
+
+- 白名单 `_ALLOWED_TAGS` / `_ALLOWED_STYLE_PROPS` 决定编辑器能提供什么格式：
+  **加了工具条按钮就要同步加白名单**，否则那个格式每次保存被静默抹掉
+  （列表按钮对应 `ul`/`ol`/`li`，对齐对应 `text-align`，高亮对应 `background-color`）。
+- `script` / `style` 走 `_DROP_CONTENT_TAGS`：连内容一起丢。其余非白名单标签只丢标签留文字。
 
 ## 数据库结构变更
 

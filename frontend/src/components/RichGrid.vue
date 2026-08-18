@@ -8,20 +8,40 @@
         <el-button size="small" :disabled="!sel" @click="setAlign('center')">居中</el-button>
         <el-button size="small" :disabled="!sel" @click="setAlign('right')">右对齐</el-button>
       </el-button-group>
-      <el-button size="small" :disabled="!isBodySel" :type="selBold ? 'primary' : ''" @click="toggleBold">
-        <b>B</b> 加粗
-      </el-button>
       <el-button-group>
-        <el-button size="small" :disabled="!isBodySel" @click="setColor('')">
-          <span class="swatch" style="background:#303133" /> 黑
+        <el-button size="small" :disabled="!sel" :type="selFlag('bold') ? 'primary' : ''" @click="toggleFlag('bold')">
+          <b>B</b>
         </el-button>
-        <el-button size="small" :disabled="!isBodySel" @click="setColor('#C7000B')">
-          <span class="swatch" style="background:#C7000B" /> 红
+        <el-button size="small" :disabled="!sel" :type="selFlag('italic') ? 'primary' : ''" @click="toggleFlag('italic')">
+          <i>I</i>
         </el-button>
-        <el-button size="small" :disabled="!isBodySel" @click="setColor('#1565C0')">
-          <span class="swatch" style="background:#1565C0" /> 蓝
+        <el-button size="small" :disabled="!sel" :type="selFlag('underline') ? 'primary' : ''" @click="toggleFlag('underline')">
+          <u>U</u>
         </el-button>
       </el-button-group>
+      <el-select v-model="selFont" size="small" :disabled="!sel" class="rg-fontsel" placeholder="字体">
+        <el-option v-for="f in FONTS" :key="f.value" :label="f.label" :value="f.value" />
+      </el-select>
+      <el-select v-model="selSize" size="small" :disabled="!sel" class="rg-sizesel" placeholder="字号">
+        <el-option v-for="z in FONT_SIZES" :key="z.value" :label="z.label" :value="z.value" />
+      </el-select>
+      <span class="rg-fmt">
+        <span class="rg-tip">字色</span>
+        <el-color-picker
+          v-model="selColor"
+          size="small"
+          :disabled="!isBodySel"
+          :predefine="PREDEFINE_TEXT_COLORS"
+        />
+        <span class="rg-tip">底色</span>
+        <el-select v-model="selBg" size="small" :disabled="!isBodySel" class="rg-bgsel">
+          <el-option v-for="b in CELL_BGS" :key="b.value" :label="b.label" :value="b.value">
+            <span class="swatch" :style="{ background: b.value || '#fff', border: '1px solid #dcdfe6' }" />
+            {{ b.label }}
+          </el-option>
+        </el-select>
+      </span>
+      <el-button size="small" :disabled="!sel" @click="clearFormat">清除格式</el-button>
       <el-button size="small" :disabled="!isHeaderSel" @click="mergeHeader">合并表头→</el-button>
       <el-button size="small" :disabled="!canSplit" @click="splitHeader">拆分表头</el-button>
       <span class="rg-fmt">
@@ -67,18 +87,18 @@
             :key="'h' + hi"
             :colspan="h.colspan || 1"
             :class="{ selected: isSel('header', hi) }"
-            :style="{ textAlign: h.align || 'center' }"
+            :style="headerStyle(h)"
             @click="editable && selectCell('header', 0, hi)"
           >
             <input
               v-if="editable"
               v-model="h.text"
               class="rg-input bold"
-              :style="{ textAlign: h.align || 'center' }"
+              :style="headerStyle(h)"
               placeholder="表头"
               @input="emitUpdate"
             />
-            <span v-else>{{ h.text }}</span>
+            <span v-else :style="headerStyle(h)">{{ h.text }}</span>
             <button
               v-if="editable && model.headers.length > 1"
               class="rg-del col"
@@ -130,7 +150,7 @@
                 v-else
                 v-model="cell.text"
                 class="rg-input"
-                :style="{ textAlign: cell.align || 'left', color: cell.color || '#303133', fontWeight: cell.bold ? 700 : 400 }"
+                :style="inputStyle(cell, ci)"
                 @input="emitUpdate"
               />
             </template>
@@ -153,15 +173,18 @@
 /**
  * 富表格编辑器：在 FormationGrid 基础上增加
  *  - 表头合并 / 拆分（colspan）
- *  - 单元格对齐（左 / 居中）
- *  - 正文单元格字体颜色（黑 / 红 / 蓝）
+ *  - 单元格格式：对齐 / 字体 / 字号 / 粗斜下划线 / 字色 / 底色
  *  - 删除行 / 删除列组
+ *
+ * 格式作用于**当前选中的单元格**（先点格子再点按钮），表头也能设字体与字号，
+ * 但字色/底色不跟——表头恒为灰底粗体，让它单格变色只会把表头看散。
+ * 字体与字号存 key 不存 CSS 串，词表见 utils/gridFormat.js（后端 enums 有同一份）。
  *
  * 数据模型（v-model 双向绑定整个 grid 对象）：
  *   {
  *     title: string,
- *     headers: [{ text, colspan, align }],   // sum(colspan) === 正文列数
- *     rows: [ [{ text, align, color, bold }, ...], ... ],
+ *     headers: [{ text, colspan, align, font, size, bold, italic, underline }],
+ *     rows: [ [{ text, align, color, bg, bold, italic, underline, font, size }, ...], ... ],
  *     colWidths:  [number, ...],             // 长度 = 正文列数
  *     colTypes:   ['text'|'select'|'date'|'light', ...],  // 每个物理列的输入格式
  *     colOptions: [ [string, ...], ... ],    // 下拉/点灯列的候选项（其余列为 []）
@@ -173,6 +196,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { LIGHT_DEFAULT_OPTIONS, lightStyle } from '../utils/gridLight'
+import { CELL_BGS, FONTS, FONT_SIZES, formatStyle, normFont, normSize } from '../utils/gridFormat'
 
 const DEFAULT_W = 130
 
@@ -194,7 +218,7 @@ const canSplit = computed(
 )
 const selDesc = computed(() => {
   if (!sel.value) return '点击单元格后可设置对齐 / 颜色 / 合并表头 / 列格式'
-  return sel.value.type === 'header' ? '已选中表头' : '已选中正文单元格'
+  return sel.value.type === 'header' ? '已选中表头（字色/底色不适用）' : '已选中正文单元格'
 })
 
 // —— 列格式：每个物理列可设 文本 / 下拉 / 日期 ——
@@ -211,13 +235,20 @@ function isChoiceCol(ci) {
   return t === 'select' || t === 'light'
 }
 function cellStyle(cell, ci) {
-  const base = {
-    textAlign: cell.align || 'left',
-    color: cell.color || '#303133',
-    fontWeight: cell.bold ? 700 : 400,
-  }
-  // 点灯列的着色覆盖单元格自身的字色/对齐：整列口径一致才看得出灯
+  const base = { textAlign: 'left', color: '#303133', ...formatStyle(cell) }
+  // 点灯列的着色覆盖单元格自身的字色/底色/对齐：整列口径一致才看得出灯
   return colTypeAt(ci) === 'light' ? { ...base, ...(lightStyle(cell.text) || {}) } : base
+}
+// 表头：字体/字号/粗斜下划线跟随，字色与底色由表头样式统一决定
+function headerStyle(h) {
+  const { color, background, ...rest } = formatStyle(h)
+  return { textAlign: 'center', ...rest }
+}
+// 编辑态的 input 要和只读态看起来一样，否则「保存后字变了」
+// 背景与对齐已由 td 承担，input 自身只需继承字形（transparent 底 + 100% 宽）
+function inputStyle(cell, ci) {
+  const { background, ...rest } = cellStyle(cell, ci)
+  return rest
 }
 function colTypeAt(ci) {
   const t = model.value.colTypes
@@ -328,24 +359,57 @@ function setAlign(align) {
   else model.value.rows[s.r][s.c].align = align
   emitUpdate()
 }
-function setColor(color) {
+// —— 单元格格式：一律作用于「当前选中的那一格」——
+// 表头与正文格共用同一套字段名，故取到对象后按同样的方式改，
+// 只有字色/底色限正文（表头恒为灰底，单格变色会把表头看散）。
+const PREDEFINE_TEXT_COLORS = [
+  '#303133', '#C7000B', '#1565C0', '#67C23A', '#E6A23C', '#909399', '#F56C6C',
+]
+
+function selCell() {
   const s = sel.value
-  if (!s || s.type !== 'body') return
-  model.value.rows[s.r][s.c].color = color
+  if (!s) return null
+  return s.type === 'header' ? model.value.headers[s.c] : model.value.rows[s.r]?.[s.c]
+}
+
+function setOnSel(patch, bodyOnly = false) {
+  const s = sel.value
+  if (!s || (bodyOnly && s.type !== 'body')) return
+  const cell = selCell()
+  if (!cell) return
+  Object.assign(cell, patch)
   emitUpdate()
 }
 
-// —— 加粗（正文单元格；表头本就恒为粗体）——
-const selBold = computed(() => {
-  const s = sel.value
-  return s?.type === 'body' ? !!model.value.rows[s.r]?.[s.c]?.bold : false
+function selFlag(name) {
+  return !!selCell()?.[name]
+}
+function toggleFlag(name) {
+  const cell = selCell()
+  if (!cell) return
+  setOnSel({ [name]: !cell[name] })
+}
+
+const selFont = computed({
+  get: () => normFont(selCell()?.font),
+  set: (v) => setOnSel({ font: normFont(v) }),
 })
-function toggleBold() {
-  const s = sel.value
-  if (!s || s.type !== 'body') return
-  const cell = model.value.rows[s.r][s.c]
-  cell.bold = !cell.bold
-  emitUpdate()
+const selSize = computed({
+  get: () => normSize(selCell()?.size),
+  set: (v) => setOnSel({ size: normSize(v) }),
+})
+const selColor = computed({
+  get: () => selCell()?.color || '',
+  set: (v) => setOnSel({ color: v || '' }, true),
+})
+const selBg = computed({
+  get: () => selCell()?.bg || '',
+  set: (v) => setOnSel({ bg: v || '' }, true),
+})
+
+function clearFormat() {
+  setOnSel({ color: '', bg: '', bold: false, italic: false, underline: false,
+             font: '', size: '' })
 }
 
 function mergeHeader() {
@@ -478,6 +542,9 @@ function removeHeader(hi) {
 .rg-tip { font-size: 12px; color: #909399; }
 .rg-fmt { display: inline-flex; align-items: center; gap: 6px; }
 .rg-typesel { width: 92px; }
+.rg-fontsel { width: 108px; }
+.rg-sizesel { width: 96px; }
+.rg-bgsel { width: 100px; }
 .rg-optinput { width: 200px; }
 /* 单元格内的下拉 / 日期控件铺满列宽 */
 .rg-table td :deep(.rg-field) { width: 100%; }

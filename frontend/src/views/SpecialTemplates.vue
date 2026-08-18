@@ -87,7 +87,8 @@
       <el-alert type="info" :closable="false" show-icon style="margin-bottom: 10px">
         <template #title>
           内置分段各有专属交互（里程碑时间轴、事务/风险表、阵型网格），只能改标题或整段停用；
-          需要新表格就加「自定义表格」。列格式选<b>点灯</b>可按取值显示红黄绿。
+          需要新内容就加自定义分段，四种形态：<b>表格</b> / <b>文本框</b> / <b>里程碑</b> / <b>图片</b>。
+          表格的列格式选<b>点灯</b>可按取值显示红黄绿；表格与文本框都能逐格改字体、字号、颜色。
         </template>
       </el-alert>
 
@@ -95,7 +96,7 @@
         <div v-for="(row, i) in dialog.rows" :key="row.uid" class="sec-row" :class="{ off: !row.enabled }">
           <span class="sec-idx">{{ i + 1 }}</span>
           <el-tag size="small" :type="row.custom ? 'warning' : 'info'" class="sec-kind">
-            {{ row.custom ? '自定义' : '内置' }}
+            {{ row.custom ? `自定义·${BLOCK_KIND_LABEL[row.kind] || '分段'}` : '内置' }}
           </el-tag>
           <el-input
             v-model="row.title"
@@ -106,13 +107,13 @@
           <el-switch v-model="row.enabled" size="small" inline-prompt active-text="显示" inactive-text="停用" />
           <el-button size="small" text :disabled="i === 0" @click="move(i, -1)">上移</el-button>
           <el-button size="small" text :disabled="i === dialog.rows.length - 1" @click="move(i, 1)">下移</el-button>
-          <el-button v-if="row.custom" size="small" text @click="row.expanded = !row.expanded">
+          <el-button v-if="row.custom && row.kind === 'grid'" size="small" text @click="row.expanded = !row.expanded">
             {{ row.expanded ? '收起列' : `列（${row.cols.length}）` }}
           </el-button>
           <el-button v-if="row.custom" size="small" text type="danger" @click="removeCustom(i)">删除</el-button>
 
           <!-- 自定义表格的列定义 -->
-          <div v-if="row.custom && row.expanded" class="col-editor">
+          <div v-if="row.custom && row.kind === 'grid' && row.expanded" class="col-editor">
             <div v-for="(c, ci) in row.cols" :key="ci" class="col-row">
               <el-input v-model="c.text" size="small" class="col-name" placeholder="列名" />
               <el-select v-model="c.type" size="small" class="col-type" @change="onColTypeChange(c)">
@@ -147,6 +148,7 @@
               <el-dropdown-item command="grid">表格（可设点灯列）</el-dropdown-item>
               <el-dropdown-item command="text">文本框</el-dropdown-item>
               <el-dropdown-item command="images">图片</el-dropdown-item>
+              <el-dropdown-item command="milestones">里程碑（时间轴）</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -182,7 +184,7 @@ const COL_TYPE_OPTIONS = [
   { value: 'date', label: '日期' },
   { value: 'light', label: '点灯' },
 ]
-const BLOCK_KIND_LABEL = { grid: '表格', text: '文本框', images: '图片' }
+const BLOCK_KIND_LABEL = { grid: '表格', text: '文本框', images: '图片', milestones: '里程碑' }
 
 const list = ref([])
 const builtins = ref([])       // [{key, kind, default_title}]，来自后端，避免两边分段清单漂移

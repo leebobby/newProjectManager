@@ -248,7 +248,10 @@ def _default_special_templates() -> list:
         "blocks": [],
     }
     solution = {
-        "order": ["goal", "progress", "tpl:test-lights", "tpl:battlefield-risk",
+        # 顺序按汇报的因果链排：标准（判什么算成）→ 策略（怎么测）→ 计划（什么时候测）
+        # → 执行进展 → 风险 → 问题 → 求助
+        "order": ["goal", "progress", "tpl:acceptance", "tpl:test-strategy", "tpl:test-plan",
+                  "tpl:test-lights", "tpl:battlefield-risk",
                   "risks", "tpl:req-handover", "help"],
         "config": {
             "goal": {"title": "解决方案专项目标", "enabled": True},
@@ -262,6 +265,15 @@ def _default_special_templates() -> list:
             "formation": {"title": "", "enabled": False},
         },
         "blocks": [
+            {"tkey": "acceptance", "kind": "grid", "title": "解决方案验收标准",
+             "headers": _cols("验收项", "验收标准", "验收方式", "责任人", "达成情况"),
+             "colTypes": ["text", "text", "text", "text", "light"],
+             "colWidths": [160, 300, 140, 90, 90], "row_count": 3},
+            {"tkey": "test-strategy", "kind": "text", "title": "总体测试策略"},
+            {"tkey": "test-plan", "kind": "grid", "title": "专项测试计划",
+             "headers": _cols("测试阶段", "测试范围", "计划开始", "计划完成", "责任人", "状态"),
+             "colTypes": ["text", "text", "date", "date", "text", "light"],
+             "colWidths": [140, 280, 110, 110, 90, 80], "row_count": 3},
             {"tkey": "test-lights", "kind": "grid", "title": "测试详细进展和点灯",
              "headers": _cols("测试项", "责任人", "计划完成", "进展描述", "点灯"),
              "colTypes": ["text", "text", "date", "text", "light"],
@@ -282,8 +294,8 @@ def _default_special_templates() -> list:
          "description": "系统默认版式：目标 / 计划 / 整体进展 / 求助 / 全景图 / 风险 / 事务 / 阵型",
          "layout_json": json.dumps(standard, ensure_ascii=False)},
         {"name": "解决方案专项", "kind": "special", "sort_order": 1,
-         "description": "解决方案类：目标 / 整体进展和关键风险 / 测试点灯 / 战场风险 / "
-                        "关键问题跟踪 / 需求转测 / 求助（不含里程碑、阵型、全景图）",
+         "description": "解决方案类：目标 / 整体进展和关键风险 / 验收标准 / 总体测试策略 / "
+                        "专项测试计划 / 测试点灯 / 战场风险 / 关键问题跟踪 / 需求转测 / 求助",
          "layout_json": json.dumps(solution, ensure_ascii=False)},
     ]
 
