@@ -121,7 +121,10 @@ cd frontend && npm install && npm run dev
 
 - 给**已有表加列**也走 Alembic（不要碰 `migrate.py`）。
 - SQLite 不支持原生 ALTER，`env.py` 已开 `render_as_batch=True`，靠建新表→拷数据→改名完成。
-- 迁移必须带 inspector 幂等守卫，因为 `create_all` 可能已经先把表建好了。
+- **迁移必须带 inspector 幂等守卫**，因为 `ensure_schema()` 与 `create_all()` 都跑在 Alembic 之前，
+  列/表往往已经存在。漏守卫的后果不是报错退出，而是 `automigrate` 把异常吞成一行 warning、
+  **整条升级链停在那一版，后续迁移全部静默不执行**——新库正常、老库缺列，只在生产暴露。
+  （`0003` 就踩过这个坑：它加的列 `migrate.py` 里也有，导致 `0004`~`0007` 长期没跑过。）
 - 自动生成的迁移**务必人工检查** batch 段落：`alembic revision --autogenerate -m "..."`。
 - 详细用法见 [alembic/README.md](backend/alembic/README.md)。
 
