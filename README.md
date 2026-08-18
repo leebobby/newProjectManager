@@ -327,6 +327,14 @@ npm run dev
   `synchronous=NORMAL`，连接池放宽到 15+25；启动路径接入
   [automigrate.py](backend/automigrate.py) 自动 `alembic upgrade head`；新增 pytest
   回归（`backend/tests/`）与 Excel 导出统一样式模块 [xlsx_io.py](backend/xlsx_io.py)。
+- **修复 Alembic 升级链卡死**：`0003` 缺幂等守卫，而它要加的列 `migrate.py` 里也有一份，
+  轮到 Alembic 时列已存在 → `duplicate column name` 被 `automigrate` 吞成一行 warning，
+  结果**整条链停在 `0002`，`0004`~`0007` 从未在存量库上执行过**（新库因 `create_all`
+  带全列而无症状）。补守卫后老库一次启动即可 `0002 → 0008` 追平。
+- **部署指南重构**（[doc/部署指南.md](doc/部署指南.md)）：拆成「新环境部署」与「历史生产升级」
+  两条互斥路径分别成章，每章按 **Linux / Windows** 给两套命令（systemd vs NSSM、cron vs
+  任务计划、字体与子进程编码差异），并补上差异速查表；后端 worker 数由 2 更正为 1
+  （APScheduler 与采集锁是进程内状态，多 worker 会重复执行）。
 
 ---
 

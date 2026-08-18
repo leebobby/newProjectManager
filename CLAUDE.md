@@ -179,7 +179,7 @@ DateTime 列有两类，**口径不同，别混**：
 
 `backend/app.db`、`backend/uploads/`、`__pycache__/` 已在 [.gitignore](.gitignore) 中。
 数据库属于部署实例的状态而非源码——新库由 `create_all` + `seed_initial_data` 自动生成，
-备份按 [部署指南](doc/部署指南.md) 第 4 章的定时 `.backup` 走。
+备份按 [部署指南](doc/部署指南.md) 第 6 章的定时 `.backup` 走。
 
 ## 前端约定
 
