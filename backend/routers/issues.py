@@ -3,6 +3,8 @@
 权限：
 - GET  /api/issues/data              —— 所有登录用户（加载最新单张报表）
 - GET  /api/issues/trend             —— 所有登录用户（扫描全目录按天聚合趋势）
+- GET  /api/issues/snapshot-flow     —— 所有登录用户（每日新增/解决，相邻快照差分）
+- GET  /api/issues/flow-detail       —— 所有登录用户（某天新增/解决的明细）
 - GET  /api/issues/run-script/status —— 所有登录用户（查询脚本是否正在运行）
 - POST /api/issues/run-script        —— 仅管理员（执行外部刷新脚本）
 - GET  /api/issues/export.pptx       —— 所有登录用户（导出 PPT）
@@ -766,6 +768,12 @@ def _take_snapshot(db: Session, project: str, source: str = "api") -> models.Iss
             ))
     db.commit()
     db.refresh(snap)
+
+    # 顺手算当天的新增/解决差分（只比对上一次快照，看图时就不用现读一堆文件了）
+    try:
+        _ensure_flows(db, project)
+    except Exception:
+        db.rollback()   # 差分是附加信息，算不出来不影响这次采集
     return snap
 
 
@@ -1129,6 +1137,194 @@ def _export_snapshot_excel(project: str, raw: List[Dict], date_str: str) -> None
         ana_wb.save(str(ana_dir / f"{slug}_分析_{stem}.xlsx"))
     except Exception:
         pass
+
+
+# ─── 每日新增 / 解决：相邻快照差分 ──────────────────────────────────────────
+# 快照存的是"当天还开着的单"（关闭/撤销在 _enrich_rows 里已被剔除），所以：
+#   新增 = 今天有、上次没有；解决 = 上次有、今天没有。
+# 差分要读明细文件，因此结果落 issue_snapshot_flows，采集后增量算一次，看图只读数字。
+_ISSUE_NO_DATE = re.compile(r"^[A-Za-z]*(\d{4})(\d{2})(\d{2})\d*$")
+
+
+def _issue_no_date(issue_id: str) -> str:
+    """从缺陷业务编号提取创建日：SDTS + YYYY + MM + DD + 序号 → 'YYYY-MM-DD'，取不到返回 ''。"""
+    m = _ISSUE_NO_DATE.match((issue_id or "").strip())
+    if not m:
+        return ""
+    y, mo, d = m.groups()
+    if not ("2000" <= y <= "2099" and "01" <= mo <= "12" and "01" <= d <= "31"):
+        return ""
+    return f"{y}-{mo}-{d}"
+
+
+def _snapshot_ids(snap: models.IssueSnapshot) -> Optional[set]:
+    """读某次快照明细里的编号集合；文件缺失/损坏返回 None（该天整个跳过，不参与差分）。
+
+    返回空集合与返回 None 是两回事：前者表示"那天真的一条都没有"，
+    后者表示"这天的数据丢了"——把丢数据的一天当成 0 条，会凭空冒出一大批"解决"。
+    """
+    if not snap.data_file:
+        return None
+    try:
+        fp = _snapshot_root() / snap.data_file
+        if not fp.exists():
+            return None
+        rows = json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    return {str(r.get("issue_id") or "").strip() for r in rows if isinstance(r, dict)
+            and str(r.get("issue_id") or "").strip()}
+
+
+def _ensure_flows(db: Session, project: str) -> List[models.IssueSnapshotFlow]:
+    """按日期顺序补齐该项目的差分行（已算过且比对的上一天没变的直接复用）。
+
+    存量快照是在这张表之前采集的，第一次看图时在这里补算；之后每天采集只算新的一天。
+    """
+    snaps = (
+        db.query(models.IssueSnapshot)
+        .filter(models.IssueSnapshot.project == project)
+        .order_by(models.IssueSnapshot.snapshot_date.asc())
+        .all()
+    )
+    if not snaps:
+        return []
+    existing = {
+        f.snapshot_id: f
+        for f in db.query(models.IssueSnapshotFlow)
+        .filter(models.IssueSnapshotFlow.snapshot_id.in_([s.id for s in snaps])).all()
+    }
+    cache: Dict[int, Optional[set]] = {}
+
+    def ids_of(snap) -> Optional[set]:
+        if snap.id not in cache:
+            cache[snap.id] = _snapshot_ids(snap)
+        return cache[snap.id]
+
+    out: List[models.IssueSnapshotFlow] = []
+    prev: Optional[models.IssueSnapshot] = None
+    dirty = False
+    for snap in snaps:
+        expect_prev = prev.snapshot_date if prev else ""
+        flow = existing.get(snap.id)
+        if flow is None or (flow.prev_date or "") != expect_prev:
+            cur = ids_of(snap)
+            if cur is None:          # 这天的明细文件没了 —— 整天跳过，prev 保持不变
+                continue
+            if prev is None:
+                created, resolved, baseline = cur, set(), True
+            else:
+                pids = ids_of(prev) or set()
+                created, resolved, baseline = cur - pids, pids - cur, False
+            if flow is None:
+                flow = models.IssueSnapshotFlow(snapshot_id=snap.id)
+                db.add(flow)
+            flow.project = project
+            flow.snapshot_date = snap.snapshot_date
+            flow.prev_date = expect_prev
+            flow.is_baseline = baseline
+            flow.created_count = len(created)
+            flow.resolved_count = len(resolved)
+            flow.created_ids_json = json.dumps(sorted(created), ensure_ascii=False)
+            flow.resolved_ids_json = json.dumps(sorted(resolved), ensure_ascii=False)
+            flow.computed_at = datetime.utcnow()
+            dirty = True
+        # 已算过的天直接复用：不再去读它的明细文件，否则每次看图都要重读整个目录
+        out.append(flow)
+        prev = snap
+    if dirty:
+        db.commit()
+    return out
+
+
+@router.get("/snapshot-flow")
+def snapshot_flow(project: str, db: Session = Depends(get_db),
+                  _: models.User = Depends(get_current_user)):
+    """每日新增 / 解决 / 存量。两套口径一起返回，前端切换：
+
+    - by_snapshot：按采集日差分。新增与解决同口径，净增＝新增−解决＝存量差，图能自洽；
+      只能从第二次快照算起（首次是基线）。
+    - by_issue_no：按缺陷编号里的创建日（SDTS+YYYYMMDD）统计新增。能回溯到开始采集之前，
+      但只覆盖"被任何一次快照见过"的单——首次采集前就已闭环的单，谁也看不见了。
+    """
+    flows = _ensure_flows(db, project)
+    snaps = {
+        s.snapshot_date: s
+        for s in db.query(models.IssueSnapshot)
+        .filter(models.IssueSnapshot.project == project).all()
+    }
+    dates, created, resolved, open_cnt, net = [], [], [], [], []
+    no_hist: Dict[str, int] = {}
+    unknown_no = 0
+    baseline_date = ""
+    for f in flows:
+        if f.is_baseline:
+            baseline_date = f.snapshot_date
+        else:
+            dates.append(f.snapshot_date)
+            created.append(f.created_count)
+            resolved.append(f.resolved_count)
+            snap = snaps.get(f.snapshot_date)
+            open_cnt.append(snap.total if snap else 0)
+            net.append(f.created_count - f.resolved_count)
+        # 基线那天的编号也要计入"按编号日期"曲线：它们同样是历史上某天新增的
+        for iid in json.loads(f.created_ids_json or "[]"):
+            d = _issue_no_date(iid)
+            if d:
+                no_hist[d] = no_hist.get(d, 0) + 1
+            else:
+                unknown_no += 1
+    no_dates = sorted(no_hist)
+    return {
+        "project": project,
+        "baseline_date": baseline_date,
+        "by_snapshot": {"dates": dates, "created": created, "resolved": resolved,
+                        "open": open_cnt, "net": net},
+        "by_issue_no": {"dates": no_dates, "created": [no_hist[d] for d in no_dates]},
+        "unknown_no": unknown_no,
+    }
+
+
+@router.get("/flow-detail")
+def flow_detail(project: str, date: str, kind: str = "created",
+                db: Session = Depends(get_db),
+                _: models.User = Depends(get_current_user)):
+    """某天新增 / 解决的问题单明细。
+
+    新增的单在当天的快照里；解决的单当天已经没了，得回上一次快照的文件里取。
+    """
+    if kind not in ("created", "resolved"):
+        raise HTTPException(400, "kind 只能是 created 或 resolved")
+    flow = (
+        db.query(models.IssueSnapshotFlow)
+        .filter(models.IssueSnapshotFlow.project == project,
+                models.IssueSnapshotFlow.snapshot_date == date)
+        .first()
+    )
+    if flow is None:
+        return {"project": project, "date": date, "kind": kind, "rows": []}
+    ids = set(json.loads((flow.created_ids_json if kind == "created" else flow.resolved_ids_json) or "[]"))
+    src_date = date if kind == "created" else (flow.prev_date or "")
+    rows: List[Dict] = []
+    if ids and src_date:
+        snap = (
+            db.query(models.IssueSnapshot)
+            .filter(models.IssueSnapshot.project == project,
+                    models.IssueSnapshot.snapshot_date == src_date)
+            .first()
+        )
+        if snap is not None:
+            try:
+                fp = _snapshot_root() / snap.data_file
+                if fp.exists():
+                    rows = [r for r in json.loads(fp.read_text(encoding="utf-8"))
+                            if isinstance(r, dict) and str(r.get("issue_id") or "").strip() in ids]
+            except Exception:
+                rows = []
+    return {"project": project, "date": date, "kind": kind,
+            "source_date": src_date, "count": len(rows), "rows": rows}
 
 
 @router.get("/snapshot-export")

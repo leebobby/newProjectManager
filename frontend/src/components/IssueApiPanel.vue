@@ -159,7 +159,53 @@
         <div v-else ref="trendEl" class="chart-lg" />
       </el-tab-pane>
 
-      <!-- Tab 3：采集日志（定时 + 手动的每次执行，成败都留痕）-->
+      <!-- Tab 3：每日新增 / 解决（相邻快照差分）-->
+      <el-tab-pane label="新增/解决" name="flow">
+        <div class="trend-bar">
+          <span class="muted">口径：</span>
+          <el-radio-group v-model="flowMode" size="small" @change="renderActive">
+            <el-radio-button label="snapshot">按采集日差分</el-radio-button>
+            <el-radio-button label="issue_no">按编号创建日</el-radio-button>
+          </el-radio-group>
+          <span class="muted" style="margin-left: auto">{{ flowHint }}</span>
+        </div>
+
+        <div v-if="!flowHasData" class="muted" style="padding: 28px 0; text-align: center">
+          {{ flowEmptyText }}
+        </div>
+        <template v-else>
+          <div ref="flowEl" class="chart-lg" />
+          <div class="muted flow-note">{{ flowNote }}</div>
+
+          <el-table v-if="flowMode === 'snapshot'" :data="flowTableRows" border stripe size="small"
+            max-height="360" style="margin-top: 10px">
+            <el-table-column prop="date" label="采集日" width="130" />
+            <el-table-column label="新增" width="90" align="center">
+              <template #default="{ row }">
+                <span :class="row.created ? 'num-link' : 'num-zero'"
+                  @click="row.created && openFlowDrill(row.date, 'created')">{{ row.created }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="解决" width="90" align="center">
+              <template #default="{ row }">
+                <span :class="row.resolved ? 'num-link' : 'num-zero'"
+                  @click="row.resolved && openFlowDrill(row.date, 'resolved')">{{ row.resolved }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="净增" width="90" align="center">
+              <template #default="{ row }">
+                <span :class="row.net > 0 ? 'net-up' : (row.net < 0 ? 'net-down' : 'num-zero')">
+                  {{ row.net > 0 ? `+${row.net}` : row.net }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="open" label="当日存量" width="110" align="center" />
+            <el-table-column />
+          </el-table>
+        </template>
+      </el-tab-pane>
+
+      <!-- Tab 4：采集日志（定时 + 手动的每次执行，成败都留痕）-->
       <el-tab-pane label="采集日志" name="logs">
         <div class="trend-bar">
           <el-button size="small" :icon="Refresh" :loading="logsLoading" @click="loadLogs">刷新</el-button>
@@ -278,6 +324,8 @@ const statsView = ref('both')
 const search = ref('')
 const trendDim = ref('group')
 const trend = ref(null)
+const flow = ref(null)
+const flowMode = ref('snapshot')   // snapshot=按采集日差分；issue_no=按编号里的创建日
 
 const raw = computed(() => detail.value?.raw || [])
 // 客户面 / 研发 的口径：标题匹配到客户主数据的算客户面，匹配不到的算研发问题。
@@ -327,12 +375,88 @@ const customerBySev = computed(() => buildCross(customerRows.value, 'customer', 
 const devByGroup = computed(() => buildCross(devRows.value, 'group', 'severity'))
 const yearMonthBySev = computed(() => buildCross(raw.value, 'year_month', 'severity'))
 
+// ── 每日新增 / 解决 ──────────────────────────────
+// 两套口径的差别值得记住：
+//   按采集日差分——新增与解决同口径，净增＝新增−解决＝存量差，图自洽，但只能从第二次采集算起；
+//   按编号创建日——编号是 SDTS+YYYYMMDD+序号，能回溯到开始采集之前，但看不到"解决"，
+//   也看不到首次采集前就已闭环的单（它们从没进过任何一次快照）。
+const flowSnap = computed(() => flow.value?.by_snapshot || { dates: [], created: [], resolved: [], open: [], net: [] })
+const flowNo = computed(() => flow.value?.by_issue_no || { dates: [], created: [] })
+const flowHasData = computed(() =>
+  flowMode.value === 'snapshot' ? flowSnap.value.dates.length > 0 : flowNo.value.dates.length > 0)
+
+const flowEmptyText = computed(() => {
+  if (flowMode.value === 'snapshot') {
+    return flow.value?.baseline_date
+      ? `只有 ${flow.value.baseline_date} 一次快照，它是基线；再采集一天才能算出新增与解决。`
+      : '暂无快照数据，先采集几天再来看。'
+  }
+  return '没有能从缺陷编号里解析出创建日的单（编号需形如 SDTS+年月日+序号）。'
+})
+
+const flowHint = computed(() => {
+  if (!flow.value) return ''
+  if (flowMode.value === 'snapshot') {
+    return flow.value.baseline_date
+      ? `基线 ${flow.value.baseline_date}（首次采集，整份算存量不算新增）`
+      : ''
+  }
+  const n = flow.value.unknown_no || 0
+  return `覆盖 ${flowNo.value.dates.length} 天${n ? `，另有 ${n} 条编号取不到创建日` : ''}`
+})
+
+const flowNote = computed(() => (flowMode.value === 'snapshot'
+  ? '「解决」＝该单从快照里消失：多数是闭环或撤销，也可能是责任人转出了统计部门/小组。采集中断的日子会并到恢复采集的那天。'
+  : '按缺陷编号里的创建日统计，可回溯到开始采集之前；但首次采集前就已闭环的单不会出现在这里。'))
+
+const flowTableRows = computed(() => {
+  const f = flowSnap.value
+  return f.dates.map((d, i) => ({
+    date: d, created: f.created[i] || 0, resolved: f.resolved[i] || 0,
+    net: f.net[i] || 0, open: f.open[i] || 0,
+  })).reverse()
+})
+
+function flowChartOption() {
+  if (flowMode.value === 'issue_no') {
+    const f = flowNo.value
+    return {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      legend: { data: ['新增'], top: 0 },
+      grid: { top: 34, left: 8, right: 16, bottom: 4, containLabel: true },
+      xAxis: { type: 'category', data: f.dates, axisLabel: { rotate: f.dates.length > 12 ? 40 : 0, fontSize: 11 } },
+      yAxis: { type: 'value', minInterval: 1, name: '新增' },
+      dataZoom: f.dates.length > 30 ? [{ type: 'slider', start: 60, end: 100 }] : undefined,
+      series: [{ name: '新增', type: 'bar', color: '#4073ba', data: f.created, barMaxWidth: 26 }],
+    }
+  }
+  const f = flowSnap.value
+  return {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { data: ['新增', '解决', '存量'], top: 0 },
+    grid: { top: 34, left: 8, right: 16, bottom: 4, containLabel: true },
+    xAxis: { type: 'category', data: f.dates, axisLabel: { rotate: f.dates.length > 12 ? 40 : 0, fontSize: 11 } },
+    yAxis: [
+      { type: 'value', minInterval: 1, name: '当日' },
+      { type: 'value', minInterval: 1, name: '存量', splitLine: { show: false } },
+    ],
+    dataZoom: f.dates.length > 30 ? [{ type: 'slider', start: 60, end: 100 }] : undefined,
+    series: [
+      { name: '新增', type: 'bar', color: '#4073ba', data: f.created, barMaxWidth: 22 },
+      { name: '解决', type: 'bar', color: '#67C23A', data: f.resolved, barMaxWidth: 22 },
+      { name: '存量', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 6,
+        color: '#E6A23C', data: f.open, lineStyle: { width: 2.5 } },
+    ],
+  }
+}
+
 // ── ECharts ──────────────────────────────────────
 const groupBarEl = ref(null)
 const customerBarEl = ref(null)
 const devBarEl = ref(null)
 const yearMonthBarEl = ref(null)
 const trendEl = ref(null)
+const flowEl = ref(null)
 const inst = {}
 function setChart(key, el, option) {
   if (!el) return
@@ -395,6 +519,9 @@ function renderSnapshotCharts() {
   if (devBarEl.value) setChart('dev', devBarEl.value, crossBarOption(devByGroup.value))
   if (yearMonthBarEl.value) setChart('yearMonth', yearMonthBarEl.value, crossBarOption(yearMonthBySev.value))
 }
+function renderFlowChart() {
+  if (flowEl.value && flowHasData.value) setChart('flow', flowEl.value, flowChartOption())
+}
 function renderTrendChart() {
   if (trendEl.value && trend.value?.dates?.length) setChart('trend', trendEl.value, trendLineOption(trend.value))
 }
@@ -402,11 +529,13 @@ function renderActive() {
   nextTick(() => {
     if (topTab.value === 'snapshot' && subTab.value === 'stats') renderSnapshotCharts()
     else if (topTab.value === 'trend') renderTrendChart()
+    else if (topTab.value === 'flow') renderFlowChart()
     Object.values(inst).forEach((c) => c.resize())
   })
 }
 function onTopTabChange() {
   if (topTab.value === 'trend' && !trend.value) loadTrend()
+  else if (topTab.value === 'flow' && !flow.value) loadFlow()
   else if (topTab.value === 'logs') loadLogs()
   else renderActive()
 }
@@ -447,6 +576,17 @@ function onCellClick(rowDim, label, col, v, scope) {
   openDrill(f, t.join(' · ') || '全部')
 }
 
+async function openFlowDrill(date, kind) {
+  try {
+    const { data } = await issueApi.flowDetail(props.project, date, kind)
+    drillRows.value = data.rows || []
+    drillTitle.value = `${date} ${kind === 'created' ? '新增' : '解决'}（${data.count} 条）`
+    drillVisible.value = true
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '明细加载失败')
+  }
+}
+
 // ── 手动采集（仅管理员；调后端定时同款采集逻辑，采完刷新）──
 // 采集脚本要跑几分钟，而 axios 全局超时只有 10s。以前同步等结果必然先弹「采集失败」，
 // 但后台其实跑完了 —— 这就是"报错后过会儿刷新数据又出来了"的原因。
@@ -462,9 +602,11 @@ async function finishCollect(results) {
   if (r && r.ok) {
     ElMessage.success(`采集完成：${r.total} 条（${r.date}）`)
     trend.value = null       // 让趋势下次进入时按最新数据重算
+    flow.value = null        // 新增/解决同理：多了一天，差分要重取
     selDate.value = ''       // 强制选中最新一天
     await loadSnapshots()
     if (topTab.value === 'trend') await loadTrend()
+    else if (topTab.value === 'flow') await loadFlow()
   } else {
     ElMessage.error(`采集失败：${(r && r.error) || '未知错误'}，详情见「采集日志」`)
   }
@@ -561,6 +703,17 @@ async function loadDetail() {
   }
 }
 
+async function loadFlow() {
+  try {
+    const { data } = await issueApi.snapshotFlow(props.project)
+    flow.value = data
+    await nextTick()
+    renderFlowChart()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '新增/解决加载失败')
+  }
+}
+
 async function loadTrend() {
   try {
     const { data } = await issueApi.snapshotTrend(props.project, trendDim.value)
@@ -577,6 +730,7 @@ function onResize() { Object.values(inst).forEach((c) => c.resize()) }
 watch(() => props.project, () => {
   detail.value = null
   trend.value = null
+  flow.value = null
   logs.value = []
   selDate.value = ''
   topTab.value = 'snapshot'
@@ -634,6 +788,9 @@ onUnmounted(() => {
   margin: 12px 0 8px; padding-left: 8px; border-left: 3px solid #4073ba;
 }
 .title-hint { margin-left: 8px; font-size: 12px; font-weight: 400; color: #909399; }
+.flow-note { margin-top: 6px; font-size: 12px; line-height: 1.6; }
+.net-up { color: #f56c6c; font-weight: 600; }
+.net-down { color: #67c23a; font-weight: 600; }
 
 .chart-sm { width: 100%; height: 260px; }
 .chart-sm.chart-wide { height: 380px; }

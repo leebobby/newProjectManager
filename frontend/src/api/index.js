@@ -204,6 +204,9 @@ export const issueApi = {
   snapshotList:    (project)            => http.get('/issues/snapshots', { params: { project } }),
   snapshotDetail:  (project, date)      => http.get('/issues/snapshot-detail', { params: date ? { project, date } : { project } }),
   snapshotTrend:   (project, dimension) => http.get('/issues/snapshot-trend', { params: { project, dimension } }),
+  // 每日新增/解决：相邻快照差分（后端算好落库，这里只取数字）
+  snapshotFlow:    (project)            => http.get('/issues/snapshot-flow', { params: { project } }),
+  flowDetail:      (project, date, kind) => http.get('/issues/flow-detail', { params: { project, date, kind } }),
   // 采集是长任务（几分钟），后端起线程立即返回，前端轮询 collectStatus 拿结果
   snapshotCollect: (project)            => http.post('/issues/snapshot-collect', null, { params: project ? { project } : {} }),
   collectStatus:   ()                   => http.get('/issues/collect-status'),
