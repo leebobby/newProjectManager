@@ -1046,7 +1046,11 @@ def _fill_raw_sheet(ws, raw: List[Dict]) -> None:
 
 
 def _fill_analysis_sheet(ws, raw: List[Dict]) -> None:
-    """统计分析表：按小组 / 客户面 / 年月 × 严重程度 三张交叉表纵向排布。"""
+    """统计分析表：按小组 / 客户面 / 研发问题 / 年月 × 严重程度 四张交叉表纵向排布。
+
+    客户面表只统计标题匹配到客户的单子；匹配不到的是研发问题，单独一张按小组的表
+    （口径与前端 IssueApiPanel 一致，页面与导出必须同款）。
+    """
     from openpyxl.styles import Alignment, Font, PatternFill
     head_font = Font(bold=True, color="FFFFFF")
     head_fill = PatternFill("solid", fgColor="4073BA")
@@ -1080,8 +1084,14 @@ def _fill_analysis_sheet(ws, raw: List[Dict]) -> None:
             cell.alignment = center
         row_ptr[0] = r + 2   # 空一行再写下一张表
 
+    cus_rows = [r for r in raw if (r.get("customer") or "").strip()]
+    dev_rows = [r for r in raw if not (r.get("customer") or "").strip()]
+
     _write_cross("小组", "按小组 × 严重程度", _cross_table(raw, "group", "severity", SEV, "未分组"))
-    _write_cross("客户面", "按客户面 × 严重程度", _cross_table(raw, "customer", "severity", SEV, "未标注"))
+    _write_cross("客户面", f"按客户面 × 严重程度（客户面问题 {len(cus_rows)} 条）",
+                 _cross_table(cus_rows, "customer", "severity", SEV, "未标注"))
+    _write_cross("小组", f"研发问题 × 严重程度（{len(dev_rows)} 条，标题未匹配到客户）",
+                 _cross_table(dev_rows, "group", "severity", SEV, "未分组"))
     _write_cross("年月", "按年月 × 严重程度", _cross_table(raw, "year_month", "severity", SEV, "未标注"))
 
 
@@ -1125,7 +1135,8 @@ def _export_snapshot_excel(project: str, raw: List[Dict], date_str: str) -> None
 def snapshot_export(request: Request, project: str, date: Optional[str] = None,
                     db: Session = Depends(get_db),
                     current_user: models.User = Depends(get_current_user)):
-    """把某次快照导出为 Excel：Sheet1「原始数据」+ Sheet2「统计分析」（按小组/客户面/年月 × 严重程度）。"""
+    """把某次快照导出为 Excel：Sheet1「原始数据」+ Sheet2「统计分析」
+    （按小组 / 客户面 / 研发问题 / 年月 × 严重程度）。"""
     import openpyxl
 
     q = db.query(models.IssueSnapshot).filter(models.IssueSnapshot.project == project)

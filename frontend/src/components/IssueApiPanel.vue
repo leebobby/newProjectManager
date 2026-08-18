@@ -54,6 +54,12 @@
             <div class="stat-card tip" @click="openDrill({ severity: '提示' }, '提示缺陷')">
               <div class="stat-num">{{ sevCount('提示') }}</div><div class="stat-label">提示</div>
             </div>
+            <div class="stat-card cus" @click="openDrill({ scope: 'customer' }, '客户面问题')">
+              <div class="stat-num">{{ customerRows.length }}</div><div class="stat-label">客户面问题</div>
+            </div>
+            <div class="stat-card dev" @click="openDrill({ scope: 'dev' }, '研发问题')">
+              <div class="stat-num">{{ devRows.length }}</div><div class="stat-label">研发问题</div>
+            </div>
           </div>
 
           <el-card shadow="never" class="main-card">
@@ -79,16 +85,36 @@
                   </el-col>
                 </el-row>
 
-                <div class="section-title" style="margin-top: 20px">按客户面 × 严重程度</div>
+                <div class="section-title" style="margin-top: 20px">
+                  按客户面 × 严重程度
+                  <span class="title-hint">仅统计标题匹配到客户的 {{ customerRows.length }} 条</span>
+                </div>
                 <el-row :gutter="16">
                   <el-col v-show="statsView !== 'chart'" :span="statsView === 'both' ? 14 : 24">
                     <StatsTable head="客户面" :columns="customerBySev.columns" :rows="customerBySev.rows"
-                      @cell-click="(r, c, v) => onCellClick('customer', r, c, v)" />
+                      @cell-click="(r, c, v) => onCellClick('customer', r, c, v, 'customer')" />
                   </el-col>
                   <el-col v-show="statsView !== 'table'" :span="statsView === 'both' ? 10 : 24">
                     <div ref="customerBarEl" class="chart-sm" :class="{ 'chart-wide': statsView === 'chart' }" />
                   </el-col>
                 </el-row>
+
+                <!-- 标题里匹配不到任何客户的单子＝研发问题，单独一张表，不混进客户面统计 -->
+                <template v-if="devRows.length">
+                  <div class="section-title" style="margin-top: 20px">
+                    研发问题 × 严重程度
+                    <span class="title-hint">标题未匹配到客户的 {{ devRows.length }} 条，按小组统计</span>
+                  </div>
+                  <el-row :gutter="16">
+                    <el-col v-show="statsView !== 'chart'" :span="statsView === 'both' ? 14 : 24">
+                      <StatsTable head="小组" :columns="devByGroup.columns" :rows="devByGroup.rows"
+                        @cell-click="(r, c, v) => onCellClick('group', r, c, v, 'dev')" />
+                    </el-col>
+                    <el-col v-show="statsView !== 'table'" :span="statsView === 'both' ? 10 : 24">
+                      <div ref="devBarEl" class="chart-sm" :class="{ 'chart-wide': statsView === 'chart' }" />
+                    </el-col>
+                  </el-row>
+                </template>
 
                 <div class="section-title" style="margin-top: 20px">按年月 × 严重程度</div>
                 <el-row :gutter="16">
@@ -254,6 +280,10 @@ const trendDim = ref('group')
 const trend = ref(null)
 
 const raw = computed(() => detail.value?.raw || [])
+// 客户面 / 研发 的口径：标题匹配到客户主数据的算客户面，匹配不到的算研发问题。
+// 两者分表统计——客户面表里不再出现「未标注」那一行（它其实是研发问题，不是某个客户）。
+const customerRows = computed(() => raw.value.filter((r) => (r.customer || '').trim()))
+const devRows = computed(() => raw.value.filter((r) => !(r.customer || '').trim()))
 function sevCount(s) { return detail.value?.by_severity?.[s] || 0 }
 
 // ── 交叉表构建（行维度 × 严重程度）────────────────
@@ -292,12 +322,15 @@ function buildCross(rows, rowField, colField) {
 }
 
 const groupBySev = computed(() => buildCross(raw.value, 'group', 'severity'))
-const customerBySev = computed(() => buildCross(raw.value, 'customer', 'severity'))
+const customerBySev = computed(() => buildCross(customerRows.value, 'customer', 'severity'))
+// 研发问题没有客户可分，改按小组看
+const devByGroup = computed(() => buildCross(devRows.value, 'group', 'severity'))
 const yearMonthBySev = computed(() => buildCross(raw.value, 'year_month', 'severity'))
 
 // ── ECharts ──────────────────────────────────────
 const groupBarEl = ref(null)
 const customerBarEl = ref(null)
+const devBarEl = ref(null)
 const yearMonthBarEl = ref(null)
 const trendEl = ref(null)
 const inst = {}
@@ -359,6 +392,7 @@ function trendLineOption(t) {
 function renderSnapshotCharts() {
   if (groupBarEl.value) setChart('group', groupBarEl.value, crossBarOption(groupBySev.value))
   if (customerBarEl.value) setChart('customer', customerBarEl.value, crossBarOption(customerBySev.value))
+  if (devBarEl.value) setChart('dev', devBarEl.value, crossBarOption(devByGroup.value))
   if (yearMonthBarEl.value) setChart('yearMonth', yearMonthBarEl.value, crossBarOption(yearMonthBySev.value))
 }
 function renderTrendChart() {
@@ -394,6 +428,8 @@ const drillTitle = ref('')
 const drillRows = ref([])
 function openDrill(filters, title = '问题单明细') {
   let rows = raw.value
+  if (filters.scope === 'customer') rows = rows.filter((r) => (r.customer || '').trim())
+  if (filters.scope === 'dev') rows = rows.filter((r) => !(r.customer || '').trim())
   if (filters.severity) rows = rows.filter((r) => r.severity === filters.severity)
   if (filters.group) rows = rows.filter((r) => (r.group || '未分组') === filters.group)
   if (filters.customer) rows = rows.filter((r) => (r.customer || '未标注') === filters.customer)
@@ -402,9 +438,10 @@ function openDrill(filters, title = '问题单明细') {
   drillTitle.value = title
   drillVisible.value = true
 }
-function onCellClick(rowDim, label, col, v) {
+function onCellClick(rowDim, label, col, v, scope) {
   if (!v) return
   const f = {}; const t = []
+  if (scope) { f.scope = scope; if (scope === 'dev') t.push('研发问题') }
   if (label !== '合计') { f[rowDim] = label; t.push(label) }
   if (col !== '合计') { f.severity = col; t.push(col) }
   openDrill(f, t.join(' · ') || '全部')
@@ -573,7 +610,7 @@ onUnmounted(() => {
 .snap-bar, .trend-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; flex-wrap: wrap; }
 
 /* 统计卡片 */
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 12px; }
 .stat-card {
   background: #fff; border: 1px solid #eaecef; border-radius: 10px;
   padding: 16px 24px; cursor: pointer; text-align: center; transition: all .2s;
@@ -584,6 +621,8 @@ onUnmounted(() => {
 .sev .stat-num { color: #f56c6c; } .sev:hover { border-color: #fab6b6; }
 .nor .stat-num { color: #e6a23c; } .nor:hover { border-color: #f3d19e; }
 .tip .stat-num { color: #909399; }
+.cus .stat-num { color: #4073ba; } .cus:hover { border-color: #c6e2ff; }
+.dev .stat-num { color: #8e7ad8; } .dev:hover { border-color: #d6ccf2; }
 
 .main-card :deep(.el-card__body) { padding: 0 16px 16px; }
 
@@ -594,6 +633,7 @@ onUnmounted(() => {
   font-size: 14px; font-weight: 600; color: #303133;
   margin: 12px 0 8px; padding-left: 8px; border-left: 3px solid #4073ba;
 }
+.title-hint { margin-left: 8px; font-size: 12px; font-weight: 400; color: #909399; }
 
 .chart-sm { width: 100%; height: 260px; }
 .chart-sm.chart-wide { height: 380px; }
