@@ -1387,12 +1387,25 @@ class DomainReqSummary(BaseModel):
 
 
 class DomainIssueSummary(BaseModel):
-    available: bool = True        # 问题单 Excel 不可读时为 False
+    available: bool = True        # 数据源不可读时为 False
     total: int = 0
     score: float = 0.0            # 加权总分：致命10 严重3 一般1 提示0.1
     by_severity: dict = {}        # {"致命": n, "严重": n, "一般": n, "提示": n}
-    file_mtime: Optional[str] = None
+    file_mtime: Optional[str] = None   # Excel 源：文件时间；快照源：采集日期
     note: Optional[str] = None     # available=False 时的原因
+    source: str = ""               # snapshot（问题单管理采集）/ excel（报表文件）
+    project: Optional[str] = None  # 快照源的项目/版本
+    target_total: Optional[int] = None    # 管理员设定的数量目标（未设为空）
+    target_score: Optional[float] = None  # 管理员设定的加权分目标
+    over_total: bool = False       # 数量超目标
+    over_score: bool = False       # 加权分超目标
+
+
+class DomainProjectOpt(BaseModel):
+    """领域总览顶部「问题单项目」选择器的一个可选项。"""
+    project: str
+    latest_date: Optional[str] = None   # 最新快照日 YYYY-MM-DD（无快照为空）
+    total: int = 0                      # 最新快照的问题单总数
 
 
 class DomainIterationOpt(BaseModel):
@@ -1430,6 +1443,8 @@ class DomainListOut(BaseModel):
     selected_year: Optional[int] = None     # 选中的月份（未选时为空＝进行中口径）
     selected_month: Optional[int] = None
     iterations: List[DomainIterationOpt] = []   # 可选月份列表（年度迭代）
+    projects: List[DomainProjectOpt] = []       # 可选问题单项目（来自问题单管理的快照）
+    selected_project: Optional[str] = None      # 当前生效的问题单项目
     rows: List[DomainRowOut] = []
 
 
@@ -1471,6 +1486,85 @@ class DomainTaskOut(DomainTaskBase):
     version: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ===== 领域 · 遗留问题 =====
+class DomainLegacyIssueBase(BaseModel):
+    seq: Optional[int] = 0
+    title: Optional[str] = ""
+    status: Optional[str] = "OPEN"          # OPEN / CLOSED / pending
+    owner_id: Optional[int] = None          # 当前责任人
+    reporter_id: Optional[int] = None       # 提出人
+    confirmer_id: Optional[int] = None      # 确认人
+    participants: Optional[List[int]] = []  # 参与人（用户 id，多选）
+    domain_id: Optional[int] = None         # 所属领域（PL 组）
+    planned_date: Optional[datetime] = None  # 用户填写的日期，不标 LocalDT
+    priority: Optional[str] = "中"          # 高 / 中 / 低
+    remark: Optional[str] = ""
+    sort_order: Optional[int] = 0
+
+
+class DomainLegacyIssueCreate(DomainLegacyIssueBase):
+    @field_validator("status")
+    @classmethod
+    def _v_status(cls, v):
+        return enums.norm_domain_legacy_status(v)
+
+    @field_validator("priority")
+    @classmethod
+    def _v_priority(cls, v):
+        return enums.norm_domain_priority(v)
+
+
+class DomainLegacyIssueUpdate(BaseModel):
+    version: int
+    seq: Optional[int] = None
+    title: Optional[str] = None
+    status: Optional[str] = None
+    owner_id: Optional[int] = None
+    reporter_id: Optional[int] = None
+    confirmer_id: Optional[int] = None
+    participants: Optional[List[int]] = None
+    domain_id: Optional[int] = None
+    planned_date: Optional[datetime] = None
+    priority: Optional[str] = None
+    remark: Optional[str] = None
+    sort_order: Optional[int] = None
+
+    @field_validator("status")
+    @classmethod
+    def _v_status(cls, v):
+        return enums.norm_domain_legacy_status(v, partial=True)
+
+    @field_validator("priority")
+    @classmethod
+    def _v_priority(cls, v):
+        return enums.norm_domain_priority(v, partial=True)
+
+
+class DomainLegacyIssueOut(DomainLegacyIssueBase):
+    id: int
+    owner_name: Optional[str] = None        # 后端按 FK 回填，前端直接展示
+    reporter_name: Optional[str] = None
+    confirmer_name: Optional[str] = None
+    participant_names: List[str] = []
+    domain_name: Optional[str] = None
+    version: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ===== 领域 · 问题单目标（仅 admin 可写）=====
+class DomainIssueTargetItem(BaseModel):
+    group_id: int
+    target_total: Optional[int] = None      # 空＝清除该领域的数量目标
+    target_score: Optional[float] = None
+    remark: Optional[str] = ""
+
+
+class DomainIssueTargetsUpdate(BaseModel):
+    project: str = ""                       # 与 issue_snapshots.project 同取值
+    items: List[DomainIssueTargetItem] = []
 
 
 # ===== 客户面调试版本（T 版本）+ 诉求收集 =====

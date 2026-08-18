@@ -23,6 +23,15 @@ PRIORITY_LEGACY_MAP = {"高": "P1", "中": "P2", "低": "P3"}
 # ── 事务 / 风险条目状态 ───────────────────────────────────────────────────────
 TASK_STATUSES = ("open", "closed")
 
+# ── 领域管理 · 遗留问题（事务/风险的状态词表与客户面问题共用，见下方 CUSTOMER_ISSUE_STATUSES）──
+# 遗留问题（domain_legacy_issues）：pending 是业务方指定的写法，不要"顺手"改成挂起——
+# 页面、导出、筛选三处按同一字面量比对，任何一处大小写不同都会静默漏算
+DOMAIN_LEGACY_STATUSES = ("OPEN", "CLOSED", "pending")
+DOMAIN_LEGACY_STATUS_DEFAULT = "OPEN"
+# 这两张表沿用「高/中/低」而非 P0-P3：它们是跟踪事项不是需求，与需求优先级不同口径
+DOMAIN_TASK_PRIORITIES = ("高", "中", "低")
+DOMAIN_TASK_PRIORITY_DEFAULT = "中"
+
 # ── 年度迭代状态 ─────────────────────────────────────────────────────────────
 ITERATION_STATUSES = ("planning", "in_progress", "done")
 
@@ -112,6 +121,27 @@ def norm_issue_urgency(v, *, partial: bool = False) -> Optional[str]:
         return s
     raise ValueError(f"重要程度「{v}」非法，应为 {'/'.join(CUSTOMER_ISSUE_URGENCIES)} 之一")
 
+
+
+def norm_domain_legacy_status(v, *, partial: bool = False) -> Optional[str]:
+    """遗留问题状态：大小写不敏感输入，一律归一到 DOMAIN_LEGACY_STATUSES 的字面量。
+
+    归一而不是直接收原串，是因为 "Pending"/"pending"/"PENDING" 落库后按字面量分组统计
+    会变成三档；出口只有一种写法，前端下拉才和统计对得上。
+    """
+    if _is_blank(v):
+        return None if partial else DOMAIN_LEGACY_STATUS_DEFAULT
+    s = str(v).strip()
+    for c in DOMAIN_LEGACY_STATUSES:
+        if s.lower() == c.lower():
+            return c
+    raise ValueError(f"状态「{v}」非法，应为 {'/'.join(DOMAIN_LEGACY_STATUSES)} 之一")
+
+
+def norm_domain_priority(v, *, partial: bool = False) -> Optional[str]:
+    """领域跟踪事项优先级：高/中/低（与需求的 P0-P3 是两套口径，不互转）。"""
+    return _norm_choice(v, DOMAIN_TASK_PRIORITIES, DOMAIN_TASK_PRIORITY_DEFAULT,
+                        "优先级", partial=partial)
 
 # ── 关键特性交付状态（key_features）───────────────────────────────────────────
 # 从"最成熟"到"最早期"排序；前端点灯颜色须与本顺序一致。

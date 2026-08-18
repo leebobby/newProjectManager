@@ -391,10 +391,10 @@ export const iterationRequirementApi = {
 }
 
 export const domainApi = {
-  // params: { year, month, include_hidden }（不传＝当前进行中迭代口径）
+  // params: { year, month, include_hidden, project }（不传＝进行中迭代 + 第一个有快照的项目）
   list: (params) => http.get('/domains', { params }),
   requirements: (groupId, params) => http.get(`/domains/${groupId}/requirements`, { params }),
-  issues: (groupId) => http.get(`/domains/${groupId}/issues`),
+  issues: (groupId, params) => http.get(`/domains/${groupId}/issues`, { params }),
   updateContent: (groupId, data) => http.put(`/domains/${groupId}/content`, data),
   setVisibility: (groupId, hidden) => http.put(`/domains/${groupId}/visibility`, { hidden }),
   // 事务与风险跟踪
@@ -402,6 +402,14 @@ export const domainApi = {
   riskCreate: (data) => http.post('/domains/risks', data),
   riskUpdate: (id, data) => http.put(`/domains/risks/${id}`, data),
   riskRemove: (id) => http.delete(`/domains/risks/${id}`),
+  // 遗留问题
+  legacyList: (params) => http.get('/domains/legacy-issues', { params }),
+  legacyCreate: (data) => http.post('/domains/legacy-issues', data),
+  legacyUpdate: (id, data) => http.put(`/domains/legacy-issues/${id}`, data),
+  legacyRemove: (id) => http.delete(`/domains/legacy-issues/${id}`),
+  // 问题单目标（读开放，写仅 admin）
+  issueTargets: (project) => http.get('/domains/issue-targets', { params: { project } }),
+  saveIssueTargets: (data) => http.put('/domains/issue-targets', data),
 }
 
 export const debugVersionApi = {

@@ -35,8 +35,8 @@ cd frontend && npm install && npm run dev
 
 | 档位 | 依赖 | 适用 |
 | --- | --- | --- |
-| **登录用户**（协作编辑域） | `Depends(get_current_user)` | 日常填报与记录：进展、事务、风险、问题条目、出差、调试版本、领域内容、关键特性…… |
-| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、专项版式模板、一本通、干系人、阵型、`config.json`、数据对账 |
+| **登录用户**（协作编辑域） | `Depends(get_current_user)` | 日常填报与记录：进展、事务、风险、问题条目、出差、调试版本、领域内容、领域遗留问题、关键特性…… |
+| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、专项版式模板、一本通、干系人、阵型、领域问题单目标、`config.json`、数据对账 |
 | **字段级白名单** | 路由内按角色逐字段判 | 同一行里不同字段权限不同，见 [routers/customer_status.py](backend/routers/customer_status.py) |
 
 配套硬规则：
@@ -45,7 +45,7 @@ cd frontend && npm install && npm run dev
   - **仅 admin**：主数据与配置类，以及客户面数据——客户面问题条目、硬件清零、
     SOW 字段与数据行、机台 license、机台自定义信息块、客户定制化需求、专项本体。
   - **登录用户**：专项/攻关的事务行与风险行、专项分段图片、现场调试版本与诉求与接收人、
-    出差记录、领域风险。
+    出差记录、领域风险、领域遗留问题。
   - 判断依据是「误删的代价」：别人长期跟踪的客户面记录和主数据要拦，
     自己录的日常条目不拦。新增删除接口时对照上面两组归类，**不要凭该表的写权限推断**。
 - **创建后锁定的字段**要在三处都拦住：前端禁用、`*Update` schema 不声明该字段、路由再拒一次。
@@ -102,6 +102,26 @@ cd frontend && npm install && npm run dev
 - 权限分档：改模板、套模板＝**仅 admin**（配置类主数据 / 改的是整页版式）；
   某专项内部的分段改名、停用、排序＝**登录用户**（协作编辑，走 `PUT /content` 的乐观锁）。
 
+## 领域管理：问题单口径与目标
+
+领域总览的「问题单情况」有**两个可能的数据源**，判断逻辑收口在
+`domains._resolve_issue_source()`，改口径前先读它：
+
+1. **优先**：`issue_snapshots` 里选定项目的**最新一次快照**（问题单管理采集的结果）。
+   只看最新一份——趋势属于问题单管理，别在领域页再造一套。
+2. **回退**：一份快照都没有时读老的问题单 Excel（`config.issue_report_path`）。
+   保留它只是为了不让还没接 API 采集的部署丢掉这一列。
+
+两条硬规则：
+
+- **指定的项目没有快照时，如实返回 `available=False` + 原因，绝不静默换成别的项目的数字**。
+  数字看着都合理，换掉了没人看得出来。
+- 快照元数据在库、明细在文件，两者可能不同步（目录被清理、迁移漏拷）。
+  `_snapshot_rows()` 读不到文件时返回空列表而不是抛错——整页 500 比显示 0 条更糟。
+- 目标值（`domain_issue_targets`）是**管理口径不是采集事实**，因此按主数据一档＝**仅 admin 可写**，
+  读对所有登录用户开放（页面要显示达成情况）。`project=""` 是通用兜底目标，
+  项目专属目标优先；继承来的值要在设定界面标出来，否则管理员会以为自己在改本项目的值。
+
 ## 枚举：单一来源
 
 所有状态 / 优先级词表收口在 [backend/enums.py](backend/enums.py)，**不要在 router 或前端
@@ -110,6 +130,10 @@ cd frontend && npm install && npm run dev
 - 校验用 `norm_*` 系列函数（`norm_priority` / `norm_progress` / `norm_issue_status` …）。
 - **`norm_*` 只挂在 `Create` / `Update` schema 上，绝不挂 `Base` / `Out`**：`Out` 继承 `Base`
   并走 `from_attributes` 读库，老库里的历史脏值会让读取直接 422。
+- 状态词表里**大小写不统一的字面量要在入口归一**：领域遗留问题的三档是
+  `OPEN / CLOSED / pending`（业务方指定的写法，别顺手统一成大写），
+  `norm_domain_legacy_status()` 把任意大小写折回这三个字面量——否则
+  "Pending" 与 "pending" 在按字面量分组的统计里会各占一档，且没人会当 bug 去查。
 - 前端下拉值必须与 `enums.py` 一致；关键特性的颜色映射在
   [utils/featureStatus.js](frontend/src/utils/featureStatus.js)，顺序须与后端六档一致。
 - 自由表格的列格式白名单 `GRID_COL_TYPES`（text / select / date / **light**）在两端各有一份：
