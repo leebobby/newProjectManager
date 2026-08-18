@@ -30,8 +30,11 @@ const routes = [
   {
     path: '/customers',
     name: 'CustomerManagement',
+    // 客户主数据的写操作服务端已限 admin，这里补上路由守卫：此前普通用户敲 URL
+    // 能只读打开整个客户台账。注意别把 requireAdmin 带到下面的 /customers/:id
+    // ——客户详情是所有登录用户的日常页面。
     component: () => import('../views/CustomerManagement.vue'),
-    meta: { title: '客户管理', icon: 'OfficeBuilding', hidden: true },
+    meta: { title: '客户管理', icon: 'OfficeBuilding', hidden: true, requireAdmin: true },
   },
   {
     path: '/customers/:id(\\d+)',
@@ -111,6 +114,12 @@ const routes = [
     name: 'SpecialDetail',
     component: () => import('../views/SpecialDetail.vue'),
     meta: { title: '专项详情', hidden: true },
+  },
+  {
+    path: '/special-templates',
+    name: 'SpecialTemplates',
+    component: () => import('../views/SpecialTemplates.vue'),
+    meta: { title: '专项模板', icon: 'Files', requireAdmin: true, group: '进度管理' },
   },
   {
     path: '/resource-groups',

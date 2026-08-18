@@ -817,6 +817,10 @@ class SpecialContent(Base):
     extra_grids_json = Column(Text, default="[]")
     # 分段显示顺序：["goal","plan",...,"grid:<gid>"]（空数组=按默认顺序）
     section_order_json = Column(Text, default="[]")
+    # 分段标题/启停 + 套用过的模板：
+    #   {"template_id":3,"template_name":"...","sections":{"goal":{"title":"...","enabled":false}}}
+    # 空对象＝全用默认标题、全部启用（老数据行为不变）。解析见 special_layout.py
+    section_config_json = Column(Text, default="{}")
     version = Column(Integer, nullable=False, default=0, comment="乐观锁")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -863,6 +867,29 @@ class SpecialRisk(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     special = relationship("Special", back_populates="risks")
+
+
+class SpecialTemplate(Base):
+    """专项模板：一份可复用的「版式」预设（主数据，admin 维护）。
+
+    模板**只描述版式**——有哪些分段、各叫什么、什么顺序、自定义表格的表头长什么样，
+    不含任何业务数据。套用时把版式写进对应专项的 special_contents，此后两者脱钩：
+    改模板不会动已建专项，删模板也不会让已建专项的版式失效。
+    这样「模板」始终是录入期的便利，而不是运行期的依赖。
+    """
+    __tablename__ = "special_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False, comment="模板名")
+    kind = Column(String(16), default="", comment="限定适用类型 special/assault，空=通用")
+    description = Column(String(512), default="", comment="用途说明，建专项时给选择者看")
+    # {"order":[key...], "config":{key:{title,enabled}}, "blocks":[{tkey,kind,title,...}]}
+    # blocks 里的 tkey 是模板内稳定标识：重复套用按 tkey 认领已有分段，不重复插入
+    layout_json = Column(Text, default='{"order":[],"config":{},"blocks":[]}')
+    is_active = Column(Boolean, default=True)
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class SpecialEditLock(Base):

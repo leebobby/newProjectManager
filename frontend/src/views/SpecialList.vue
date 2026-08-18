@@ -54,6 +54,19 @@
         <el-form-item label="名称">
           <el-input v-model="dialog.form.name" :placeholder="dialog.form.kind === 'assault' ? '攻关名称' : '专项名称'" />
         </el-form-item>
+        <!-- 版式模板只在新建时选：建完再改版式走详情页的「套用模板」，那里能保证不删已填内容 -->
+        <el-form-item v-if="!dialog.editing" label="版式模板">
+          <el-select v-model="dialog.form.template_id" clearable placeholder="不套用（默认版式）" style="width: 100%">
+            <el-option v-for="t in templates" :key="t.id" :label="t.name" :value="t.id">
+              <span>{{ t.name }}</span>
+              <span class="tpl-desc">{{ t.description }}</span>
+            </el-option>
+          </el-select>
+          <div class="tpl-hint">
+            决定详情页有哪些分段、各叫什么、什么顺序。模板在
+            <router-link to="/special-templates">专项模板</router-link> 页维护。
+          </div>
+        </el-form-item>
         <el-form-item label="责任人">
           <el-input v-model="dialog.form.owner" />
         </el-form-item>
@@ -91,11 +104,12 @@ import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
-import { specialApi } from '../api'
+import { specialApi, specialTemplateApi } from '../api'
 import { reloadSpecials } from '../store/specials'
 import { auth } from '../store/auth'
 
 const list = ref([])
+const templates = ref([])
 const loading = ref(false)
 const includeInactive = ref(true)
 const router = useRouter()
@@ -109,6 +123,7 @@ function defaultForm() {
   return {
     name: '',
     kind: 'special',
+    template_id: null,
     owner: '',
     sort_order: 0,
     is_active: true,
@@ -116,6 +131,13 @@ function defaultForm() {
     email_cc: '',
     email_subject_tpl: '',
   }
+}
+
+async function loadTemplates() {
+  try {
+    const { data } = await specialTemplateApi.list()
+    templates.value = data
+  } catch { templates.value = [] }   // 模板拉不到不该挡住建专项，留空＝用默认版式
 }
 
 async function load() {
@@ -191,7 +213,7 @@ function onOpen(row) {
   router.push(`/specials/${row.id}`)
 }
 
-onMounted(load)
+onMounted(() => { load(); loadTemplates() })
 </script>
 
 <style scoped>
@@ -206,6 +228,12 @@ onMounted(load)
   color: #909399;
   line-height: 1.6;
   margin-top: 4px;
+}
+.tpl-desc {
+  float: right;
+  margin-left: 16px;
+  color: #909399;
+  font-size: 12px;
 }
 .tpl-hint code {
   background: #f5f7fa;

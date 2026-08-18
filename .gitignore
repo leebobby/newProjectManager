@@ -1,0 +1,34 @@
+# ── Python / 后端 ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── 前端 ────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+*.local
+
+# ── 运行时数据（首次启动由 create_all + seed 自动生成，不入库）──
+# 数据库属于部署实例的状态而非源码：入库会让每次改动都带上二进制 diff，
+# 且多人分别提交自己的库必然冲突。备份走 部署指南 第 4 章的定时 .backup。
+backend/app.db
+backend/app.db-journal
+backend/app.db-wal
+backend/app.db-shm
+
+# 用户上传文件同理：属于实例数据，部署时确保后端进程对该目录有写权限
+backend/uploads/
+
+# ── 编辑器 / 操作系统 ────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ── 测试 / 工具缓存 ──────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

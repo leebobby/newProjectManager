@@ -6,66 +6,128 @@
 
 ```
 .
-├── backend/                 FastAPI 后端
-│   ├── main.py              入口：CORS、路由挂载、全局认证、admin 初始化
-│   ├── database.py          SQLAlchemy 引擎 / Session
-│   ├── models.py            ORM 模型（含 User / OperationLog / Handbook / Special 等）
-│   ├── schemas.py           Pydantic 请求/响应模型
-│   ├── auth.py              密码哈希 + JWT + get_current_user / require_admin
-│   ├── op_log.py            操作日志写入工具（异常吞掉不影响主流程）
-│   ├── config.json          可配置项（当前阶段下拉选项等）
-│   ├── pptx_utils.py        PPT 导出工具
-│   ├── uploads/             用户上传文件（gitignore，运行时创建）
-│   │   ├── handbook/<yyyymm>/      一本通文件
-│   │   └── specials/<id>/          专项全景图
-│   ├── routers/
-│   │   ├── auth.py              /api/auth/login /register /logout /me /change-password
-│   │   ├── users.py             /api/users  (仅 admin)
-│   │   ├── op_logs.py           /api/op-logs 操作日志查询 (仅 admin)
-│   │   ├── config.py            /api/config 读写配置
-│   │   ├── customer_status.py
-│   │   ├── versions.py          旧版版本（只读，仅项目简介页消费）
-│   │   ├── domains.py           /api/domains 领域管理（按 PL 组聚合需求/问题单）
-│   │   ├── major_versions.py    /api/major-versions + /api/iteration-versions
-│   │   ├── iterations.py
-│   │   ├── annual_iterations.py
-│   │   ├── iteration_requirements.py
-│   │   ├── roadmap.py
-│   │   ├── stakeholders.py      /api/stakeholders/* 干系人沟通地图 / 战场矩阵
-│   │   ├── handbook.py          /api/handbook/* 项目一本通分类 + 条目 + 文件
-│   │   ├── specials.py          /api/specials/* 专项列表 + 内容 + 事务 + 风险 + 全景图
-│   │   └── issues.py            /api/issues/* 问题单数据 / 趋势 / 脚本 / PPT
-│   └── requirements.txt
-└── frontend/                Vue 3 前端
-    ├── package.json
-    ├── vite.config.js       /api 反向代理到 8000
+├── backend/                     FastAPI 后端
+│   ├── main.py                  入口：迁移链 → create_all → seed → 路由挂载 → 调度启动
+│   ├── database.py              引擎 / Session；每条连接挂 PRAGMA（外键 / WAL / busy_timeout）
+│   ├── models.py                ORM 模型（50+ 张表，注释含设计取舍）
+│   ├── schemas.py               Pydantic v2 请求/响应模型
+│   ├── enums.py                 状态 / 优先级枚举的单一来源 + norm_* 规范化校验器
+│   ├── auth.py                  bcrypt 哈希 + JWT + get_current_user / require_admin
+│   ├── op_log.py                操作日志写入（异常吞掉不影响主流程）
+│   ├── notify.py                站内通知分发 dispatch / broadcast（与 op_log 是两条独立路径）
+│   ├── scheduler.py             APScheduler：DDL 临期扫描 + 每日问题单快照采集
+│   ├── migrate.py               ⚠ 已冻结的加列迁移（历史老库兼容，勿再追加）
+│   ├── automigrate.py           启动时自动 alembic upgrade head（失败只记日志）
+│   ├── alembic/                 结构变更的正式通道（改名/删列/改类型/加约束/数据回填）
+│   │   ├── env.py               render_as_batch=True，SQLite 靠表重建完成 ALTER
+│   │   └── versions/            0001_baseline … 0008_special_section_config
+│   ├── special_layout.py        专项详情页「版式」解析（分段顺序/标题/启停 + 模板套用）
+│   ├── xlsx_io.py               清单类 Excel 导出的统一外观（style_header + beautify）
+│   ├── xlsx_utils.py            专项/攻关的单页图文混排 Excel 导出
+│   ├── pptx_utils.py            PPT 导出工具
+│   ├── config.json              运维可调项（阶段下拉 / 报表路径 / 采集配置 / 硬件清零选项…）
+│   ├── requirements.txt
+│   ├── scripts/
+│   │   ├── fetch_issues_api.py  按项目从 DTS 拉问题单并清洗（问题单管理的采集脚本）
+│   │   └── reset_password.py    忘记密码时的救急重置脚本
+│   ├── tests/                   pytest 回归（conftest 起临时库，不碰开发库）
+│   ├── data/issue_snapshots/    问题单快照明细 JSON（库里只存聚合数字）
+│   ├── uploads/                 用户上传文件（已 gitignore，运行时创建）
+│   │   ├── handbook/<yyyymm>/    一本通文件
+│   │   ├── specials/<id>/        专项全景图 / 分段图片
+│   │   ├── key_features/<id>/    关键特性附件
+│   │   ├── licenses/             机台 license
+│   │   ├── customer_extra/       机台自定义信息块附件
+│   │   └── project_formation/    项目阵型图
+│   └── routers/                 全部挂 /api 前缀；写操作记 op_log，协作编辑域带乐观锁
+│       ├── auth.py                  /auth/login /logout /register(admin) /me /change-password
+│       ├── users.py                 /users 用户与人员档案（仅 admin）
+│       ├── resource_groups.py       /resource-groups 部门 / PL 组两级主数据
+│       ├── op_logs.py               /op-logs 操作日志查询（仅 admin）
+│       ├── config.py                /config（GET 公开读，PUT 仅 admin，改采集配置热更新调度）
+│       ├── system.py                /system/storage 磁盘使用率等运维信息
+│       ├── customers.py             /customers 客户主数据 + 别名（写仅 admin）
+│       ├── customer_status.py       /customer-status 机台总览（字段级权限矩阵）
+│       ├── customer_issues.py       /customer-issues 软件问题 / 现场事务 / 客户需求（一表三类）
+│       ├── hardware_issues.py       /hardware-issues 硬件问题清零（尾部按机台展开）
+│       ├── customer_extra.py        /customer-extra 机台自定义信息块（定义 + 值 + 附件）
+│       ├── customer_custom_req.py   /customer-custom-reqs 客户定制化需求
+│       ├── sow.py                   /sow SOW 列定义（全局）+ 每机台数据行
+│       ├── licenses.py              /licenses 机台 license 上传 / 下载
+│       ├── key_features.py          /key-features 关键特性目录 + 机台多对多 + 附件
+│       ├── business_trips.py        /business-trips 出差记录 + 客户面支撑看板
+│       ├── major_versions.py        /major-versions + /iteration-versions 两级版本
+│       ├── debug_versions.py        /debug-versions + /debug-demands 现场调试版本 / 诉求 / 接收人
+│       ├── annual_iterations.py     /annual-iterations 年度 12 月迭代
+│       ├── iteration_requirements.py         /iteration-requirements 领域需求（6 进展子项）
+│       ├── iteration_product_requirements.py /iteration-product-requirements 产品需求（7 进展子项）
+│       ├── domains.py               /domains 按 PL 组聚合 + 事务与风险跟踪
+│       ├── issues.py                /issues 问题单：本地报表 / 趋势 / 快照采集 / PPT
+│       ├── metrics.py               /metrics 版本完成率 / 迭代质量 / 组级负载
+│       ├── roadmap.py               /roadmap 项目 / 阶段 / 里程碑
+│       ├── stakeholders.py          /stakeholders 沟通地图 / 战场矩阵
+│       ├── project_formation.py     /project-formation 项目阵型图 + 工时名单
+│       ├── specials.py              /specials 专项与攻关：内容 / 事务 / 风险 / 编辑锁 / 周报
+│       ├── special_templates.py     /special-templates 专项版式模板（主数据，仅 admin 可写）
+│       ├── handbook.py              /handbook 一本通分类 + 条目 + 文件
+│       ├── notifications.py         /notifications 通知列表 / 已读 / 订阅 / 广播
+│       ├── mapping.py               /mapping 数据对账：字符串字段批量绑主数据（仅 admin）
+│       └── _lookups.py              跨 router 复用的「字符串 → 主数据 FK」反查工具
+└── frontend/                    Vue 3 前端
+    ├── package.json             vue-router / element-plus / echarts / axios
+    ├── vite.config.js           /api 反向代理到 8000
     └── src/
         ├── main.js
-        ├── App.vue          整体布局（可折叠侧栏 + 动态二级菜单 + 顶部用户条）
-        ├── router/          路由 + 登录守卫
+        ├── App.vue              整体布局（可折叠侧栏 + 7 分组菜单 + 动态二级菜单 + 通知区）
+        ├── router/index.js      路由 + 登录守卫；meta.group 决定侧栏分组
+        ├── api/index.js         axios 封装（自动带 token + 401/409/423 拦截 + 跨 tab 同步登出）
         ├── store/
-        │   ├── auth.js          全局 auth 状态 + 跨 tab 退出广播
-        │   ├── idleWatcher.js   15 分钟闲置自动登出（多 tab 共享活动时间）
-        │   └── specials.js      启用中的专项列表（供侧栏二级菜单）
+        │   ├── auth.js              全局 auth 状态 + 跨 tab 退出广播
+        │   ├── idleWatcher.js       15 分钟闲置自动登出（多 tab 共享活动时间）
+        │   ├── specials.js          启用中的专项列表（供侧栏二级菜单）
+        │   ├── customerIssues.js    客户面问题条目的共享缓存
+        │   └── storage.js           localStorage 读写封装
+        ├── utils/
+        │   ├── featureStatus.js     关键特性状态 → 点灯颜色
+        │   ├── gridLight.js         自由表格「点灯」列的取值词表与红黄绿档位
+        │   └── format.js            日期 / 文件大小格式化
         ├── components/
-        │   ├── EditableText.vue       点击进入编辑的多行文本块
-        │   └── MilestoneTimeline.vue  水平里程碑时间线
-        ├── api/index.js     axios 封装（自动带 token + 401/409 拦截 + 跨 tab 同步登出）
-        └── views/
-            ├── Login.vue                    登录 / 注册
-            ├── ProjectIntro.vue             项目简介
-            ├── CustomerStatus.vue           客户面状态
-            ├── VersionManagement.vue        版本管理（大版本 + 迭代版本二级结构）
-            ├── IterationManagement.vue      迭代管理
-            ├── IterationDetail.vue          迭代详情（需求清单）
-            ├── IssueManagement.vue          问题单管理
-            ├── StakeholderManagement.vue    干系人管理
-            ├── ProjectHandbook.vue          项目一本通（流程/规范/PPT模板等）
-            ├── SpecialList.vue              专项配置（仅 admin）
-            ├── SpecialDetail.vue            专项详情页（一专项一页面）
-            ├── RoadmapManage.vue            里程碑管理（仅 admin）
-            ├── OperationLogs.vue            操作日志查询（仅 admin）
-            └── UserManagement.vue           用户管理（仅 admin）
+        │   ├── CustomerDetailPanel.vue  机台详情主面板（里程碑/SOW/license/自定义块/定制需求）
+        │   ├── CustomerIssueCell.vue    表格内的问题条目清单单元格
+        │   ├── DebugVersionPanel.vue    现场调试版本面板（版本管理的一个 Tab）
+        │   ├── VersionTimeline.vue      版本时间线
+        │   ├── VersionMergeDialog.vue   版本合入内容对话框
+        │   ├── IssueApiPanel.vue        单项目问题单面板（采集 / 趋势 / 明细）
+        │   ├── RichGrid.vue             可增删行列的自由表格（专项自定义分段；列格式含点灯）
+        │   ├── RichTextEditor.vue       富文本编辑器
+        │   ├── FormationGrid.vue        阵型格子表
+        │   ├── MilestoneTimeline.vue    水平里程碑时间线
+        │   ├── EditableText.vue         点击进入编辑的多行文本块
+        │   ├── EditSelectCell.vue       表格内下拉即时保存单元格
+        │   ├── SubscribeButton.vue      订阅 / 取消订阅按钮
+        │   ├── NotificationBell.vue     顶栏通知铃
+        │   ├── NotificationMarquee.vue  广播通知跑马灯
+        │   └── iteration/
+        │       ├── DomainRequirementTab.vue   迭代详情 · 领域需求页
+        │       └── ProductRequirementTab.vue  迭代详情 · 产品需求页
+        └── views/                （路径与权限见下方「页面与功能」）
+            ├── Login.vue                    ProjectIntro.vue
+            ├── CustomerStatus.vue           CustomerIssueTracking.vue *
+            ├── HardwareClearance.vue *      CustomerManagement.vue
+            ├── CustomerDetail.vue           BusinessTripManagement.vue
+            ├── VersionManagement.vue        IterationManagement.vue
+            ├── IterationDetail.vue          IssueManagement.vue
+            ├── DomainManagement.vue         KeyFeatureManagement.vue
+            ├── MetricsDashboard.vue         RoadmapManage.vue
+            ├── RoadmapTimeline.vue *        StakeholderManagement.vue
+            ├── ResourceGroupManagement.vue  ProjectHandbook.vue
+            ├── SpecialList.vue              SpecialDetail.vue
+            ├── SpecialTemplates.vue *
+            ├── DataMapping.vue              UserManagement.vue
+            └── OperationLogs.vue
+                * 无独立路由，作为子组件嵌入：前两者是 CustomerStatus 的
+                  「问题跟踪」/「硬件问题清零」Tab，RoadmapTimeline 供
+                  ProjectIntro 与 RoadmapManage 复用渲染路线图。
 ```
 
 ## 启动
@@ -105,30 +167,65 @@ npm run dev
 
 ## 页面与功能
 
-| 页面 | 路径 | 权限 | 说明 |
-| --- | --- | --- | --- |
-| 登录 | `/login` | 公开 | 仅登录（自助注册已下线，账号由管理员创建）；标题取自 `config.about_content` 首行 |
-| 项目简介 | `/intro` | 登录用户 | 品牌横幅 + 实时统计 + 模块导航卡片 |
-| 客户面状态 | `/customer-status` | 登录用户 | 机台编号 / 客户 / 型号 / 当前阶段 / 现场版本 / 关注度 / 进展 / **现场关键事务（清单）** / **软件类风险（清单）**；顶部「编辑」开关切换只读/编辑，支持排序、清单勾选、精简/详细模式 |
-| 版本管理 | `/versions` | 登录用户 | 按里程碑项目分 Tab；大版本含版本范围 / 实际发布时间；大版本下可展开迭代版本列表 |
-| 迭代管理 | `/iterations` | 登录用户 | 年度视图；点击月份进入需求清单详情页 |
-| 问题单管理 | `/issues` | 登录用户 | 按日期目录读取 Excel；当天数据（表格/图表切换） / 趋势 / 实时刷新；导出 PPT；统计明细可钻取到 19 列原始数据 |
-| 领域管理 | `/domains` | 登录用户 | 按 PL 组聚合需求情况（当前迭代）/ 问题单情况 / 最近主要工作 / 风险与求助 |
-| 干系人管理 | `/stakeholders` | 登录用户 | 项目组沟通地图 + 战场沟通矩阵 |
-| 项目一本通 | `/handbook` | 登录用户（admin 写） | 自定义分类，条目支持外链或上传文件，普通用户只读+下载 |
-| 专项管理 | `/specials/:slug` | 登录用户 | 左侧二级菜单按启用专项动态展开；每个专项一页含目标 / 里程碑 / 进展求助 / 全景图 / 事务表 / 风险问题表 / 阵型 |
-| 专项配置 | `/specials` | 仅 admin | 增删改专项（slug/name/owner/sort_order/is_active） |
-| 里程碑管理 | `/roadmaps` | 仅 admin | 甘特式路线图，可管理项目 / 阶段 / 里程碑 |
-| 操作日志 | `/op-logs` | 仅 admin | 登录与关键写操作审计；可按用户/动作/对象/时间范围/关键字分页查询 |
-| 用户管理 | `/users` | 仅 admin | 增删用户、改角色、禁用、重置密码 |
+侧边栏按 `meta.group` 分 7 组渲染，下表按该顺序排列。「权限」列的 *登录用户* 指所有已登录
+账号可读可写（协作编辑域，带乐观锁），*仅 admin* 指路由守卫或页面自查拦截非管理员。
+
+| 分组 | 页面 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- | --- |
+| — | 登录 | `/login` | 公开 | 仅登录（自助注册已下线，账号由管理员创建）；标题取自 `config.about_content` 首行 |
+| 概览 | 项目简介 | `/intro` | 登录用户 | 品牌横幅 + 实时统计 + 模块导航卡片 + 路线图渲染 |
+| 概览 | 里程碑管理 | `/roadmaps` | 仅 admin | 甘特式路线图，可管理项目 / 阶段 / 里程碑 |
+| 客户面管理 | 客户面状态 | `/customer-status` | 登录用户 | 三个 Tab：**机台总览**（机台编号/客户/型号/阶段/现场版本/关注度/进展/关键特性点灯）、**问题跟踪**（全战场问题条目汇总，可按客户/责任领域/状态过滤，支持导入导出）、**硬件问题清零**（一行一问题，尾部按机台展开清零状态）。总览顶部「编辑」开关切换只读/编辑 |
+| 客户面管理 | 客户管理 | `/customers` | 仅 admin | 客户主数据 + 别名维护；另含 SOW 字段配置、自定义信息块配置两个全局配置弹窗。侧栏入口在「客户面状态」二级菜单 |
+| 客户面管理 | 客户详情 | `/customers/:id` | 登录用户 | 单客户档案 + 名下机台逐台展开（里程碑 / SOW / license / 自定义信息块 / 定制化需求 / 问题条目），可订阅变更 |
+| 客户面管理 | 客户面支撑情况 | `/business-trips` | 登录用户 | 成员出差记录（谁 / 去哪个战场 / 起止时间 / 事由），状态按日期实时推导；含支撑看板视图 |
+| 进度管理 | 版本管理 | `/versions` | 登录用户 | 按里程碑项目分 Tab，大版本含版本范围 / 实际发布时间，可展开迭代版本；另有「现场调试版本」Tab（T 版本 + 诉求收集 + 接收人清单） |
+| 进度管理 | 迭代管理 | `/iterations` | 登录用户 | 年度视图，12 个月度迭代；点击进入需求清单详情页 |
+| 进度管理 | 迭代详情 | `/iterations/:id` | 登录用户 | 两个 Tab：**产品需求**（7 个进展子项）/ **领域需求**（6 个进展子项）；均支持行内编辑、Excel 批量导入、导出 PPT |
+| 进度管理 | 问题单管理 | `/issues` | 登录用户 | 按项目分 Tab（YLS3000/5000/8000，走 API 采集：每日快照 + 趋势 + 明细），另有「历史数据」Tab 读本地 Excel 报表（当天数据 / 趋势）；导出 PPT，统计明细可钻取到 19 列原始数据 |
+| 进度管理 | 领域管理 | `/domains` | 登录用户 | 两个 Tab：**领域总览**（按 PL 组聚合需求情况 / 问题单情况 / 最近主要工作 / 风险与求助，可下钻明细、可移除不管理的组）、**事务与风险跟踪**（跨领域逐条，带责任领域列） |
+| 进度管理 | 关键特性 | `/key-features` | 登录用户（删除 admin） | 全局特性目录：交付状态六档＝点灯、需求度量（总 SR/已验收/已转测）、责任人（FO/SE）、简介、附件与链接；机台按需勾选引用 |
+| 进度管理 | 专项管理 | `/specials` | 仅 admin | 增删改专项 / 攻关（kind/name/owner/sort_order/is_active + 周报收件人默认值）。侧栏二级菜单按启用项动态展开 |
+| 进度管理 | 专项详情 | `/specials/:id` | 登录用户 | 一专项一页：8 个内置分段（目标 / 里程碑时间线 / 整体进展 / 求助 / 全景图 / 风险问题表 / 事务表 / 阵型）+ 任意个自定义分段（自由表格、文本框、图片）。**分段可改标题、可整段停用、可调顺序，逐专项独立**；admin 可「套用模板」一次性换版式。带**编辑锁**（同一时刻仅一人可编辑，TTL 180s 心跳续期，admin 可强制接管）；导出 Excel 与周报 .eml 均按当前版式生成 |
+| 进度管理 | 专项模板 | `/special-templates` | 仅 admin | 维护可复用的**版式预设**：内置分段改标题/停用、自定义表格定义列（文本/下拉/日期/**点灯**）。建专项时可直接套用；套用后与模板脱钩，改模板不影响已建专项 |
+| 质量管理 | 度量看板 | `/metrics` | 登录用户 | 四个 Tab：版本完成率 / 迭代质量 / 组级负载 / 调试版本。完成率按进展子项加权（已完成 1.0、进行中 0.5、不涉及不计入） |
+| 组织管理 | 干系人管理 | `/stakeholders` | 登录用户（写 admin） | 项目组沟通地图 + 战场沟通矩阵 + **项目阵型**（阵型图上传 / 工时名单，支持 Excel 导入导出） |
+| 组织管理 | 组织架构 | `/resource-groups` | 仅 admin | 部门 / PL 组两级资源组主数据；组长挂 users，删除前拦截仍有成员或子组的组 |
+| 知识管理 | 项目一本通 | `/handbook` | 登录用户（写 admin） | 自定义分类，条目支持外链或上传文件，普通用户只读 + 下载；顶部关键字搜索 |
+| 系统管理 | 数据对账 | `/data-mapping` | 仅 admin | 把历史字符串字段批量绑定到主数据：客户对账（battlefield → customer_id）、人员对账（姓名/工号 → users），支持自动回填 / 手动指定 / 一键建档 |
+| 系统管理 | 用户管理 | `/users` | 仅 admin | 增删用户、改角色、禁用、重置密码；也用于维护「纯人员档案」（`can_login=false`）与 PL 组归属 |
+| 系统管理 | 操作日志 | `/op-logs` | 仅 admin | 登录与关键写操作审计；可按用户/动作/对象/时间范围/关键字分页查询 |
+
+> 老链接 `/customer-issues` 已重定向到 `/customer-status?tab=issues`；`/specials/:slug` 改为
+> `/specials/:id`（`specials.slug` 列保留但不再使用）。
 
 ### 客户面状态特性
 
-- **机台编号 / 战场** 创建后锁定（编辑时禁用），且新建时机台编号唯一校验。
-- **当前阶段** 下拉选择，候选项来自 [backend/config.json](backend/config.json) 中的 `current_stages`，运维改文件即可调整选项，前端无需发版。
-- **现场版本** 紧跟在「当前阶段」之后，记录机台目前部署的软件版本号；表格内双击可改。
-- **近期关注度** 1-5 星，表格内点击星星即时保存。
-- **近期重点事务 / 关键问题** 表格内 **双击单元格** 直接编辑，回车保存、ESC 取消。
+「机台总览」Tab 的列结构：序号 / 机台编号 / 客户 / 型号 / 当前阶段 / 现场版本 /
+近期关注度 / 当前进展 / 现场关键事务 / 软件类风险和问题 / 关键特性 / 硬件清零 / 操作。
+
+- **编辑 / 完成 开关**：默认只读，各字段纯展示、不显示行操作；点「编辑」才进入可改状态
+  （新增按钮还要求 admin）。**精简 / 详细** 另一组开关控制两个清单列的展开密度。
+- **机台编号 / 客户 / 型号** 创建后锁定：编辑弹窗禁用，`CustomerStatusUpdate` schema
+  也不接受，路由层再拒一次；新建时机台编号做唯一校验。
+- **仅 admin 可改**（`_ADMIN_ONLY_FIELDS`，越权返回 403）：
+  - **当前阶段** 下拉，候选项来自 [backend/config.json](backend/config.json) 的 `current_stages`，运维改文件即可调整，前端无需发版；
+  - **现场版本** 记录机台当前部署的软件版本号，下拉源为「大版本 + 迭代版本」合并列表，可 allow-create 手填；
+  - **近期关注度** 1-5 星，点击星星即时保存（0 = 未评估）。
+- **所有登录用户可改**（`_USER_FIELDS`）：**当前进展** 双击单元格行内编辑，回车保存、ESC 取消。
+- **现场关键事务 / 软件类风险和问题** 这两列已不再是 `customer_status.recent_focus` /
+  `key_issues` 里的 JSON 清单——自 Alembic `0004_customer_issues` 起提升为实体表
+  `customer_issues`，一行一条，靠 `kind` 区分（`task` = 现场关键事务，`issue` = 软件类问题，
+  `demand` = 客户需求），额外承载责任人 / 责任领域 / 重要程度 / 提出与计划解决时间 /
+  进展记录 / 状态。表格内由 `CustomerIssueCell` 渲染，跨战场汇总见同页「问题跟踪」Tab。
+  两个旧文本列仅作回滚保险留在模型与白名单里，现有前端不再写入。
+- **关键特性** 列按机台勾选的特性点灯，颜色取自 [featureStatus.js](frontend/src/utils/featureStatus.js)，
+  取值与顺序须与后端 `enums.KEY_FEATURE_STATUSES` 六档一致。
+- **硬件清零** 列显示 `已清零 / 需清零` 比值（数据源 `GET /api/hardware-issues/machine-summary`，
+  状态为「不涉及」的不计入分母，判定集合可用 config 的 `hw_machine_cell_done_options` /
+  `hw_machine_cell_na_options` 覆盖）；点数字跳到同页「硬件问题清零」Tab。
+- 表头居中，机台编号 / 客户 / 型号 / 当前阶段 四列支持排序。整行更新走乐观锁，
+  冲突返回 409。
 
 ### 配置文件示例 [backend/config.json](backend/config.json)
 
@@ -159,6 +256,87 @@ npm run dev
 - Docker Compose 一键部署 + Nginx 反向代理
 
 ## 更新日志
+
+> **两处已知空档，下面「补记」一节说明。** 日志缺 v0.14 – v0.24 的条目（v0.25.0 直接
+> 接到 v0.13.0），且 v0.26.0 之后陆续合入的功能未登记。git 历史在导入本仓库时被压缩成
+> 单个 `first upload` 提交，逐版本的日期与边界已无法还原，因此补记按**功能域**归并、
+> **不编造版本号与日期**；证据来自 `migrate.py` 里带版本号的迁移注释、
+> `alembic/versions/` 的 revision 说明与现有代码本身。后续发版请照常在此追加正式条目。
+
+### 补记 · 尚未编入版本号的变更
+
+**v0.14 – v0.24 空档**（依据 [migrate.py](backend/migrate.py) `_ADDITIONS` 中的版本注释重建）
+
+| 版本 | 变更 |
+| --- | --- |
+| v0.14 | 专项/攻关拓展：`kind` 区分专项/攻关、周报默认收件人（`email_to`/`email_cc`/`email_subject_tpl`）、事务与风险加 `status`、专项内容加自定义分段 `extra_grids_json` |
+| v0.15 | 迭代需求增加「责任人所属小组」`owner_group` |
+| v0.16 | 引入**客户主数据** `customers` + `customer_aliases`（code 业务主键 + 多别名），并扩展 `industry` / `intro` / `key_focus` |
+| v0.18 | `users` 表扩为人员档案：工号 `emp_no`、岗位 `job_title`、资源组归属 `group_id`、纯档案标记 `can_login`；引入两级**资源组** `resource_groups`（部门 → PL 组） |
+| v0.19 | 客户主数据 FK 化：`customer_status` / `stakeholder_battlefields` 挂 `customer_id`；阵型成员挂 `user_id` |
+| v0.20 | 业务表 owner / 版本 字符串 → FK（迭代、领域需求、产品需求、专项、事务、风险、一本通条目），反查逻辑收口到 [routers/_lookups.py](backend/routers/_lookups.py) |
+| v0.21 | 领域需求增加版本质量统计：合入链接 / 代码量 / 自验证用例数 / 转测后问题单数 |
+| v0.22 | 机台里程碑 `milestones_json`；机台自定义信息块（`customer_extra_fields` / `customer_extra_values`）；SOW（`sow_field_defs` / `sow_rows`）与机台 license |
+| v0.23 | 专项「一句话进展&求助」拆分为「整体进展」+「求助」两个字段 |
+| v0.24 | 专项/攻关详情页分段顺序可调（`section_order_json`，对齐 Alembic `0003`） |
+
+**v0.26.0 之后**（依据 `alembic/versions/0004`–`0007` 与现有代码）
+
+- **客户面问题条目实体化**（Alembic `0004` / `0005`）：`customer_status.recent_focus` /
+  `key_issues` 的 JSON 清单提升为实体表 `customer_issues`，一表三类（`issue` / `task` /
+  `demand`），补齐责任人 / 责任领域 / 重要程度 / 提出与计划解决时间 / 进展 / 分类专项；
+  重要程度旧词表「紧急」迁移为「重要」。新增「问题跟踪」汇总视图与 Excel 导入导出。
+- **关键特性重构**（Alembic `0006`）：从机台级单表改为全局特性目录 `key_features` +
+  `machine_key_features` 多对多引用；交付状态六档＝点灯、需求度量三数、FO/SE、附件与链接。
+- **硬件问题清零**（Alembic `0007`）：`hardware_issues` 一行一问题、尾部按机台展开清零状态
+  （`machine_cells_json`，机台增删不改表结构），自定义列值走 `extra_fields_json`，
+  列定义在 `config.hw_extra_columns`。
+- **问题单 API 采集**：新增按项目（`config.issue_api_projects`）的每日快照体系——
+  `issue_snapshots`（库存数字）+ `issue_snapshot_stats`（维度聚合，趋势数据源）+
+  `issue_collect_logs`（采集执行日志，成功失败都记），明细 JSON 落
+  `backend/data/issue_snapshots/`；采集脚本 [scripts/fetch_issues_api.py](backend/scripts/fetch_issues_api.py)，
+  由 [scheduler.py](backend/scheduler.py) 按 `config.issue_snapshot_time` 定时执行（改配置热更新，不用重启）。
+  本地 Excel 报表口径保留为「历史数据」Tab，并加 `issue_report_daily` 按天聚合缓存。
+- **站内通知**：`notifications` / `notification_reads` / `subscriptions` 三表 +
+  [notify.py](backend/notify.py) 分发器（定向 / 广播 / 按订阅），顶栏通知铃与广播跑马灯；
+  调度器每天扫描临期与逾期项（专项事务、专项风险、客户面问题）通知责任人。
+- **现场调试版本**：`debug_versions` + `debug_demands` + `debug_version_recipients`
+  （接收人可从战场沟通矩阵自动带出并逐人勾选），作为版本管理的一个 Tab。
+- **度量看板**：版本完成率 / 迭代质量 / 组级负载 / 调试版本四个视图；完成率按进展子项
+  加权（已完成 1.0、进行中 0.5、未开始与已延期 0、不涉及不计入分母）。
+- **领域管理增强**：事务与风险跟踪 `domain_risks`（跨领域、带责任领域列）、
+  不管理的 PL 组软删除 `domain_hidden`。
+- **客户面支撑情况**：`business_trips` 出差记录（人 / 战场 / 起止 / 事由），状态按日期
+  实时推导不入库，另有支撑看板。
+- **数据对账**：[routers/mapping.py](backend/routers/mapping.py) 把历史字符串字段批量绑定到
+  主数据（客户 battlefield → `customer_id`；阵型成员姓名/工号 → `users`），支持自动回填 /
+  手动指定 / 一键建档。
+- **专项编辑锁**：`special_edit_locks` 保证同一专项同一时刻仅一人处于编辑态
+  （TTL 180s 心跳续期，超时可接管，admin 可强制接管），写操作冲突返回 **423**；
+  另加专项 Excel 导出与周报 `.eml` 生成。
+- **专项版式模板**（Alembic `0008`）：不同专项需要不同分段，故分两层——
+  运行层 `special_contents.section_config_json` 存每个分段的标题覆盖与启停
+  （空对象＝默认标题、全部启用，存量专项行为不变）；授权层新增主数据表
+  `special_templates` 存可复用的版式预设，建专项时可套、事后可
+  `POST /specials/{id}/apply-template`。套用**只增不删**（按 `tkey` 认领分段，重复套用
+  幂等，已填内容与模板外的分段一律保留），套完即与模板脱钩。
+  顺序/标题/启停的解析收口到 [special_layout.py](backend/special_layout.py)，
+  详情页、Excel 导出、周报三处共用；此前导出与周报写死「一、目标 二、整体进展…」，
+  自定义分段进不了周报。自由表格新增**点灯**列格式（页面 / 周报 HTML / Excel 同一套红黄绿）。
+- **并发与运维**：SQLite 连接挂 `journal_mode=WAL` / `busy_timeout=5000` /
+  `synchronous=NORMAL`，连接池放宽到 15+25；启动路径接入
+  [automigrate.py](backend/automigrate.py) 自动 `alembic upgrade head`；新增 pytest
+  回归（`backend/tests/`）与 Excel 导出统一样式模块 [xlsx_io.py](backend/xlsx_io.py)。
+- **修复 Alembic 升级链卡死**：`0003` 缺幂等守卫，而它要加的列 `migrate.py` 里也有一份，
+  轮到 Alembic 时列已存在 → `duplicate column name` 被 `automigrate` 吞成一行 warning，
+  结果**整条链停在 `0002`，`0004`~`0007` 从未在存量库上执行过**（新库因 `create_all`
+  带全列而无症状）。补守卫后老库一次启动即可 `0002 → 0008` 追平。
+- **部署指南重构**（[doc/部署指南.md](doc/部署指南.md)）：拆成「新环境部署」与「历史生产升级」
+  两条互斥路径分别成章，每章按 **Linux / Windows** 给两套命令（systemd vs NSSM、cron vs
+  任务计划、字体与子进程编码差异），并补上差异速查表；后端 worker 数由 2 更正为 1
+  （APScheduler 与采集锁是进程内状态，多 worker 会重复执行）。
+
+---
 
 ### v0.26.0 — 2026-06-07
 

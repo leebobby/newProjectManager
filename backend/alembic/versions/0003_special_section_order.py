@@ -2,16 +2,18 @@
 
 Revision ID: 0003_special_section_order
 Revises: 0002_unify_product_priority
-Create Date: 2026-07-06
+Create Date: 2026-06-08
 
-专项/攻关详情页支持「每个专项各自调整分段顺序」（求助↔全景图互换等），
-需要给 special_contents 增加一列存放分段 key 的有序数组。空数组＝按默认顺序。
-新列 NOT NULL + server_default='[]'，存量行自动回填为 '[]'。
+专项详情页的分段顺序改为逐专项可调，顺序存本列（空数组＝按默认顺序）。
+
+本迁移的幂等守卫不是可选项：`migrate.py` 的 `_ADDITIONS` 里也有同名列，而启动顺序是
+ensure_schema() → create_all() → alembic upgrade，所以轮到 Alembic 时这列往往已经存在。
+没有守卫时这里会抛 `duplicate column name: section_order_json`，而 automigrate 把异常
+吞成一行 warning —— 表现为**整条升级链卡死在 0002，后续迁移全部静默不执行**。
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
-# revision identifiers, used by Alembic.
 revision = "0003_special_section_order"
 down_revision = "0002_unify_product_priority"
 branch_labels = None
@@ -19,6 +21,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    if "special_contents" not in insp.get_table_names():
+        return  # 新库还没建这表，create_all 会带出新列
+    cols = {c["name"] for c in insp.get_columns("special_contents")}
+    if "section_order_json" in cols:
+        return  # migrate.py / create_all 已先补上
     with op.batch_alter_table("special_contents") as batch_op:
         batch_op.add_column(
             sa.Column("section_order_json", sa.Text(),

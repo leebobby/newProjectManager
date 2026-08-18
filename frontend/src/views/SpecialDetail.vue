@@ -31,26 +31,50 @@
         </div>
       </div>
 
-      <!-- 分段顺序调整（编辑态；顺序仅本专项独立生效） -->
+      <!-- 分段设置（编辑态）：顺序 + 标题 + 启停，都只对本专项生效 -->
       <div v-if="canEdit" class="sec order-panel">
         <div class="sec-head">
-          <span>分段顺序</span>
-          <span class="muted-hint">上下移动可调整各分段显示顺序（仅本{{ label }}生效）</span>
+          <span>分段设置</span>
+          <span class="muted-hint">
+            改标题、停用整段、调顺序，均仅本{{ label }}生效；停用只是不显示，已填内容仍保留
+          </span>
+          <el-button
+            v-if="auth.isAdmin.value"
+            size="small"
+            @click="openTemplateDialog"
+          >套用模板</el-button>
         </div>
         <div class="sec-body order-list">
-          <div v-for="(k, si) in orderedKeys" :key="k" class="order-item">
+          <div v-for="(k, si) in orderedKeys" :key="k" class="order-item" :class="{ off: !sectionEnabled(k) }">
             <span class="order-idx">{{ si + 1 }}</span>
-            <span class="order-name">{{ sectionLabel(k) }}</span>
+            <!-- 自定义分段的标题在分段自己的头部改，这里只显示，避免两处可改同一个值 -->
+            <el-input
+              v-if="!k.startsWith('grid:')"
+              :model-value="sectionTitle(k)"
+              size="small"
+              class="order-title"
+              :placeholder="defaultSectionLabel(k)"
+              @change="(v) => onRenameSection(k, v)"
+            />
+            <span v-else class="order-name">{{ sectionLabel(k) }}</span>
+            <el-switch
+              :model-value="sectionEnabled(k)"
+              size="small"
+              inline-prompt
+              active-text="显示"
+              inactive-text="停用"
+              @change="(v) => onToggleSection(k, v)"
+            />
             <el-button size="small" text :disabled="si === 0" @click="moveSection(si, -1)">上移</el-button>
             <el-button size="small" text :disabled="si === orderedKeys.length - 1" @click="moveSection(si, 1)">下移</el-button>
           </div>
         </div>
       </div>
 
-      <template v-for="key in orderedKeys" :key="key">
+      <template v-for="key in visibleKeys" :key="key">
       <!-- 目标 -->
       <div v-if="key === 'goal'" class="sec">
-        <div class="sec-head">{{ label }}目标</div>
+        <div class="sec-head">{{ sectionLabel(key) }}</div>
         <div class="sec-body">
           <EditableText
             :value="content.goal"
@@ -65,7 +89,7 @@
       <!-- 计划 -->
       <div v-else-if="key === 'plan'" class="sec">
         <div class="sec-head">
-          <span>{{ label }}计划</span>
+          <span>{{ sectionLabel(key) }}</span>
           <el-button v-if="canEdit" size="small" :icon="Plus" @click="openMilestoneDialog(null)">新增里程碑</el-button>
         </div>
         <div class="sec-body">
@@ -80,7 +104,7 @@
 
       <!-- 整体进展 -->
       <div v-else-if="key === 'progress'" class="sec">
-        <div class="sec-head">整体进展</div>
+        <div class="sec-head">{{ sectionLabel(key) }}</div>
         <div class="sec-body">
           <EditableText
             :value="content.progress_summary"
@@ -94,7 +118,7 @@
 
       <!-- 求助 -->
       <div v-else-if="key === 'help'" class="sec">
-        <div class="sec-head">求助</div>
+        <div class="sec-head">{{ sectionLabel(key) }}</div>
         <div class="sec-body">
           <EditableText
             :value="content.help_request"
@@ -109,7 +133,7 @@
       <!-- 全景图 -->
       <div v-else-if="key === 'panorama'" class="sec">
         <div class="sec-head">
-          <span>{{ label }}全景图</span>
+          <span>{{ sectionLabel(key) }}</span>
           <span class="muted-hint">{{ isAssault ? '建议使用思维导图（支持 SVG）' : '建议使用逻辑框图（支持 SVG）' }}</span>
           <el-upload
             v-if="canEdit"
@@ -130,7 +154,7 @@
       <!-- 风险和问题 -->
       <div v-else-if="key === 'risks'" class="sec">
         <div class="sec-head">
-          <span>风险和问题</span>
+          <span>{{ sectionLabel(key) }}</span>
           <el-button v-if="canEdit" size="small" :icon="Plus" @click="openItemDialog('risk', null)">新增风险</el-button>
           <el-checkbox v-model="showClosedRisks" size="small" class="closed-toggle">显示已闭环</el-checkbox>
         </div>
@@ -167,7 +191,7 @@
       <!-- 事务 -->
       <div v-else-if="key === 'tasks'" class="sec">
         <div class="sec-head">
-          <span>{{ label }}事务</span>
+          <span>{{ sectionLabel(key) }}</span>
           <el-button v-if="canEdit" size="small" :icon="Plus" @click="openItemDialog('task', null)">新增事务</el-button>
           <el-checkbox v-model="showClosedTasks" size="small" class="closed-toggle">显示已闭环</el-checkbox>
         </div>
@@ -280,7 +304,7 @@
       <!-- 阵型 -->
       <div v-else-if="key === 'formation'" class="sec">
         <div class="sec-head">
-          <span>{{ label }}阵型</span>
+          <span>{{ sectionLabel(key) }}</span>
           <template v-if="canEdit">
             <el-button size="small" @click="addFormationRow">+行</el-button>
             <el-button size="small" @click="addFormationCol">+列</el-button>
@@ -309,6 +333,34 @@
         <span class="add-block-hint">新分段追加在页面末尾，位置可在顶部「分段顺序」中调整</span>
       </div>
     </div>
+
+    <!-- 套用版式模板（仅 admin） -->
+    <el-dialog v-model="tplDialog.visible" title="套用版式模板" width="560px">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        <template #title>
+          套用只会<strong>新增</strong>分段并改标题/启停，<strong>不会删除</strong>已有分段或已填内容。
+          重复套同一模板不会重复添加。
+        </template>
+      </el-alert>
+      <div v-if="templateName" class="tpl-current">当前版式来自模板：<b>{{ templateName }}</b></div>
+      <el-select v-model="tplDialog.id" placeholder="选择模板" style="width: 100%">
+        <el-option
+          v-for="t in tplDialog.list"
+          :key="t.id"
+          :label="t.name"
+          :value="t.id"
+        >
+          <span>{{ t.name }}</span>
+          <span class="tpl-desc">{{ t.description }}</span>
+        </el-option>
+      </el-select>
+      <template #footer>
+        <el-button @click="tplDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="tplDialog.saving" :disabled="!tplDialog.id" @click="onApplyTemplate">
+          套用
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 里程碑对话框 -->
     <el-dialog v-model="msDialog.visible" :title="msDialog.editing != null ? '编辑里程碑' : '新增里程碑'" width="480px">
@@ -413,7 +465,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Download, EditPen, Message, Plus } from '@element-plus/icons-vue'
-import http, { specialApi, downloadBlob } from '../api'
+import http, { specialApi, specialTemplateApi, downloadBlob } from '../api'
+import { GRID_COL_TYPES } from '../utils/gridLight'
 import { auth } from '../store/auth'
 import { checkStorageOrWarn } from '../store/storage'
 import EditableText from '../components/EditableText.vue'
@@ -433,6 +486,7 @@ const content = ref({
   formation_json: '{"headers":[],"rows":[]}',
   extra_grids_json: '[]',
   section_order_json: '[]',
+  section_config_json: '{}',
   version: 0,
 })
 const tasks = ref([])
@@ -596,6 +650,7 @@ async function load() {
     parseFormation()
     parseExtraGrids()
     parseSectionOrder()
+    parseSectionConfig()
     await loadPanorama()
     if (myToken !== loadToken) return
     await refreshLock()
@@ -651,9 +706,10 @@ function normGrid(g) {
   let widths = Array.isArray(g.colWidths) ? g.colWidths.map(w => Number(w) || DEFAULT_COL_W) : []
   if (widths.length < bodyCols) widths = widths.concat(Array(bodyCols - widths.length).fill(DEFAULT_COL_W))
   else if (widths.length > bodyCols) widths = widths.slice(0, bodyCols)
-  // 列格式（文本/下拉/日期）+ 下拉候选项，长度对齐正文列数；旧数据缺省为 text / []
+  // 列格式（文本/下拉/日期/点灯）+ 候选项，长度对齐正文列数；旧数据缺省为 text / []
+  // 白名单须与后端 enums.GRID_COL_TYPES 一致：漏一项会让该格式的列每次加载被静默重置
   let types = Array.isArray(g.colTypes)
-    ? g.colTypes.map(t => (['text', 'select', 'date'].includes(t) ? t : 'text'))
+    ? g.colTypes.map(t => (GRID_COL_TYPES.includes(t) ? t : 'text'))
     : []
   if (types.length < bodyCols) types = types.concat(Array(bodyCols - types.length).fill('text'))
   else if (types.length > bodyCols) types = types.slice(0, bodyCols)
@@ -713,7 +769,8 @@ function parseExtraGrids() {
 }
 
 // —— 分段顺序（本专项独立，编辑者可调）——
-// 固定分段的默认顺序；附加表格以 grid:<gid> 追加在后
+// 固定分段的默认顺序；附加表格以 grid:<gid> 追加在后。
+// 顺序与 key 须与后端 enums.SPECIAL_SECTIONS 一致（那边是导出/周报的分段来源）。
 const FIXED_KEYS = ['goal', 'plan', 'progress', 'help', 'panorama', 'risks', 'tasks', 'formation']
 const FIXED_LABELS = {
   goal: () => `${label.value}目标`,
@@ -730,20 +787,117 @@ const allKeys = computed(() => [
   ...FIXED_KEYS,
   ...extraGrids.value.map(g => `grid:${g.gid}`),
 ])
-// 用已存顺序对齐当前实际存在的分段：保留仍存在的、把新增的按默认序补到末尾
+// 用已存顺序对齐当前实际存在的分段：保留仍存在的、把新增的按默认序补到末尾。
+// 规则须与后端 special_layout.resolve_order() 一致，否则页面顺序与导出/周报会分叉。
 function reconcileOrder(saved, all) {
   const allSet = new Set(all)
-  const kept = saved.filter(k => allSet.has(k))
+  const kept = [...new Set(saved.filter(k => allSet.has(k)))]
   const keptSet = new Set(kept)
   return [...kept, ...all.filter(k => !keptSet.has(k))]
 }
 const orderedKeys = computed(() => reconcileOrder(sectionOrder.value, allKeys.value))
+// 实际渲染的分段：停用的不显示（但仍在「分段设置」里列出，可随时开回来）
+const visibleKeys = computed(() => orderedKeys.value.filter(sectionEnabled))
 
 function parseSectionOrder() {
   try {
     const arr = JSON.parse(content.value.section_order_json || '[]')
     sectionOrder.value = Array.isArray(arr) ? arr.filter(k => typeof k === 'string') : []
   } catch { sectionOrder.value = [] }
+}
+
+// —— 分段配置：标题覆盖 + 启停（存 section_config_json.sections）——
+// 空配置＝默认标题、全部启用，所以老专项什么都不用改就是原来的样子。
+const sectionCfg = ref({})
+const templateName = ref('')
+
+function parseSectionConfig() {
+  try {
+    const obj = JSON.parse(content.value.section_config_json || '{}')
+    sectionCfg.value = (obj && typeof obj.sections === 'object' && obj.sections) || {}
+    templateName.value = obj?.template_name || ''
+  } catch { sectionCfg.value = {}; templateName.value = '' }
+}
+
+function defaultSectionLabel(key) {
+  const f = FIXED_LABELS[key]
+  return f ? f() : key
+}
+function sectionTitle(key) {
+  return String(sectionCfg.value[key]?.title || '')
+}
+function sectionEnabled(key) {
+  // 缺省视为启用：漏配的、后续版本新增的分段都不该凭空消失
+  return sectionCfg.value[key]?.enabled !== false
+}
+
+// 分段配置与顺序一样，是登录用户可改的协作编辑（不是 admin 专属），走乐观锁
+async function persistSectionConfig(next) {
+  if (!special.value) return
+  try {
+    const payload = { ...parseCfgWrapper(), sections: next }
+    const { data } = await specialApi.updateContent(special.value.id, {
+      version: content.value.version,
+      section_config_json: JSON.stringify(payload),
+    })
+    content.value = data
+    parseSectionConfig()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存分段设置失败')
+    parseSectionConfig()   // 失败回滚显示，别让界面停在没落库的状态
+  }
+}
+// 保留 template_id / template_name 等同层字段，别把套过的模板信息覆盖掉
+function parseCfgWrapper() {
+  try {
+    const obj = JSON.parse(content.value.section_config_json || '{}')
+    return obj && typeof obj === 'object' ? obj : {}
+  } catch { return {} }
+}
+
+// —— 套用版式模板（仅 admin；版式对所有人生效，所以不放在普通编辑权限里）——
+const tplDialog = reactive({ visible: false, id: null, list: [], saving: false })
+
+async function openTemplateDialog() {
+  tplDialog.id = null
+  tplDialog.visible = true
+  try {
+    const { data } = await specialTemplateApi.list({ kind: special.value?.kind || '' })
+    tplDialog.list = data
+  } catch {
+    tplDialog.list = []
+    ElMessage.error('模板清单加载失败')
+  }
+}
+
+async function onApplyTemplate() {
+  tplDialog.saving = true
+  try {
+    const { data } = await specialApi.applyTemplate(
+      special.value.id, tplDialog.id, content.value.version)
+    content.value = data
+    parseExtraGrids()
+    parseSectionOrder()
+    parseSectionConfig()
+    tplDialog.visible = false
+    ElMessage.success('已套用模板')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '套用失败')
+  } finally {
+    tplDialog.saving = false
+  }
+}
+
+function onRenameSection(key, val) {
+  const title = String(val || '').trim()
+  const next = { ...sectionCfg.value }
+  next[key] = { ...(next[key] || {}), title, enabled: sectionEnabled(key) }
+  persistSectionConfig(next)
+}
+function onToggleSection(key, val) {
+  const next = { ...sectionCfg.value }
+  next[key] = { ...(next[key] || {}), title: sectionTitle(key), enabled: !!val }
+  persistSectionConfig(next)
 }
 
 function gridIndexOf(key) {
@@ -759,12 +913,14 @@ function blockKindLabel(key) {
   return BLOCK_KIND_LABELS[blockKind(key)] || '分段'
 }
 function sectionLabel(key) {
+  // 配置里的标题优先；自定义分段退回自己的 title；最后才是内置默认名
+  const custom = sectionTitle(key)
+  if (custom) return custom
   if (key.startsWith('grid:')) {
     const g = extraGrids.value[gridIndexOf(key)]
     return (g && g.title) || blockKindLabel(key)
   }
-  const f = FIXED_LABELS[key]
-  return f ? f() : key
+  return defaultSectionLabel(key)
 }
 
 async function moveSection(si, dir) {
@@ -789,6 +945,7 @@ async function persistSectionOrder(keys) {
     content.value = data
     parseExtraGrids()
     parseSectionOrder()
+    parseSectionConfig()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存顺序失败')
   }
@@ -1072,6 +1229,7 @@ async function saveExtraGrids(silent = false) {
     content.value = data
     parseExtraGrids()
     parseSectionOrder()
+    parseSectionConfig()
     if (silent !== true) ElMessage.success('分段已保存')
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
@@ -1298,6 +1456,20 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 .order-name { font-size: 14px; color: #1f2329; }
+/* 停用的分段整块调暗，一眼看出"这段现在不显示" */
+.order-item.off { opacity: 0.55; background: #f5f6f7; }
+.order-title { width: 148px; }
+.tpl-current {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 8px;
+}
+.tpl-desc {
+  float: right;
+  margin-left: 16px;
+  color: #909399;
+  font-size: 12px;
+}
 
 /* 附加表格：作为独立分段，标题即分段标题 */
 .extra-grid-sec .sec-body { overflow-x: auto; }

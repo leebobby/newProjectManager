@@ -33,6 +33,7 @@ from auth import get_current_user, require_admin
 from database import SessionLocal, get_db
 from op_log import log_op
 from routers.config import _load as _load_config
+from timeutil import fmt_local, iso_local
 
 router = APIRouter(prefix="/api/issues", tags=["issues"])
 
@@ -816,7 +817,7 @@ def _collect_worker(projects: List[str], source: str) -> None:
     finally:
         db.close()
         _collect_state["current"] = None
-        _collect_state["finished_at"] = datetime.utcnow().isoformat()
+        _collect_state["finished_at"] = iso_local(datetime.utcnow())
         _collect_state["running"] = False
         if _collect_lock.locked():
             _collect_lock.release()
@@ -843,7 +844,7 @@ def snapshot_collect(
 
     _collect_state.update({
         "running": True, "projects": list(projects), "current": None,
-        "started_at": datetime.utcnow().isoformat(), "finished_at": None, "results": [],
+        "started_at": iso_local(datetime.utcnow()), "finished_at": None, "results": [],
     })
     threading.Thread(target=_collect_worker, args=(list(projects), "manual"), daemon=True).start()
 
@@ -856,6 +857,22 @@ def snapshot_collect(
 def collect_status(_: models.User = Depends(get_current_user)):
     """采集任务进度（所有登录用户可查）。running=false 且 results 非空即为本轮结果。"""
     return dict(_collect_state)
+
+
+@router.get("/collect-schedule")
+def collect_schedule(_: models.User = Depends(get_current_user)):
+    """定时采集的运行态（所有登录用户可查）：是否启用、下次触发时间、是否配全。
+
+    读权限不收紧到 admin：普通用户看到"下次采集 明天 07:30"就不会来问数据什么时候更新。
+    字段含义与排障口径见 scheduler.snapshot_job_status()。
+    """
+    try:
+        import scheduler
+        return scheduler.snapshot_job_status()
+    except Exception as exc:  # 调度模块装载失败也要给前端一个明确结论
+        return {"scheduler_running": False, "enabled": False, "time": "",
+                "job_registered": False, "next_run_at": None,
+                "script_path": "", "projects": [], "error": f"{type(exc).__name__}: {exc}"}
 
 
 @router.get("/collect-logs")
@@ -871,8 +888,10 @@ def collect_logs(project: Optional[str] = None, limit: int = 50,
         {
             "id": r.id, "project": r.project, "source": r.source, "ok": bool(r.ok),
             "total": r.total or 0, "duration_ms": r.duration_ms or 0, "error": r.error or "",
-            "started_at": r.started_at.strftime("%Y-%m-%d %H:%M:%S") if r.started_at else "",
-            "finished_at": r.finished_at.strftime("%Y-%m-%d %H:%M:%S") if r.finished_at else "",
+            # 库里存的是 UTC（datetime.utcnow），出口转北京时间，否则页面上
+            # 07:30 跑的定时采集会显示成头一天 23:30
+            "started_at": fmt_local(r.started_at),
+            "finished_at": fmt_local(r.finished_at),
         }
         for r in rows
     ]
@@ -890,7 +909,7 @@ def list_snapshots(project: str, db: Session = Depends(get_db),
     )
     return [
         {"id": r.id, "date": r.snapshot_date, "total": r.total, "source": r.source,
-         "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""}
+         "created_at": fmt_local(r.created_at)}
         for r in rows
     ]
 
@@ -914,7 +933,7 @@ def snapshot_detail(project: str, date: Optional[str] = None,
         raw = []
     return {
         "exists": True, "project": project, "date": snap.snapshot_date,
-        "created_at": snap.created_at.strftime("%Y-%m-%d %H:%M:%S") if snap.created_at else "",
+        "created_at": fmt_local(snap.created_at),
         "total": snap.total, "count": len(raw), "raw": raw,
         "by_severity": _count_by(raw, "severity"),
         "by_group": _count_by(raw, "group"),
@@ -1145,7 +1164,7 @@ def run_script_status(_: models.User = Depends(get_current_user)):
     """查询刷新脚本是否正在执行（所有登录用户可查）。"""
     return {
         "running":    _script_lock.locked(),
-        "started_at": _script_started_at.isoformat() if _script_started_at else None,
+        "started_at": iso_local(_script_started_at),
     }
 
 

@@ -50,9 +50,11 @@ def save_config(
         if {"issue_snapshot_time", "issue_snapshot_enabled"} & set(payload.keys()):
             try:
                 import scheduler
-                scheduler.apply_issue_snapshot_schedule()
-            except Exception:  # 调度未启动 / 装载失败不该让保存失败
-                pass
+                # 把排期结论回给前端：以前这里的返回值被丢掉，调度器没起来时
+                # 页面照样提示"已保存：每天 07:30 自动采集"，而实际一次都不会跑
+                cfg = dict(cfg, _schedule_message=scheduler.apply_issue_snapshot_schedule())
+            except Exception as exc:  # 调度未启动 / 装载失败不该让保存失败
+                cfg = dict(cfg, _schedule_message=f"配置已存，但调度热更新失败：{exc}")
         return cfg
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"保存配置失败: {exc}")
