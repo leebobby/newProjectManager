@@ -49,8 +49,8 @@ PAGE_SIZE = 200   # 每页条数；按 data.total 自动翻页拉全
 # 每个项目 → pbiName（产品基线名）。注意：账号对哪些产品有权限由后端授权决定
 PROJECT_PARAMS = {
     "YLS3000": {"pbiName": "YLS3000 V100R001C00"},
-    "YLS5000": {"pbiName": "YLS5000 V100R001C00"},
-    "YLS8000": {"pbiName": "YLS8000 V100R001C00"},
+    "YLS5000": {"pbiName": "YLS5000 V100R001C10"},
+    "YLS8000": {"pbiName": "YLS8000 V200R001C00"},
 }
 
 

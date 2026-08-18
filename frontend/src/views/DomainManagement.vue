@@ -16,15 +16,22 @@
               />
             </el-select>
             <el-tag type="primary" effect="plain" style="margin-left: 8px">{{ data.iteration_label || '—' }}</el-tag>
-            <span class="muted" style="margin-left: 16px">问题单：</span>
-            <el-tag v-if="issueMeta.available" type="success" effect="plain">
-              {{ issueMeta.file_mtime || '已接入' }}
+
+            <span class="muted" style="margin-left: 16px">问题单项目：</span>
+            <el-select v-model="project" size="small" style="width: 190px" placeholder="（无可选项目）"
+              :disabled="!data.projects.length" @change="load">
+              <el-option v-for="p in data.projects" :key="p.project" :value="p.project"
+                :label="p.project + (p.latest_date ? ` · ${p.latest_date}` : '（未采集）')" />
+            </el-select>
+            <el-tag v-if="issueMeta.available" type="success" effect="plain" style="margin-left: 6px">
+              {{ issueMeta.source === 'excel' ? '报表文件' : '快照' }} {{ issueMeta.file_mtime || '' }}
             </el-tag>
             <el-tooltip v-else :content="issueMeta.note || '未接入'" placement="top">
-              <el-tag type="info" effect="plain">未接入</el-tag>
+              <el-tag type="info" effect="plain" style="margin-left: 6px">未接入</el-tag>
             </el-tooltip>
           </div>
           <div class="head-right">
+            <el-button v-if="auth.isAdmin.value" :icon="Aim" @click="openTargets">设定目标</el-button>
             <el-checkbox v-model="showHidden" @change="load">显示已隐藏</el-checkbox>
             <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
           </div>
@@ -67,7 +74,7 @@
           <el-table-column label="问题单情况" min-width="190">
             <template #header>
               问题单情况
-              <el-tooltip placement="top" content="加权总分：致命 10 分 / 严重 3 分 / 一般 1 分 / 提示 0.1 分">
+              <el-tooltip placement="top" content="数据来自问题单管理的最新一次采集快照；加权总分：致命 10 分 / 严重 3 分 / 一般 1 分 / 提示 0.1 分">
                 <el-icon class="hdr-help"><QuestionFilled /></el-icon>
               </el-tooltip>
             </template>
@@ -75,9 +82,17 @@
               <template v-if="row.issue_summary.available">
                 <div v-if="row.issue_summary.total" class="cell-clickable" @click="openIssues(row)">
                   <div class="sum-line">
-                    <b>{{ row.issue_summary.total }}</b> 个
+                    <b :class="{ 'over-target': row.issue_summary.over_total }">{{ row.issue_summary.total }}</b> 个
                     <span class="score-sep">·</span>
-                    <b class="issue-score">{{ row.issue_summary.score }}</b> 分
+                    <b class="issue-score" :class="{ 'over-target': row.issue_summary.over_score }">{{ row.issue_summary.score }}</b> 分
+                  </div>
+                  <div v-if="hasTarget(row.issue_summary)" class="target-line">
+                    目标
+                    <span v-if="row.issue_summary.target_total !== null">{{ row.issue_summary.target_total }} 个</span>
+                    <span v-if="row.issue_summary.target_score !== null">/ {{ row.issue_summary.target_score }} 分</span>
+                    <el-tag size="small" :type="overTarget(row.issue_summary) ? 'danger' : 'success'" effect="plain">
+                      {{ overTarget(row.issue_summary) ? '超标' : '达成' }}
+                    </el-tag>
                   </div>
                   <div class="sev-line">
                     <span v-for="(n, s) in row.issue_summary.by_severity" :key="s">
@@ -85,7 +100,13 @@
                     </span>
                   </div>
                 </div>
-                <span v-else class="muted">无</span>
+                <div v-else>
+                  <span class="muted">无</span>
+                  <div v-if="hasTarget(row.issue_summary)" class="target-line">
+                    目标 {{ row.issue_summary.target_total ?? '—' }} 个
+                    <el-tag size="small" type="success" effect="plain">达成</el-tag>
+                  </div>
+                </div>
               </template>
               <span v-else class="muted">未接入</span>
             </template>
@@ -164,7 +185,157 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <!-- ===== 遗留问题 ===== -->
+      <el-tab-pane label="遗留问题" name="legacy">
+        <div class="page-head">
+          <div class="head-left">
+            <el-button type="primary" :icon="Plus" @click="openLegacy()">新增</el-button>
+            <el-checkbox v-model="showDoneLegacy" style="margin-left: 12px" @change="loadLegacy">显示已关闭</el-checkbox>
+            <el-select v-model="legacyDomainId" size="small" clearable filterable placeholder="全部领域"
+              style="width: 180px; margin-left: 12px" @change="loadLegacy">
+              <el-option v-for="d in domainOptions" :key="d.id" :value="d.id" :label="d.name" />
+            </el-select>
+            <span class="muted" style="margin-left: 12px">共 {{ legacyRows.length }} 条</span>
+          </div>
+          <el-button :icon="Refresh" :loading="legacyLoading" @click="loadLegacy">刷新</el-button>
+        </div>
+
+        <el-table :data="legacyRows" border stripe size="small" v-loading="legacyLoading"
+          :row-class-name="(o) => legacyRowClass(o.row)">
+          <el-table-column prop="seq" label="编号" width="70" align="center" />
+          <el-table-column prop="title" label="任务名称" min-width="220" show-overflow-tooltip />
+          <el-table-column label="状态" width="94" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="legacyStatusType(row.status)" effect="dark">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前责任人" width="100">
+            <template #default="{ row }">{{ row.owner_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="提出人" width="90">
+            <template #default="{ row }">{{ row.reporter_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="确认人" width="90">
+            <template #default="{ row }">{{ row.confirmer_name || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="参与人" min-width="150">
+            <template #default="{ row }">
+              <span v-if="row.participant_names?.length">{{ row.participant_names.join('、') }}</span>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="所属领域" width="140">
+            <template #default="{ row }">
+              <el-tag v-if="row.domain_name" size="small" effect="plain">{{ row.domain_name }}</el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="计划完成时间" width="126">
+            <template #default="{ row }">{{ fmtDate(row.planned_date) || '—' }}</template>
+          </el-table-column>
+          <el-table-column label="优先级" width="80" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" :type="prioType(row.priority)">{{ row.priority || '—' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="openLegacy(row)">编辑</el-button>
+              <el-button link type="danger" size="small" @click="delLegacy(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
     </el-tabs>
+
+    <!-- 遗留问题 编辑弹窗 -->
+    <el-dialog v-model="legacyVisible" :title="legacyForm.id ? '编辑遗留问题' : '新增遗留问题'" width="640px" :close-on-click-modal="false">
+      <el-form :model="legacyForm" label-width="110px">
+        <el-form-item label="编号">
+          <el-input-number v-model="legacyForm.seq" :min="0" :controls="false" style="width: 120px" />
+          <span class="muted" style="margin-left: 8px">留 0 由系统顺延</span>
+        </el-form-item>
+        <el-form-item label="任务名称" required>
+          <el-input v-model="legacyForm.title" type="textarea" :rows="2" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="legacyForm.status" style="width: 160px">
+            <el-option v-for="s in LEGACY_STATUSES" :key="s" :label="s" :value="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="当前责任人">
+          <el-select v-model="legacyForm.owner_id" clearable filterable placeholder="选择人员" style="width: 100%">
+            <el-option v-for="u in userOptions" :key="u.id" :value="u.id" :label="userLabel(u)" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="提出人">
+          <el-select v-model="legacyForm.reporter_id" clearable filterable placeholder="选择人员" style="width: 100%">
+            <el-option v-for="u in userOptions" :key="u.id" :value="u.id" :label="userLabel(u)" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="确认人">
+          <el-select v-model="legacyForm.confirmer_id" clearable filterable placeholder="选择人员" style="width: 100%">
+            <el-option v-for="u in userOptions" :key="u.id" :value="u.id" :label="userLabel(u)" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="参与人">
+          <el-select v-model="legacyForm.participants" multiple filterable clearable placeholder="可多选" style="width: 100%">
+            <el-option v-for="u in userOptions" :key="u.id" :value="u.id" :label="userLabel(u)" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所属领域">
+          <el-select v-model="legacyForm.domain_id" clearable filterable placeholder="选择领域（PL组）" style="width: 100%">
+            <el-option v-for="d in domainOptions" :key="d.id" :value="d.id" :label="d.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="计划完成时间">
+          <el-date-picker v-model="legacyForm.planned_date" type="date" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="优先级">
+          <el-select v-model="legacyForm.priority" style="width: 160px">
+            <el-option v-for="p in PRIORITIES" :key="p" :label="p" :value="p" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="legacyForm.remark" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="legacyVisible = false">取消</el-button>
+        <el-button type="primary" :loading="legacySaving" @click="saveLegacy">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 问题单目标（仅 admin） -->
+    <el-dialog v-model="targetVisible" title="设定问题单目标" width="640px" :close-on-click-modal="false">
+      <div class="muted" style="margin-bottom: 10px">
+        项目：<b>{{ targetProject || '（通用）' }}</b>。
+        两个目标都留空＝该领域不设目标；超标时总览页标红。
+      </div>
+      <el-table :data="targetRows" border size="small" max-height="52vh">
+        <el-table-column prop="group_name" label="领域" min-width="150">
+          <template #default="{ row }">
+            {{ row.group_name }}
+            <el-tag v-if="row.inherited" size="small" type="info" effect="plain">继承通用</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="数量目标" width="150">
+          <template #default="{ row }">
+            <el-input-number v-model="row.target_total" :min="0" :controls="false" style="width: 110px" placeholder="不设" />
+          </template>
+        </el-table-column>
+        <el-table-column label="加权分目标" width="150">
+          <template #default="{ row }">
+            <el-input-number v-model="row.target_score" :min="0" :precision="1" :controls="false" style="width: 110px" placeholder="不设" />
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="targetVisible = false">取消</el-button>
+        <el-button type="primary" :loading="targetSaving" @click="saveTargets">保存</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 编辑：最近主要工作 + 风险求助 -->
     <el-dialog v-model="editVisible" :title="`编辑 · ${editRow?.name || ''}`" width="760px" :close-on-click-modal="false">
@@ -267,8 +438,9 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Plus, QuestionFilled, Refresh } from '@element-plus/icons-vue'
-import { domainApi, resourceGroupApi } from '../api'
+import { Aim, Delete, Plus, QuestionFilled, Refresh } from '@element-plus/icons-vue'
+import { domainApi, resourceGroupApi, userApi } from '../api'
+import { auth } from '../store/auth'
 import RichTextEditor from '../components/RichTextEditor.vue'
 
 const PROG_COLS = [
@@ -281,14 +453,18 @@ const PROG_COLS = [
 ]
 const PRIORITIES = ['高', '中', '低']
 const STATUSES = ['OPEN', 'CLOSED', '挂起']
+// 与后端 enums.DOMAIN_LEGACY_STATUSES 一一对应；pending 是小写，别"顺手"统一成大写
+const LEGACY_STATUSES = ['OPEN', 'CLOSED', 'pending']
 
 const activeTab = ref('overview')
-const data = reactive({ iteration_label: '', rows: [], iterations: [] })
-const issueMeta = reactive({ available: false, file_mtime: null, note: '' })
+const data = reactive({ iteration_label: '', rows: [], iterations: [], projects: [] })
+const issueMeta = reactive({ available: false, file_mtime: null, note: '', source: '' })
 const loading = ref(false)
 const showHidden = ref(false)
 // 需求口径：'' = 当前进行中迭代；'2026-6' = 指定年度迭代月份
 const monthKey = ref('')
+// 问题单口径：项目/版本；'' = 让后端挑第一个有快照的项目（首次进页面时）
+const project = ref('')
 
 function parseKey(k) {
   if (!k) return {}
@@ -320,6 +496,18 @@ function statusType(s) {
   // OPEN 橙、CLOSED 绿、挂起 灰
   return { 'OPEN': 'warning', 'CLOSED': 'success', '挂起': 'info' }[s] || 'info'
 }
+function legacyStatusType(s) {
+  return { 'OPEN': 'warning', 'CLOSED': 'success', 'pending': 'info' }[s] || 'info'
+}
+function userLabel(u) {
+  return u.full_name || u.username
+}
+function hasTarget(sum) {
+  return sum && (sum.target_total !== null || sum.target_score !== null)
+}
+function overTarget(sum) {
+  return !!(sum && (sum.over_total || sum.over_score))
+}
 function riskRowClass(row) {
   if (row.status === 'CLOSED') return 'risk-closed'
   if (row.status === '挂起') return 'risk-suspended'
@@ -329,14 +517,22 @@ function riskRowClass(row) {
 async function load() {
   loading.value = true
   try {
-    const { data: d } = await domainApi.list({ ...parseKey(monthKey.value), include_hidden: showHidden.value })
+    const { data: d } = await domainApi.list({
+      ...parseKey(monthKey.value),
+      include_hidden: showHidden.value,
+      project: project.value || undefined,
+    })
     data.iteration_label = d.iteration_label
     data.rows = d.rows
     data.iterations = d.iterations || []
+    data.projects = d.projects || []
+    // 首次进页面没选项目，用后端挑中的那个回填选择器，免得下拉空着但表格有数
+    project.value = d.selected_project || project.value || ''
     const first = d.rows.find((r) => r.issue_summary)?.issue_summary
     issueMeta.available = !!first?.available
     issueMeta.file_mtime = first?.file_mtime || null
     issueMeta.note = first?.note || ''
+    issueMeta.source = first?.source || ''
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {
@@ -460,6 +656,114 @@ async function delRisk(row) {
   } catch (e) { ElMessage.error(e.response?.data?.detail || '删除失败') }
 }
 
+// ── 遗留问题 ──────────────────────────────────────────
+const legacyRows = ref([])
+const legacyLoading = ref(false)
+const showDoneLegacy = ref(true)
+const legacyDomainId = ref(null)
+const legacyVisible = ref(false)
+const legacySaving = ref(false)
+const legacyForm = reactive(blankLegacy())
+const userOptions = ref([])
+
+function blankLegacy() {
+  return {
+    id: null, version: 0, seq: 0, title: '', status: 'OPEN',
+    owner_id: null, reporter_id: null, confirmer_id: null, participants: [],
+    domain_id: null, planned_date: null, priority: '中', remark: '',
+  }
+}
+function legacyRowClass(row) {
+  if (row.status === 'CLOSED') return 'risk-closed'
+  if (row.status === 'pending') return 'risk-suspended'
+  return ''
+}
+async function loadLegacy() {
+  legacyLoading.value = true
+  try {
+    const { data: rows } = await domainApi.legacyList({
+      include_done: showDoneLegacy.value,
+      domain_id: legacyDomainId.value || undefined,
+    })
+    legacyRows.value = rows
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '加载失败')
+  } finally {
+    legacyLoading.value = false
+  }
+}
+async function loadUserOptions() {
+  try {
+    const { data } = await userApi.options()
+    userOptions.value = data
+  } catch { /* 下拉为空不阻塞 */ }
+}
+function openLegacy(row) {
+  Object.assign(legacyForm, blankLegacy(), row ? { ...row, participants: [...(row.participants || [])] } : {})
+  legacyVisible.value = true
+}
+async function saveLegacy() {
+  if (!legacyForm.title.trim()) { ElMessage.warning('任务名称不能为空'); return }
+  legacySaving.value = true
+  try {
+    if (legacyForm.id) await domainApi.legacyUpdate(legacyForm.id, legacyForm)
+    else await domainApi.legacyCreate(legacyForm)
+    ElMessage.success('已保存')
+    legacyVisible.value = false
+    loadLegacy()
+  } catch (e) {
+    if (e.response?.status === 409) { legacyVisible.value = false; loadLegacy() }
+    else ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    legacySaving.value = false
+  }
+}
+async function delLegacy(row) {
+  await ElMessageBox.confirm(`确认删除遗留问题「${row.title || row.seq}」吗？`, '提示', { type: 'warning' })
+  try {
+    await domainApi.legacyRemove(row.id)
+    ElMessage.success('已删除')
+    loadLegacy()
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '删除失败') }
+}
+
+// ── 问题单目标（仅 admin）──────────────────────────────
+const targetVisible = ref(false)
+const targetSaving = ref(false)
+const targetProject = ref('')
+const targetRows = ref([])
+
+async function openTargets() {
+  targetProject.value = project.value || ''
+  try {
+    const { data: res } = await domainApi.issueTargets(targetProject.value)
+    targetRows.value = (res.items || []).map((r) => ({ ...r }))
+    targetVisible.value = true
+  } catch (e) { ElMessage.error(e.response?.data?.detail || '加载失败') }
+}
+async function saveTargets() {
+  targetSaving.value = true
+  try {
+    await domainApi.saveIssueTargets({
+      project: targetProject.value,
+      items: targetRows.value.map((r) => ({
+        group_id: r.group_id,
+        // el-input-number 清空后是 undefined，统一成 null＝清除该目标
+        target_total: r.target_total ?? null,
+        target_score: r.target_score ?? null,
+        remark: r.remark || '',
+      })),
+    })
+    ElMessage.success('已保存')
+    targetVisible.value = false
+    load()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+  } finally {
+    targetSaving.value = false
+  }
+}
+
 // ── 下钻 ──────────────────────────────────────────────
 const drillName = ref('')
 const reqVisible = ref(false)
@@ -489,7 +793,7 @@ async function openIssues(row) {
   issueLoading.value = true
   issueRows.value = []
   try {
-    const { data: res } = await domainApi.issues(row.group_id)
+    const { data: res } = await domainApi.issues(row.group_id, { project: project.value || undefined })
     issueRows.value = res.rows || []
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
@@ -498,7 +802,7 @@ async function openIssues(row) {
   }
 }
 
-onMounted(() => { load(); loadRisks(); loadDomainOptions() })
+onMounted(() => { load(); loadRisks(); loadDomainOptions(); loadLegacy(); loadUserOptions() })
 </script>
 
 <style scoped>
@@ -545,6 +849,8 @@ onMounted(() => { load(); loadRisks(); loadDomainOptions() })
   gap: 8px;
   margin-bottom: 8px;
 }
+.target-line { margin-top: 4px; color: #909399; font-size: 12px; display: flex; align-items: center; gap: 4px; }
+.over-target { color: #F56C6C; }
 .link, a.link { color: #409EFF; text-decoration: none; }
 /* 已隐藏领域行：淡化 */
 .domain-table :deep(.hidden-row) { background: #fafafa; color: #909399; }

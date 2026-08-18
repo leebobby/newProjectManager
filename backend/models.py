@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text,
+                        UniqueConstraint)
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -1102,6 +1103,64 @@ class DomainRisk(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class DomainLegacyIssue(Base):
+    """领域管理 · 遗留问题：跨迭代挂着的历史欠账，比事务/风险更长命，单独一张表。
+
+    与 domain_risks 的区别是「谁在跟」——遗留问题带提出人 / 确认人 / 参与人三类角色，
+    闭环要确认人点头；事务风险只有责任领域。因此没有复用 domain_risks 加列。
+    协作编辑域，带乐观锁。状态见 enums.DOMAIN_LEGACY_STATUSES（OPEN/CLOSED/pending）。
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "domain_legacy_issues"
+
+    id = Column(Integer, primary_key=True, index=True)
+    seq = Column(Integer, default=0, comment="编号（新增时取当前最大值 +1，可手改）")
+    title = Column(Text, default="", comment="任务名称")
+    status = Column(String(16), default="OPEN", comment="OPEN / CLOSED / pending")
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                      nullable=True, index=True, comment="当前责任人 FK")
+    reporter_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                         nullable=True, index=True, comment="提出人 FK")
+    confirmer_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                          nullable=True, index=True, comment="确认人 FK")
+    # 参与人：用户 id JSON 数组（多选）。同 DebugDemand.battlefields_json 的做法——
+    # 纯展示用的多对多没必要为它单开一张关联表
+    participants_json = Column(Text, default="[]", comment="参与人：用户 id JSON 数组")
+    domain_id = Column(Integer, ForeignKey("resource_groups.id", ondelete="SET NULL"),
+                       nullable=True, index=True, comment="所属领域（PL 组 FK）")
+    planned_date = Column(DateTime, nullable=True, comment="计划完成时间（用户填写，不做时区转换）")
+    priority = Column(String(16), default="中", comment="优先级 高/中/低")
+    remark = Column(Text, default="", comment="备注")
+    sort_order = Column(Integer, default=0)
+    version = Column(Integer, nullable=False, default=0, comment="乐观锁")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DomainIssueTarget(Base):
+    """领域管理 · 问题单目标值：某领域在某项目下的问题单数量 / 加权分目标。
+
+    目标是"管理口径"而不是采集出来的事实，所以单独落库、仅 admin 可写
+    （见 CLAUDE.md「Write-permission principle」的主数据与配置一档）。
+    project 与 issue_snapshots.project 同一取值（如 YLS3000）；空串表示"不分项目"的兜底目标。
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "domain_issue_targets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("resource_groups.id", ondelete="CASCADE"),
+                      nullable=False, index=True, comment="PL 组 FK")
+    project = Column(String(64), nullable=False, default="", index=True, comment="项目/版本")
+    target_total = Column(Integer, nullable=True, comment="问题单数量目标（空＝未设）")
+    target_score = Column(Float, nullable=True, comment="加权分目标（空＝未设）")
+    remark = Column(String(256), default="", comment="备注")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "project", name="uq_domain_issue_target"),
+    )
+
+
 class BusinessTrip(Base):
     """成员出差记录：谁、去哪个战场（客户主数据）、哪段时间、什么事由。
 
@@ -1160,6 +1219,38 @@ class IssueSnapshotStat(Base):
     dimension = Column(String(16), nullable=False, index=True, comment="group / customer / severity")
     dim_key = Column(String(128), nullable=False, default="", comment="维度取值，如小组名/客户面名/严重程度")
     count = Column(Integer, nullable=False, default=0)
+
+
+class IssueSnapshotFlow(Base):
+    """每日「新增 / 解决」的差分结果（一次快照一行）。
+
+    快照里只有"当天还开着的单"，所以新增与解决只能靠相邻两次快照的编号集合求差：
+      新增 = 今天有、上次没有；解决 = 上次有、今天没有。
+    差分要读明细 JSON，放在采集后算一次落库，看图时只读数字——与
+    issue_snapshot_stats 同一个思路（趋势不碰文件）。
+
+    注意两点口径：
+    - 首个快照没有可比对的上一天，整份都是存量而不是新增，记 is_baseline=1，画图时跳过；
+    - "解决"实为**从快照里消失**，多数是闭环/撤销，也可能是责任人转出统计部门/小组。
+      要精确区分，需要把 DTS 的实际闭环时间字段映射进采集脚本。
+    created_ids_json 保留每天首次出现的编号，用于钻取，也是"按编号日期"曲线的数据源
+    （编号 SDTS+YYYYMMDD+序号 自带创建日，能回溯到开始采集之前）。
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "issue_snapshot_flows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_id = Column(Integer, ForeignKey("issue_snapshots.id", ondelete="CASCADE"),
+                         nullable=False, unique=True, index=True)
+    project = Column(String(64), nullable=False, index=True)
+    snapshot_date = Column(String(10), nullable=False, index=True, comment="本次快照日 YYYY-MM-DD")
+    prev_date = Column(String(10), default="", comment="比对的上一次快照日；基线为空")
+    is_baseline = Column(Boolean, default=False, comment="首次快照：整份算存量，不算新增")
+    created_count = Column(Integer, default=0)
+    resolved_count = Column(Integer, default=0)
+    created_ids_json = Column(Text, default="[]", comment="本次新出现的缺陷编号")
+    resolved_ids_json = Column(Text, default="[]", comment="本次消失的缺陷编号")
+    computed_at = Column(DateTime, default=datetime.utcnow)
 
 
 class IssueCollectLog(Base):

@@ -28,7 +28,8 @@ _BUILTIN_KIND = {s["key"]: s["kind"] for s in SPECIAL_SECTIONS}
 _BUILTIN_LABEL = {s["key"]: s["label"] for s in SPECIAL_SECTIONS}
 
 # 自定义分段缺标题时的兜底名
-_BLOCK_KIND_LABEL = {"grid": "附加表格", "text": "文本框", "images": "图片"}
+_BLOCK_KIND_LABEL = {"grid": "附加表格", "text": "文本框", "images": "图片",
+                    "milestones": "里程碑"}
 
 
 def kind_label(kind: str) -> str:
@@ -54,7 +55,9 @@ class Section:
     key   内置 key（goal/plan/...）或自定义分段的 "grid:<gid>"
     title 最终标题：分段配置 > 自定义块自带 title > 内置默认名
     kind  内容形态：内置为 text/milestones/image/items/grid；
-          自定义为 grid（表格）/ text（富文本）/ images（图片墙）
+          自定义为 grid（表格）/ text（富文本）/ images（图片墙）/ milestones（时间轴）
+          自定义 milestones 与内置 plan 同形态但不同数据源：前者存在块自己的
+          milestones 字段里，后者存 content.milestones_json，一个专项可以两者并存
     block 自定义分段的原始 dict，内置分段为 None
     """
     key: str
@@ -190,6 +193,9 @@ def _instantiate_block(tpl_block: dict, gid: str) -> dict:
         return base
     if kind == "images":
         base["items"] = []
+        return base
+    if kind == "milestones":
+        base["milestones"] = []
         return base
 
     headers = [_norm_header(h) for h in (tpl_block.get("headers") or [])]

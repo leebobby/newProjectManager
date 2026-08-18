@@ -35,8 +35,8 @@ cd frontend && npm install && npm run dev
 
 | 档位 | 依赖 | 适用 |
 | --- | --- | --- |
-| **登录用户**（协作编辑域） | `Depends(get_current_user)` | 日常填报与记录：进展、事务、风险、问题条目、出差、调试版本、领域内容、关键特性…… |
-| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、专项版式模板、一本通、干系人、阵型、`config.json`、数据对账 |
+| **登录用户**（协作编辑域） | `Depends(get_current_user)` | 日常填报与记录：进展、事务、风险、问题条目、出差、调试版本、领域内容、领域遗留问题、关键特性…… |
+| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、专项版式模板、一本通、干系人、阵型、领域问题单目标、`config.json`、数据对账 |
 | **字段级白名单** | 路由内按角色逐字段判 | 同一行里不同字段权限不同，见 [routers/customer_status.py](backend/routers/customer_status.py) |
 
 配套硬规则：
@@ -45,7 +45,7 @@ cd frontend && npm install && npm run dev
   - **仅 admin**：主数据与配置类，以及客户面数据——客户面问题条目、硬件清零、
     SOW 字段与数据行、机台 license、机台自定义信息块、客户定制化需求、专项本体。
   - **登录用户**：专项/攻关的事务行与风险行、专项分段图片、现场调试版本与诉求与接收人、
-    出差记录、领域风险。
+    出差记录、领域风险、领域遗留问题。
   - 判断依据是「误删的代价」：别人长期跟踪的客户面记录和主数据要拦，
     自己录的日常条目不拦。新增删除接口时对照上面两组归类，**不要凭该表的写权限推断**。
 - **创建后锁定的字段**要在三处都拦住：前端禁用、`*Update` schema 不声明该字段、路由再拒一次。
@@ -74,12 +74,17 @@ cd frontend && npm install && npm run dev
 | --- | --- |
 | `section_order_json` | 分段顺序 `["goal", "grid:<gid>", "risks", …]` |
 | `section_config_json` | 分段标题覆盖与启停 + 套过的模板名 |
-| `extra_grids_json` | 自定义分段本体（`kind` = grid / text / images） |
+| `extra_grids_json` | 自定义分段本体（`kind` = grid / text / images / milestones） |
 
 - 8 个内置分段的 key 与默认顺序在 [enums.py](backend/enums.py) `SPECIAL_SECTIONS`，
   须与前端 `SpecialDetail.vue` 的 `FIXED_KEYS` 一致。内置分段各有专属交互
   （里程碑时间轴、事务/风险表、阵型网格），所以**只能改标题或整段停用，不能动态增删**；
-  要新表格就加自定义分段。
+  要新表格就加自定义分段。自定义分段有四种形态（`enums.SPECIAL_BLOCK_KINDS`）：
+  表格 / 文本框 / 图片 / 里程碑。**新增一种形态要同时接四处**：`_instantiate_block()`、
+  前端 `normBlock()` + 详情页 `v-if` 链、`_section_text()` / `_section_html()`、
+  `build_special_xlsx()` 的分段分派——漏一处就是「页面上有、周报里没有」。
+  自定义里程碑与内置「计划」是**同形态不同数据源**（块自带 `milestones` vs
+  `content.milestones_json`），但渲染函数必须共用，否则一个专项里两种里程碑长得不一样。
 - **顺序与标题的解析只有一份实现**：`special_layout.resolve_sections()`。详情页、Excel 导出、
   周报三处都走它。前端 `reconcileOrder()` 的规则必须与 `resolve_order()` 保持一致——
   两边分叉的表现是「页面顺序和周报顺序不一样」，很难被测出来。
@@ -87,12 +92,35 @@ cd frontend && npm install && npm run dev
   `_section_text()` / `_section_html()` / `build_special_xlsx()` 各加一个分支。
   **缺任何一处的后果是那段在页面上有、在周报/导出里没有。**
 - 空分段不占章节编号：导出与周报里「启用但没内容」的段整段跳过，避免一串「三、—」。
+  Excel 侧靠 `build_special_xlsx` 的 `section()` / `_flush_section()` 实现——标题先挂起，
+  等第一笔内容落笔才写。**别改回「先写标题、空了再补一行—」**：那样模板里多一个
+  空分段，Excel 的章节号就会和周报错位，而这种错没人会当成 bug 去查。
 - **模板（`special_templates`）只是录入期的便利，不是运行期依赖**：套用时把版式写进上面三列，
   之后与模板脱钩。改模板、删模板都不影响已建专项——不要反过来做成「详情页读模板渲染」。
 - 套用语义是**只增不删**（`apply_template()`）：按 `tkey` 认领已挂上的分段，重复套用幂等；
   模板外的分段与已填的行一律保留。版式是配置，填进去的内容不是。
 - 权限分档：改模板、套模板＝**仅 admin**（配置类主数据 / 改的是整页版式）；
   某专项内部的分段改名、停用、排序＝**登录用户**（协作编辑，走 `PUT /content` 的乐观锁）。
+
+## 领域管理：问题单口径与目标
+
+领域总览的「问题单情况」有**两个可能的数据源**，判断逻辑收口在
+`domains._resolve_issue_source()`，改口径前先读它：
+
+1. **优先**：`issue_snapshots` 里选定项目的**最新一次快照**（问题单管理采集的结果）。
+   只看最新一份——趋势属于问题单管理，别在领域页再造一套。
+2. **回退**：一份快照都没有时读老的问题单 Excel（`config.issue_report_path`）。
+   保留它只是为了不让还没接 API 采集的部署丢掉这一列。
+
+两条硬规则：
+
+- **指定的项目没有快照时，如实返回 `available=False` + 原因，绝不静默换成别的项目的数字**。
+  数字看着都合理，换掉了没人看得出来。
+- 快照元数据在库、明细在文件，两者可能不同步（目录被清理、迁移漏拷）。
+  `_snapshot_rows()` 读不到文件时返回空列表而不是抛错——整页 500 比显示 0 条更糟。
+- 目标值（`domain_issue_targets`）是**管理口径不是采集事实**，因此按主数据一档＝**仅 admin 可写**，
+  读对所有登录用户开放（页面要显示达成情况）。`project=""` 是通用兜底目标，
+  项目专属目标优先；继承来的值要在设定界面标出来，否则管理员会以为自己在改本项目的值。
 
 ## 枚举：单一来源
 
@@ -102,12 +130,33 @@ cd frontend && npm install && npm run dev
 - 校验用 `norm_*` 系列函数（`norm_priority` / `norm_progress` / `norm_issue_status` …）。
 - **`norm_*` 只挂在 `Create` / `Update` schema 上，绝不挂 `Base` / `Out`**：`Out` 继承 `Base`
   并走 `from_attributes` 读库，老库里的历史脏值会让读取直接 422。
+- 状态词表里**大小写不统一的字面量要在入口归一**：领域遗留问题的三档是
+  `OPEN / CLOSED / pending`（业务方指定的写法，别顺手统一成大写），
+  `norm_domain_legacy_status()` 把任意大小写折回这三个字面量——否则
+  "Pending" 与 "pending" 在按字面量分组的统计里会各占一档，且没人会当 bug 去查。
 - 前端下拉值必须与 `enums.py` 一致；关键特性的颜色映射在
   [utils/featureStatus.js](frontend/src/utils/featureStatus.js)，顺序须与后端六档一致。
 - 自由表格的列格式白名单 `GRID_COL_TYPES`（text / select / date / **light**）在两端各有一份：
   后端 `enums.py`、前端 [utils/gridLight.js](frontend/src/utils/gridLight.js)。
   **前端漏加一项的后果是该格式的列每次加载被静默重置成 text**（`normGrid()` 按白名单过滤）。
   点灯的取值词表与红黄绿档位同理两端各一份，页面 / 周报 HTML / Excel 三处着色必须同款。
+- 单元格与富文本的**字体 / 字号 / 底色**同样是两端各一份：后端 `GRID_FONTS` /
+  `GRID_FONT_SIZES` / `GRID_CELL_BG`，前端 [utils/gridFormat.js](frontend/src/utils/gridFormat.js)。
+  单元格里**存 key 不存 CSS 串**（`font: "simsun"`），因为三个出口要的东西不一样：
+  页面与周报要 CSS、Excel 要字体名 + 磅值（px×0.75）。存 CSS 串会逼着 Excel 端去
+  反解析 font-family 列表。三处映射分别在 `formatStyle()` / `_fmt_css()` / `_cell_font_spec()`。
+
+## 富文本：入口清洗，出口也清洗
+
+详情页多处用 `v-html` 渲染用户填的 HTML（目标 / 整体进展 / 求助 / 事务 / 风险 / 文本框分段）。
+**写库前必须过 `_sanitize_rich()`**（`routers/specials.py` 的 `_sanitize_rich_fields()` /
+`_sanitize_blocks_json()`），只在导出周报时清洗等于只保护了收件人，页面本身仍是任何
+登录用户都能往别人的专项里存一段脚本。出口的清洗保留着——老数据还没洗过。
+
+- 白名单 `_ALLOWED_TAGS` / `_ALLOWED_STYLE_PROPS` 决定编辑器能提供什么格式：
+  **加了工具条按钮就要同步加白名单**，否则那个格式每次保存被静默抹掉
+  （列表按钮对应 `ul`/`ol`/`li`，对齐对应 `text-align`，高亮对应 `background-color`）。
+- `script` / `style` 走 `_DROP_CONTENT_TAGS`：连内容一起丢。其余非白名单标签只丢标签留文字。
 
 ## 数据库结构变更
 

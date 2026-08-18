@@ -5,6 +5,7 @@
 """
 import email.utils
 import html
+import json
 import pathlib
 import re
 import uuid
@@ -57,6 +58,48 @@ def _notify_special_change(db: Session, special: models.Special, *, summary: str
         source_type="special", source_id=special.id,
         actor=actor, recipient_ids=[], extra_subs=True,
     )
+
+
+# 会被前端 v-html 直接渲染的富文本字段，写库前一律清洗
+_RICH_FIELDS = ("goal", "progress_summary", "help_request", "content", "progress")
+
+
+def _sanitize_rich_fields(data: dict) -> None:
+    """就地清洗 data 里的富文本字段（只动传上来的键）。
+
+    这些字段的 HTML 是前端 contenteditable 直接产出、页面又用 v-html 渲染的。
+    以前只在导出周报时清洗——那只保护了收件人，页面本身仍是任何登录用户都能
+    往别人的专项里存一段脚本。清洗放在**入口**，出口的清洗保持不变（老数据还没洗过）。
+    """
+    for k in _RICH_FIELDS:
+        if isinstance(data.get(k), str):
+            data[k] = _sanitize_rich(data[k])
+
+
+def _sanitize_blocks_json(raw):
+    """保存自定义分段前清洗文本框里的 HTML。
+
+    文本框的 html 是前端 contenteditable 直接产出的，页面用 v-html 渲染——
+    不在**服务端**过滤，等于让任何登录用户往别人的专项详情页里存一段脚本。
+    只动 kind=text 的 html 字段，其余结构原样保留；解析不了的串原样退回，
+    交给下游的容错解析（special_layout.loads）处理，不在这里 500。
+    """
+    if not raw:
+        return raw
+    try:
+        blocks = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    if not isinstance(blocks, list):
+        return raw
+    changed = False
+    for b in blocks:
+        if isinstance(b, dict) and b.get("kind") == "text" and b.get("html"):
+            clean = _sanitize_rich(str(b["html"]))
+            if clean != b["html"]:
+                b["html"] = clean
+                changed = True
+    return json.dumps(blocks, ensure_ascii=False) if changed else raw
 
 
 def _ensure_content(db: Session, special: models.Special) -> models.SpecialContent:
@@ -309,6 +352,9 @@ def update_content(
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
     data = payload.model_dump(exclude_unset=True)
     data.pop("version", None)
+    _sanitize_rich_fields(data)
+    if "extra_grids_json" in data:
+        data["extra_grids_json"] = _sanitize_blocks_json(data["extra_grids_json"])
     for k, v in data.items():
         setattr(content, k, v)
     content.version += 1
@@ -544,6 +590,7 @@ def _create_item(
     _require_not_locked_by_other(db, sid, user)
     Model = _item_model(kind)
     data = payload.model_dump(exclude_unset=True)
+    _sanitize_rich_fields(data)
     if not data.get("seq"):
         cnt = db.query(Model).filter(Model.special_id == sid).count()
         data["seq"] = cnt + 1
@@ -579,6 +626,7 @@ def _update_item(
         raise HTTPException(404, "条目不存在")
     _require_not_locked_by_other(db, item.special_id, user)
     data = payload.model_dump(exclude_unset=True)
+    _sanitize_rich_fields(data)
     fill_user_fk(db, data, "owner", "owner_user_id")
     for k, v in data.items():
         setattr(item, k, v)
@@ -687,7 +735,10 @@ def delete_risk(
 # 可能包含来自前端富文本编辑器的 HTML（b/strong/span style 等）。
 # 为防 XSS，邮件 HTML 输出前用白名单过滤；纯文本输出前剥掉标签。
 
-_ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "s", "span", "br", "div", "p", "font"}
+# ul/ol/li：富文本编辑器的列表按钮产出的结构。不在白名单里的后果不是报错，
+# 而是周报 HTML 里项目符号被静默抹平成一段连排文字
+_ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "s", "span", "br", "div", "p", "font",
+                 "ul", "ol", "li"}
 _VOID_TAGS = {"br"}
 _ALLOWED_STYLE_PROPS = {
     "color", "background-color", "font-size", "font-weight",
@@ -696,14 +747,24 @@ _ALLOWED_STYLE_PROPS = {
 _ALLOWED_FONT_ATTRS = {"color", "size"}
 
 
+# 标签被丢掉时，**内容也要一起丢**的元素。其余标签只丢标签、留文字
+# （<b>粗</b> → 粗），但 script/style 的"文字"是代码：转义后虽不会执行，
+# 却会原样显示成一段 alert(1)，看着就像页面出了故障
+_DROP_CONTENT_TAGS = {"script", "style"}
+
+
 class _RichSanitizer(HTMLParser):
     """白名单 HTML 清洗，移除 script / on* / 不在白名单内的标签和样式。"""
 
     def __init__(self):
         super().__init__(convert_charrefs=False)
         self.out: List[str] = []
+        self._drop_depth = 0
 
     def handle_starttag(self, tag, attrs):
+        if tag in _DROP_CONTENT_TAGS:
+            self._drop_depth += 1
+            return
         if tag not in _ALLOWED_TAGS:
             return
         kept = self._filter_attrs(tag, attrs)
@@ -711,6 +772,9 @@ class _RichSanitizer(HTMLParser):
         self.out.append(f"<{tag}{attr_str}>")
 
     def handle_endtag(self, tag):
+        if tag in _DROP_CONTENT_TAGS:
+            self._drop_depth = max(0, self._drop_depth - 1)
+            return
         if tag in _ALLOWED_TAGS and tag not in _VOID_TAGS:
             self.out.append(f"</{tag}>")
 
@@ -723,12 +787,18 @@ class _RichSanitizer(HTMLParser):
             self.out.append(f"<{tag}{attr_str}/>")
 
     def handle_data(self, data):
+        if self._drop_depth:
+            return
         self.out.append(html.escape(data, quote=False))
 
     def handle_entityref(self, name):
+        if self._drop_depth:
+            return
         self.out.append(f"&{name};")
 
     def handle_charref(self, name):
+        if self._drop_depth:
+            return
         self.out.append(f"&#{name};")
 
     def _filter_attrs(self, tag, attrs):
@@ -863,6 +933,25 @@ def _milestones_of(content) -> list:
             if isinstance(m, dict)]
 
 
+def _block_milestones(block: dict) -> list:
+    """自定义里程碑分段的节点列表。
+
+    与内置「计划」分段读的是不同地方（块自带的 milestones 字段 vs
+    content.milestones_json），但**往下的渲染必须共用**：一份专项里两种里程碑
+    并存时，周报里长得不一样是没人能解释的。
+    """
+    return [m for m in (block.get("milestones") or []) if isinstance(m, dict)]
+
+
+def _milestone_lines(milestones: list) -> List[str]:
+    """里程碑 → 纯文本周报的正文行（内置计划与自定义里程碑分段共用）。"""
+    out = []
+    for m in milestones:
+        st = _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))
+        out.append(f"  · {m.get('name', '')}  {m.get('date', '')}  [{st}]")
+    return out
+
+
 def _formation_of(content):
     obj = special_layout.loads(getattr(content, "formation_json", None), {})
     headers = [str(h) for h in (obj.get("headers") or [])]
@@ -880,6 +969,8 @@ def _section_text(special: models.Special, sec) -> List[str]:
         if sec.kind == "images":
             n = len([i for i in (sec.block.get("items") or []) if isinstance(i, dict)])
             return [f"  （{n} 张图片，见 HTML 版本）"] if n else []
+        if sec.kind == "milestones":
+            return _milestone_lines(_block_milestones(sec.block))
         headers, rows = _grid_matrix(sec.block)
         if not rows:
             return []
@@ -892,11 +983,7 @@ def _section_text(special: models.Special, sec) -> List[str]:
         return [body] if body.strip() else []
 
     if sec.key == "plan":
-        out = []
-        for m in _milestones_of(content):
-            st = _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))
-            out.append(f"  · {m.get('name', '')}  {m.get('date', '')}  [{st}]")
-        return out
+        return _milestone_lines(_milestones_of(content))
 
     if sec.key == "panorama":
         name = getattr(content, "panorama_image_name", "") if content else ""
@@ -1026,6 +1113,16 @@ def _build_table(headers: list, rows: list) -> str:
     return f'<table style="{_HTML_TABLE_CSS}">{head}{body}</table>'
 
 
+def _milestone_table(milestones: list) -> str:
+    """里程碑 → HTML 表格（内置计划与自定义里程碑分段共用）。空清单返回空串＝整段跳过。"""
+    if not milestones:
+        return ""
+    rows = [[m.get("name", ""), m.get("date", ""),
+             _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))]
+            for m in milestones]
+    return _build_table(["里程碑", "日期", "状态"], rows)
+
+
 def _build_table_rich(headers: list, rows_html: list) -> str:
     """rows_html 中每个单元格已是安全 HTML，由调用方对富文本字段做清洗。"""
     head = "<tr>" + "".join(f'<th style="{_HTML_TH_CSS}">{_e(h)}</th>' for h in headers) + "</tr>"
@@ -1047,24 +1144,92 @@ _LIGHT_CSS = {
 }
 
 
+# 单元格颜色只认 #RGB / #RRGGBB：这些值原样拼进 style="…"，
+# 不校验就等于把样式属性开放给任意字符串（"red;background:url(...)" 之类）
+_SAFE_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _fmt_css(cell: dict, *, default_align: str = "") -> str:
+    """单元格自带格式（字体/字号/粗斜下划线/字色/底色/对齐）→ 内联 CSS。
+
+    页面（RichGrid.cellStyle）、周报 HTML、Excel 三处必须同款，
+    否则「页面上是宋体加粗，导出来是默认字体」这种问题没人查得动。
+    白名单外的值一律丢弃而不是原样输出。
+    """
+    if not isinstance(cell, dict):
+        return f"text-align:{default_align};" if default_align else ""
+    parts = []
+    align = cell.get("align") or default_align
+    if align in ("left", "center", "right"):
+        parts.append(f"text-align:{align};")
+    color = str(cell.get("color") or "")
+    if _SAFE_COLOR_RE.match(color):
+        parts.append(f"color:{color};")
+    bg = str(cell.get("bg") or "")
+    if _SAFE_COLOR_RE.match(bg):
+        parts.append(f"background:{bg};")
+    if cell.get("bold"):
+        parts.append("font-weight:700;")
+    if cell.get("italic"):
+        parts.append("font-style:italic;")
+    if cell.get("underline"):
+        parts.append("text-decoration:underline;")
+    font = enums.GRID_FONTS.get(str(cell.get("font") or ""))
+    if font:
+        parts.append(f"font-family:{font['css']};")
+    try:
+        size = int(cell.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size in enums.GRID_FONT_SIZES:
+        parts.append(f"font-size:{size}px;")
+    return "".join(parts)
+
+
+def _grid_rich_matrix(block: dict):
+    """自定义表格 → (表头 dict 列表, 非空数据行的原始单元格)。
+
+    与 _grid_matrix 的区别只在于**不把单元格压成字符串**：HTML 里要保留
+    每格自己的字体与颜色。跨列表头照旧展开成同名多列。
+    """
+    headers = []
+    for h in (block.get("headers") or []):
+        if isinstance(h, dict):
+            cell = {**h, "text": str(h.get("text") or "")}
+            headers.extend([cell] * max(1, int(h.get("colspan") or 1)))
+        else:
+            headers.append({"text": str(h or "")})
+    rows = []
+    for r in (block.get("rows") or []):
+        cells = [c if isinstance(c, dict) else {"text": str(c or "")} for c in (r or [])]
+        if any(_strip_html(str(c.get("text") or "")).strip() for c in cells):
+            rows.append(cells)
+    return headers, rows
+
+
 def _grid_html(block: dict) -> str:
-    """自定义表格分段 → HTML 表格，点灯列按取值着色。"""
-    headers, rows = _grid_matrix(block)
+    """自定义表格分段 → HTML 表格：单元格格式随行，点灯列按取值着色。"""
+    headers, rows = _grid_rich_matrix(block)
     if not rows:
         return ""
     col_types = block.get("colTypes") or []
-    head = ("<tr>" + "".join(f'<th style="{_HTML_TH_CSS}">{_e(h)}</th>' for h in headers)
-            + "</tr>") if any(headers) else ""
+    head = ""
+    if any(h["text"] for h in headers):
+        head = "<tr>" + "".join(
+            f'<th style="{_HTML_TH_CSS}{_fmt_css(h, default_align="center")}">'
+            f'{_e(h["text"])}</th>' for h in headers) + "</tr>"
     body = []
     for i, r in enumerate(rows):
         tds = []
         for j, cell in enumerate(r):
-            css = _HTML_TD_ZEBRA if i % 2 else _HTML_TD_CSS
+            text = _strip_html(str(cell.get("text") or ""))
+            css = (_HTML_TD_ZEBRA if i % 2 else _HTML_TD_CSS) + _fmt_css(cell)
+            # 点灯列的着色压过单元格自己的字色/底色：整列口径一致才看得出灯
             if j < len(col_types) and col_types[j] == "light":
-                light = enums.GRID_LIGHT_COLORS.get(cell.strip())
+                light = enums.GRID_LIGHT_COLORS.get(text.strip())
                 if light:
                     css += _LIGHT_CSS[light]
-            tds.append(f'<td style="{css}">{_e(cell)}</td>')
+            tds.append(f'<td style="{css}">{_e(text)}</td>')
         body.append("<tr>" + "".join(tds) + "</tr>")
     return f'<table style="{_HTML_TABLE_CSS}">{head}{"".join(body)}</table>'
 
@@ -1094,6 +1259,8 @@ def _section_html(special: models.Special, sec, images: list) -> str:
                         f'<img src="cid:{cid}" style="width:100%;border:1px solid #dcdfe6;" />'
                         f'</div>')
             return "".join(parts)
+        if sec.kind == "milestones":
+            return _milestone_table(_block_milestones(sec.block))
         return _grid_html(sec.block)
 
     if sec.key in _TEXT_FIELD:
@@ -1103,13 +1270,7 @@ def _section_html(special: models.Special, sec, images: list) -> str:
         return f"<div>{_rich_to_html(val)}</div>"
 
     if sec.key == "plan":
-        ms = _milestones_of(content)
-        if not ms:
-            return ""
-        rows = [[m.get("name", ""), m.get("date", ""),
-                 _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))]
-                for m in ms]
-        return _build_table(["里程碑", "日期", "状态"], rows)
+        return _milestone_table(_milestones_of(content))
 
     if sec.key == "panorama":
         path = getattr(content, "panorama_image_path", "") if content else ""

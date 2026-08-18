@@ -204,6 +204,9 @@ export const issueApi = {
   snapshotList:    (project)            => http.get('/issues/snapshots', { params: { project } }),
   snapshotDetail:  (project, date)      => http.get('/issues/snapshot-detail', { params: date ? { project, date } : { project } }),
   snapshotTrend:   (project, dimension) => http.get('/issues/snapshot-trend', { params: { project, dimension } }),
+  // 每日新增/解决：相邻快照差分（后端算好落库，这里只取数字）
+  snapshotFlow:    (project)            => http.get('/issues/snapshot-flow', { params: { project } }),
+  flowDetail:      (project, date, kind) => http.get('/issues/flow-detail', { params: { project, date, kind } }),
   // 采集是长任务（几分钟），后端起线程立即返回，前端轮询 collectStatus 拿结果
   snapshotCollect: (project)            => http.post('/issues/snapshot-collect', null, { params: project ? { project } : {} }),
   collectStatus:   ()                   => http.get('/issues/collect-status'),
@@ -388,10 +391,10 @@ export const iterationRequirementApi = {
 }
 
 export const domainApi = {
-  // params: { year, month, include_hidden }（不传＝当前进行中迭代口径）
+  // params: { year, month, include_hidden, project }（不传＝进行中迭代 + 第一个有快照的项目）
   list: (params) => http.get('/domains', { params }),
   requirements: (groupId, params) => http.get(`/domains/${groupId}/requirements`, { params }),
-  issues: (groupId) => http.get(`/domains/${groupId}/issues`),
+  issues: (groupId, params) => http.get(`/domains/${groupId}/issues`, { params }),
   updateContent: (groupId, data) => http.put(`/domains/${groupId}/content`, data),
   setVisibility: (groupId, hidden) => http.put(`/domains/${groupId}/visibility`, { hidden }),
   // 事务与风险跟踪
@@ -399,6 +402,14 @@ export const domainApi = {
   riskCreate: (data) => http.post('/domains/risks', data),
   riskUpdate: (id, data) => http.put(`/domains/risks/${id}`, data),
   riskRemove: (id) => http.delete(`/domains/risks/${id}`),
+  // 遗留问题
+  legacyList: (params) => http.get('/domains/legacy-issues', { params }),
+  legacyCreate: (data) => http.post('/domains/legacy-issues', data),
+  legacyUpdate: (id, data) => http.put(`/domains/legacy-issues/${id}`, data),
+  legacyRemove: (id) => http.delete(`/domains/legacy-issues/${id}`),
+  // 问题单目标（读开放，写仅 admin）
+  issueTargets: (project) => http.get('/domains/issue-targets', { params: { project } }),
+  saveIssueTargets: (data) => http.put('/domains/issue-targets', data),
 }
 
 export const debugVersionApi = {

@@ -23,6 +23,15 @@ PRIORITY_LEGACY_MAP = {"高": "P1", "中": "P2", "低": "P3"}
 # ── 事务 / 风险条目状态 ───────────────────────────────────────────────────────
 TASK_STATUSES = ("open", "closed")
 
+# ── 领域管理 · 遗留问题（事务/风险的状态词表与客户面问题共用，见下方 CUSTOMER_ISSUE_STATUSES）──
+# 遗留问题（domain_legacy_issues）：pending 是业务方指定的写法，不要"顺手"改成挂起——
+# 页面、导出、筛选三处按同一字面量比对，任何一处大小写不同都会静默漏算
+DOMAIN_LEGACY_STATUSES = ("OPEN", "CLOSED", "pending")
+DOMAIN_LEGACY_STATUS_DEFAULT = "OPEN"
+# 这两张表沿用「高/中/低」而非 P0-P3：它们是跟踪事项不是需求，与需求优先级不同口径
+DOMAIN_TASK_PRIORITIES = ("高", "中", "低")
+DOMAIN_TASK_PRIORITY_DEFAULT = "中"
+
 # ── 年度迭代状态 ─────────────────────────────────────────────────────────────
 ITERATION_STATUSES = ("planning", "in_progress", "done")
 
@@ -113,6 +122,27 @@ def norm_issue_urgency(v, *, partial: bool = False) -> Optional[str]:
     raise ValueError(f"重要程度「{v}」非法，应为 {'/'.join(CUSTOMER_ISSUE_URGENCIES)} 之一")
 
 
+
+def norm_domain_legacy_status(v, *, partial: bool = False) -> Optional[str]:
+    """遗留问题状态：大小写不敏感输入，一律归一到 DOMAIN_LEGACY_STATUSES 的字面量。
+
+    归一而不是直接收原串，是因为 "Pending"/"pending"/"PENDING" 落库后按字面量分组统计
+    会变成三档；出口只有一种写法，前端下拉才和统计对得上。
+    """
+    if _is_blank(v):
+        return None if partial else DOMAIN_LEGACY_STATUS_DEFAULT
+    s = str(v).strip()
+    for c in DOMAIN_LEGACY_STATUSES:
+        if s.lower() == c.lower():
+            return c
+    raise ValueError(f"状态「{v}」非法，应为 {'/'.join(DOMAIN_LEGACY_STATUSES)} 之一")
+
+
+def norm_domain_priority(v, *, partial: bool = False) -> Optional[str]:
+    """领域跟踪事项优先级：高/中/低（与需求的 P0-P3 是两套口径，不互转）。"""
+    return _norm_choice(v, DOMAIN_TASK_PRIORITIES, DOMAIN_TASK_PRIORITY_DEFAULT,
+                        "优先级", partial=partial)
+
 # ── 关键特性交付状态（key_features）───────────────────────────────────────────
 # 从"最成熟"到"最早期"排序；前端点灯颜色须与本顺序一致。
 KEY_FEATURE_STATUSES = ("可商用", "beta验证", "测试", "开发", "设计", "分析")
@@ -146,7 +176,8 @@ SPECIAL_SECTIONS = (
 SPECIAL_SECTION_KEYS = tuple(s["key"] for s in SPECIAL_SECTIONS)
 
 # 自定义分段的形态。RichGrid 的列格式（colTypes）另有一套：text/select/date/light
-SPECIAL_BLOCK_KINDS = ("grid", "text", "images")
+# milestones＝时间轴分段，块内自带 [{name,date,status}]，与内置「计划」分段互不影响
+SPECIAL_BLOCK_KINDS = ("grid", "text", "images", "milestones")
 # RichGrid 列格式。light=点灯：取值同 select，但渲染成红黄绿色块
 GRID_COL_TYPES = ("text", "select", "date", "light")
 # 点灯取值 → 颜色档位。键为单元格文本（去空白后精确匹配），未命中不着色
@@ -156,3 +187,24 @@ GRID_LIGHT_COLORS = {
     "R": "red", "Y": "yellow", "G": "green",
 }
 GRID_LIGHT_DEFAULT_OPTIONS = ("绿", "黄", "红")
+
+# 单元格 / 富文本的字体：**存 key 不存 CSS 串**。
+# 页面要 CSS font-family、周报 HTML 要 CSS、Excel 要一个字体名，三处口径不同；
+# 存成 CSS 串会逼着 Excel 端去反解析 font-family 列表（"'Microsoft YaHei', 微软雅黑,
+# sans-serif" → 微软雅黑），一旦有人手改了串就静默丢字体。存 key 则三处各查各的表。
+# 前端同名表在 frontend/src/utils/gridFormat.js，**两边必须同步**——
+# 前端漏一项的后果与 GRID_COL_TYPES 一样：该字体每次加载被静默清成默认值。
+GRID_FONTS = {
+    "yahei": {"label": "微软雅黑", "css": "'Microsoft YaHei', 微软雅黑, sans-serif", "xlsx": "微软雅黑"},
+    "simsun": {"label": "宋体", "css": "SimSun, 宋体, serif", "xlsx": "宋体"},
+    "simhei": {"label": "黑体", "css": "SimHei, 黑体, sans-serif", "xlsx": "黑体"},
+    "kaiti": {"label": "楷体", "css": "KaiTi, 楷体, serif", "xlsx": "楷体"},
+    "fangsong": {"label": "仿宋", "css": "FangSong, 仿宋, serif", "xlsx": "仿宋"},
+    "arial": {"label": "Arial", "css": "Arial, Helvetica, sans-serif", "xlsx": "Arial"},
+    "times": {"label": "Times New Roman", "css": "'Times New Roman', Times, serif",
+              "xlsx": "Times New Roman"},
+}
+# 字号（px）。Excel 的磅值≈px×0.75，换算在 xlsx_utils 里做
+GRID_FONT_SIZES = (12, 13, 14, 16, 18, 22)
+# 单元格底色候选（点灯列的着色优先于它）
+GRID_CELL_BG = ("", "#FFF7E6", "#FEF0F0", "#F0F9EB", "#ECF5FF", "#F4F4F5")

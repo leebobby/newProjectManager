@@ -247,6 +247,12 @@
             >
               <el-button size="small" :icon="Plus">添加图片</el-button>
             </el-upload>
+            <el-button
+              v-else-if="blockKind(key) === 'milestones'"
+              size="small"
+              :icon="Plus"
+              @click="openMilestoneDialog(null, key)"
+            >新增里程碑</el-button>
             <el-button size="small" type="primary" :loading="extraSaving" @click="saveExtraGrids">保存</el-button>
             <el-button size="small" type="danger" @click="removeBlock(key)">删除分段</el-button>
           </template>
@@ -265,6 +271,15 @@
             />
             <div v-else class="rich-cell block-text-view" v-html="extraGrids[gridIndexOf(key)].html || '<span style=&quot;color:#909399&quot;>（空）</span>'" />
           </template>
+
+          <!-- 里程碑：与内置「计划」同一个时间轴组件，节点存在本分段内 -->
+          <MilestoneTimeline
+            v-else-if="blockKind(key) === 'milestones'"
+            :milestones="extraGrids[gridIndexOf(key)].milestones"
+            :editable="canEdit"
+            @edit="(i) => openMilestoneDialog(i, key)"
+            @remove="(i) => onRemoveMilestone(i, key)"
+          />
 
           <!-- 图片墙：多张平铺，每张可选宽度，自动换行 -->
           <template v-else-if="blockKind(key) === 'images'">
@@ -327,6 +342,7 @@
               <el-dropdown-item command="grid">表格</el-dropdown-item>
               <el-dropdown-item command="images">图片（可多张，宽度可调）</el-dropdown-item>
               <el-dropdown-item command="text">文本框</el-dropdown-item>
+              <el-dropdown-item command="milestones">里程碑（时间轴）</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -467,6 +483,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Download, EditPen, Message, Plus } from '@element-plus/icons-vue'
 import http, { specialApi, specialTemplateApi, downloadBlob } from '../api'
 import { GRID_COL_TYPES } from '../utils/gridLight'
+import { normFont, normSize } from '../utils/gridFormat'
 import { auth } from '../store/auth'
 import { checkStorageOrWarn } from '../store/storage'
 import EditableText from '../components/EditableText.vue'
@@ -621,7 +638,7 @@ async function toggleEdit() {
   ElMessage.success('已退出编辑模式')
 }
 
-const msDialog = reactive({ visible: false, editing: null, form: { name: '', date: '', status: 'planning' } })
+const msDialog = reactive({ visible: false, editing: null, target: null, form: { name: '', date: '', status: 'planning' } })
 const itemDialog = reactive({ visible: false, editing: null, kind: 'task', form: defaultItem() })
 const reportDialog = reactive({
   visible: false,
@@ -687,15 +704,28 @@ function nextGid() {
 
 function normHeader(h) {
   if (h && typeof h === 'object') {
-    return { text: String(h.text ?? ''), colspan: Number(h.colspan) || 1, align: h.align || 'center' }
+    return { text: String(h.text ?? ''), colspan: Number(h.colspan) || 1,
+             align: h.align || 'center', ...normFmt(h) }
   }
-  return { text: String(h ?? ''), colspan: 1, align: 'center' }
+  return { text: String(h ?? ''), colspan: 1, align: 'center', ...normFmt({}) }
+}
+// 单元格格式字段：字体/字号走白名单（词表见 utils/gridFormat.js，后端 enums 有同一份）。
+// 漏过滤的后果与列格式一样——非法值落库后页面、周报、Excel 三处各自解读不一致。
+function normFmt(c) {
+  return {
+    bold: !!c.bold,
+    italic: !!c.italic,
+    underline: !!c.underline,
+    font: normFont(c.font),
+    size: normSize(c.size),
+  }
 }
 function normCell(c) {
   if (c && typeof c === 'object') {
-    return { text: String(c.text ?? ''), align: c.align || 'left', color: c.color || '', bold: !!c.bold }
+    return { text: String(c.text ?? ''), align: c.align || 'left',
+             color: c.color || '', bg: c.bg || '', ...normFmt(c) }
   }
-  return { text: String(c ?? ''), align: 'left', color: '', bold: false }
+  return { text: String(c ?? ''), align: 'left', color: '', bg: '', ...normFmt({}) }
 }
 const DEFAULT_COL_W = 130
 function normGrid(g) {
@@ -734,8 +764,16 @@ function normGrid(g) {
   }
 }
 
-// 自定义分段统一规范化：grid（表格，历史数据无 kind 字段按表格算）/ text / images
+// 自定义分段统一规范化：grid（表格，历史数据无 kind 字段按表格算）/ text / images / milestones
 const IMG_WIDTHS = [25, 33, 50, 100]
+const MS_STATUSES = ['planning', 'in_progress', 'done', 'delayed']
+function normMilestone(m) {
+  return {
+    name: String(m?.name || ''),
+    date: String(m?.date || ''),
+    status: MS_STATUSES.includes(m?.status) ? m.status : 'planning',
+  }
+}
 function normBlock(g) {
   if (!g || typeof g !== 'object') return normGrid({})
   if (g.kind === 'text') {
@@ -755,6 +793,15 @@ function normBlock(g) {
     return {
       _uid: `g${++_gridUid}`, gid: g.gid || nextGid(), kind: 'images',
       title: String(g.title || ''), items,
+    }
+  }
+  if (g.kind === 'milestones') {
+    // 与内置「计划」分段同一种时间轴，但节点存在块自己身上——
+    // 一个专项可以既有整体计划、又有若干条子计划各自成段
+    return {
+      _uid: `g${++_gridUid}`, gid: g.gid || nextGid(), kind: 'milestones',
+      title: String(g.title || ''),
+      milestones: (Array.isArray(g.milestones) ? g.milestones : []).map(normMilestone),
     }
   }
   return normGrid(g)
@@ -904,7 +951,7 @@ function gridIndexOf(key) {
   const gid = key.slice(5) // 去掉 "grid:"
   return extraGrids.value.findIndex(g => String(g.gid) === gid)
 }
-const BLOCK_KIND_LABELS = { grid: '附加表格', text: '文本框', images: '图片' }
+const BLOCK_KIND_LABELS = { grid: '附加表格', text: '文本框', images: '图片', milestones: '里程碑' }
 function blockKind(key) {
   const g = extraGrids.value[gridIndexOf(key)]
   return (g && g.kind) || 'grid'
@@ -979,16 +1026,51 @@ async function onSaveField(key, val) {
   }
 }
 
-// 里程碑
-function openMilestoneDialog(idx) {
+// 里程碑：内置「计划」分段与自定义里程碑分段共用一套对话框。
+// key 为 null 时改 content.milestones_json，否则改该分段自己的 milestones。
+// 两条落库路径不同（updateContent 的一个字段 vs saveExtraGrids 整个分段数组），
+// 但排序与校验必须同一份，否则两处的表现会慢慢分叉。
+function msListOf(key) {
+  if (!key) return milestones.value
+  return extraGrids.value[gridIndexOf(key)]?.milestones || []
+}
+
+function openMilestoneDialog(idx, key = null) {
+  msDialog.target = key
   if (idx == null) {
     msDialog.editing = null
     msDialog.form = { name: '', date: '', status: 'planning' }
   } else {
     msDialog.editing = idx
-    msDialog.form = { ...milestones.value[idx] }
+    msDialog.form = { ...msListOf(key)[idx] }
   }
   msDialog.visible = true
+}
+
+/**
+ * 落库：分段里程碑随整个分段数组保存，内置计划走 content 的 milestones_json。
+ * 返回是否成功——saveExtraGrids 失败时自己弹过提示了，不能再报一次「已保存」。
+ */
+async function persistMilestones(key, next) {
+  next.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+  if (key) {
+    const block = extraGrids.value[gridIndexOf(key)]
+    if (!block) return false
+    block.milestones = next
+    return await saveExtraGrids(true)
+  }
+  try {
+    const { data } = await specialApi.updateContent(special.value.id, {
+      version: content.value.version,
+      milestones_json: JSON.stringify(next),
+    })
+    content.value = data
+    parseMilestones()
+    return true
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '保存失败')
+    return false
+  }
 }
 
 async function onSaveMilestone() {
@@ -996,38 +1078,20 @@ async function onSaveMilestone() {
     ElMessage.warning('请输入名称')
     return
   }
-  const next = milestones.value.slice()
+  const key = msDialog.target
+  const next = msListOf(key).slice()
   if (msDialog.editing != null) next[msDialog.editing] = { ...msDialog.form }
   else next.push({ ...msDialog.form })
-  next.sort((a, b) => (a.date || '').localeCompare(b.date || ''))
-  try {
-    const { data } = await specialApi.updateContent(special.value.id, {
-      version: content.value.version,
-      milestones_json: JSON.stringify(next),
-    })
-    content.value = data
-    parseMilestones()
-    msDialog.visible = false
-    ElMessage.success('已保存')
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
-  }
+  if (!await persistMilestones(key, next)) return
+  msDialog.visible = false
+  ElMessage.success('已保存')
 }
 
-async function onRemoveMilestone(idx) {
+async function onRemoveMilestone(idx, key = null) {
   await ElMessageBox.confirm('确认删除该里程碑？', '提示', { type: 'warning' })
-  const next = milestones.value.slice()
+  const next = msListOf(key).slice()
   next.splice(idx, 1)
-  try {
-    const { data } = await specialApi.updateContent(special.value.id, {
-      version: content.value.version,
-      milestones_json: JSON.stringify(next),
-    })
-    content.value = data
-    parseMilestones()
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
-  }
+  await persistMilestones(key, next)
 }
 
 // 全景图
@@ -1131,7 +1195,7 @@ async function saveFormation(silent = false) {
   }
 }
 
-// —— 自定义分段：表格 / 文本框 / 图片（都存在 extra_grids_json 数组里，kind 区分）——
+// —— 自定义分段：表格 / 文本框 / 图片 / 里程碑（都存在 extra_grids_json 数组里，kind 区分）——
 function _kindCount(kind) {
   return extraGrids.value.filter(g => (g.kind || 'grid') === kind).length
 }
@@ -1140,6 +1204,10 @@ function addBlock(kind) {
     extraGrids.value.push(normBlock({ kind: 'text', title: `文本框 ${_kindCount('text') + 1}`, html: '' }))
   } else if (kind === 'images') {
     extraGrids.value.push(normBlock({ kind: 'images', title: `图片 ${_kindCount('images') + 1}`, items: [] }))
+  } else if (kind === 'milestones') {
+    extraGrids.value.push(normBlock({
+      kind: 'milestones', title: `里程碑 ${_kindCount('milestones') + 1}`, milestones: [],
+    }))
   } else {
     extraGrids.value.push(normGrid({
       title: `附加表格 ${_kindCount('grid') + 1}`,
@@ -1231,8 +1299,10 @@ async function saveExtraGrids(silent = false) {
     parseSectionOrder()
     parseSectionConfig()
     if (silent !== true) ElMessage.success('分段已保存')
+    return true
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
+    return false      // 失败已经弹过提示，调用方据此别再报一次「已保存」
   } finally {
     extraSaving.value = false
   }

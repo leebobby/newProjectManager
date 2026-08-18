@@ -302,7 +302,8 @@ def build_special_xlsx(special) -> io.BytesIO:
     for i, w in enumerate(_COL_WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    state = {"row": 1}
+    # pending＝已经排到但还没落笔的章节标题，见 _flush_section
+    state = {"row": 1, "pending": None}
 
     def _fill(r, c1, c2, color):
         for c in range(c1, c2 + 1):
@@ -321,9 +322,25 @@ def build_special_xlsx(special) -> io.BytesIO:
         state["row"] += 1
 
     def section(title):
+        """把章节标题挂起，等真有内容落笔时再写（见 _flush_section）。"""
+        state["pending"] = title
+
+    def _flush_section():
+        """写正文前补上待写的章节标题。
+
+        「空分段不占章节编号」是页面 / 周报 / 导出三处共同的口径，可标题必须写在
+        内容之前——所以先挂起、等第一笔内容落笔时再补。原先是先写标题、发现空了
+        再补一行「—」，于是模板里多一个空分段，Excel 的章节号就和周报对不上，
+        而这种错没人会当成 bug 去查。
+        """
+        title = state.get("pending")
+        if not title:
+            return
+        state["pending"] = None
         band(title, fill=_SECTION, font_color=_BRAND_DARK, bold=True, size=12, height=22)
 
     def narrative(text):
+        _flush_section()
         r = state["row"]
         text = text or "—"
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=_NCOL)
@@ -342,6 +359,7 @@ def build_special_xlsx(special) -> io.BytesIO:
         """col_specs: [(c1,c2), ...] 每个逻辑列在 6 列网格中的物理列区间。
         status_col: 逻辑列下标（从 0 起），该列文字按状态着色 + 整行变浅绿。
         center_cols: 需要居中的逻辑列下标集合（默认 status / 第 0 列居中）。"""
+        _flush_section()
         center = set(center_cols or [])
         # 列容量（字符单位）
         caps = [sum(_COL_WIDTHS[c1 - 1:c2]) for (c1, c2) in col_specs]
@@ -398,11 +416,14 @@ def build_special_xlsx(special) -> io.BytesIO:
     # 6 列等分映射（序号/内容/进展/责任人/闭环/状态）
     six = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]
 
-    def render_milestones():
-        milestones = [m for m in special_layout.loads(
-            getattr(content, "milestones_json", None), []) if isinstance(m, dict)]
+    def render_milestones(milestones=None):
+        """内置「计划」与自定义里程碑分段共用：两者只是取数不同，画法必须一样。"""
+        if milestones is None:
+            milestones = special_layout.loads(getattr(content, "milestones_json", None), [])
+        milestones = [m for m in milestones if isinstance(m, dict)]
         if not milestones:
             return False
+        _flush_section()
         ms_img = _render_milestone_image(milestones)
         if ms_img is not None:
             r = state["row"]
@@ -448,6 +469,9 @@ def build_special_xlsx(special) -> io.BytesIO:
     def render_block_images(block):
         items = [i for i in (block.get("items") or [])
                  if isinstance(i, dict) and i.get("file")]
+        if not items:
+            return False
+        _flush_section()
         drawn = 0
         for im in items:
             if _place_image(ws, state, UPLOAD_ROOT / str(special.id) / str(im["file"])):
@@ -485,6 +509,8 @@ def build_special_xlsx(special) -> io.BytesIO:
             ok = bool(body.strip())
             if ok:
                 narrative(body)
+        elif sec.is_custom and sec.kind == "milestones":
+            ok = render_milestones(sec.block.get("milestones") or [])
         elif sec.is_custom:
             ok = render_block_images(sec.block)
         elif sec.key in _TEXT_FIELD:
@@ -497,6 +523,8 @@ def build_special_xlsx(special) -> io.BytesIO:
         elif sec.key == "panorama":
             path = getattr(content, "panorama_image_path", "") if content else ""
             ok = bool(path)
+            if ok:
+                _flush_section()
             if ok and not _place_image(ws, state, UPLOAD_ROOT.parent / path):
                 narrative(f"（{getattr(content, 'panorama_image_name', '') or '全景图'}："
                           f"Excel 无法内嵌该格式，请见系统页面）")
@@ -510,7 +538,10 @@ def build_special_xlsx(special) -> io.BytesIO:
         else:
             ok = False
         if not ok:
-            narrative("—")
+            # 标题还挂着没落笔，撤回即可；编号让给下一段，与周报保持同一套章节号
+            state["pending"] = None
+            n -= 1
+            continue
         gap()
 
     for sheet_name, sec_title, grid in grid_sheets:
@@ -592,6 +623,33 @@ def _place_image(ws, state, path) -> bool:
         return False
 
 
+def _cell_font_spec(cell: dict) -> dict:
+    """单元格格式 → openpyxl 的 Font/Fill 参数。
+
+    与 routers/specials._fmt_css、前端 utils/gridFormat.js 是同一张表的三种出口：
+    页面要 CSS、周报要 CSS、Excel 要字体名 + 磅值。白名单外的值退回默认，
+    因为 openpyxl 对非法字号会直接抛，而一次导出失败比丢个字号严重得多。
+    """
+    font_key = str(cell.get("font") or "")
+    name = enums.GRID_FONTS.get(font_key, {}).get("xlsx") or _FONT
+    try:
+        px = int(cell.get("size") or 0)
+    except (TypeError, ValueError):
+        px = 0
+    # px → 磅：Excel 用磅（1px ≈ 0.75pt）。默认 10 磅是本表原有的正文字号
+    size = round(px * 0.75, 1) if px in enums.GRID_FONT_SIZES else 10
+    bg = str(cell.get("bg") or "")
+    return {
+        "name": name,
+        "size": size,
+        "color": _hex_to_rgb6(cell.get("color", "")),
+        "bold": bool(cell.get("bold")),
+        "italic": bool(cell.get("italic")),
+        "underline": "single" if cell.get("underline") else None,
+        "bg": _hex_to_rgb6(bg, "") if bg in enums.GRID_CELL_BG and bg else "",
+    }
+
+
 def _render_extra_grid_sheet(wb, grid, sheet_name, title):
     """把一个 RichGrid（{title, headers, rows, colWidths}）渲染成独立工作表。
 
@@ -612,6 +670,7 @@ def _render_extra_grid_sheet(wb, grid, sheet_name, title):
     for h in raw_headers:
         if isinstance(h, dict):
             hdrs.append({
+                **h,
                 "text": str(h.get("text", "")),
                 "colspan": max(1, int(h.get("colspan", 1) or 1)),
                 "align": h.get("align") or "center",
@@ -660,7 +719,10 @@ def _render_extra_grid_sheet(wb, grid, sheet_name, title):
         for cc in range(c1, c2 + 1):
             cell = ws.cell(row=r, column=cc, value=h["text"] if cc == c1 else None)
             cell.fill = PatternFill("solid", fgColor=_BRAND)
-            cell.font = Font(name=_FONT, bold=True, color="FFFFFF", size=10)
+            # 表头恒为品牌红底白字粗体：只让它跟随字体与字号，字色/底色不跟
+            hf = _cell_font_spec(h)
+            cell.font = Font(name=hf["name"], bold=True, color="FFFFFF", size=hf["size"],
+                             italic=hf["italic"], underline=hf["underline"])
             cell.alignment = Alignment(horizontal=h["align"], vertical="center", wrap_text=True)
             cell.border = _BORDER
         col = c2 + 1
@@ -677,11 +739,11 @@ def _render_extra_grid_sheet(wb, grid, sheet_name, title):
             if isinstance(cd, dict):
                 text = str(cd.get("text", ""))
                 align = cd.get("align") or "left"
-                color = _hex_to_rgb6(cd.get("color", ""))
-                bold = bool(cd.get("bold"))
             else:
                 text = "" if cd is None else str(cd)
-                align, color, bold = "left", "262626", False
+                align = "left"
+                cd = {}
+            fmt = _cell_font_spec(cd)
             cap = max(4, int(_px(c - 1) / 7))
             max_lines = max(max_lines, _cell_lines(text, cap))
             # 点灯列：取值命中红/黄/绿则整格上底色 + 同色粗体，与页面和周报一致
@@ -689,14 +751,17 @@ def _render_extra_grid_sheet(wb, grid, sheet_name, title):
             if c - 1 < len(col_types) and col_types[c - 1] == "light":
                 light = enums.GRID_LIGHT_COLORS.get(text.strip())
             cell = ws.cell(row=r, column=c, value=text)
-            cell.font = Font(name=_FONT, size=10,
-                             color=_LIGHT_FONT[light] if light else color,
-                             bold=bool(light) or bold)
+            cell.font = Font(name=fmt["name"], size=fmt["size"],
+                             color=_LIGHT_FONT[light] if light else fmt["color"],
+                             bold=bool(light) or fmt["bold"],
+                             italic=fmt["italic"], underline=fmt["underline"])
             cell.alignment = Alignment(horizontal="center" if light else align,
                                        vertical="center", wrap_text=True)
             cell.border = _BORDER
             if light:
                 cell.fill = PatternFill("solid", fgColor=_LIGHT_FILL[light])
+            elif fmt["bg"]:
+                cell.fill = PatternFill("solid", fgColor=fmt["bg"])
             elif zebra:
                 cell.fill = PatternFill("solid", fgColor=_ZEBRA)
         ws.row_dimensions[r].height = max(18, min(180, max_lines * 15 + 3))
