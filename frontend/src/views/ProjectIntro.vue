@@ -245,7 +245,9 @@ async function loadRoadmaps() {
 async function loadStats() {
   try {
     const [v, m] = await Promise.all([
-      majorVersionApi.list(),   // 两级版本体系：首页统计数的是大版本
+      // 首页那个「版本」计数指的是发布版本（C10SPC101）这一层，
+      // 不是大版本号段——而且 list() 只返回未挂项目的大版本，数出来一直是 0
+      majorVersionApi.allReleaseVersions(),
       customerStatusApi.list(),
     ])
     stats.versions = v.data.length

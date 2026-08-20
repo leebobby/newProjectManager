@@ -8,11 +8,11 @@
         <el-option label="近 6 月" :value="6" />
         <el-option label="近 1 年" :value="12" />
       </el-select>
-      <span class="vt-bar-hint">最新大版本为主线，旧版本从对应时间点拉枝；节点为迭代版本（悬停看详情）</span>
+      <span class="vt-bar-hint">主干大版本画成主线，分支从拉出时间点拉枝；节点为版本（悬停看详情）</span>
     </div>
 
     <div v-if="layout.empty" class="vt-empty">
-      暂无可绘制的版本：大版本需至少有「版本范围开始」或迭代版本的「预计发布日期」才能定位到时间轴。
+      暂无可绘制的版本：大版本需至少有「版本范围开始」，或其下版本填了「计划发布 / 实际发布」，才能定位到时间轴。
     </div>
     <template v-else>
       <svg
@@ -65,10 +65,10 @@
             <title>{{ mv.version_no }} {{ mv.released ? '已发布 ' + mv.releaseLabel : '计划至 ' + mv.endLabel }}</title>
           </circle>
 
-          <!-- 迭代版本节点：标签上下交错 + 重叠自动隐藏（仍可悬停） -->
+          <!-- 版本节点：标签上下交错 + 重叠自动隐藏（仍可悬停） -->
           <g v-for="n in mv.nodes" :key="n.id">
             <circle :cx="n.x" :cy="mv.y" r="4" :fill="mv.color">
-              <title>{{ n.version_no }} {{ n.title }} · {{ n.dateLabel }}</title>
+              <title>{{ n.version_no }} {{ n.title }} · {{ n.dateLabel }}{{ n.builds ? ' · ' + n.builds + ' 个迭代' : '' }}</title>
             </circle>
             <template v-if="n.showLabel">
               <line
@@ -92,7 +92,7 @@
             <text
               :x="mv.labelX + mv.labelW / 2" :y="mv.y + 2" text-anchor="middle"
               class="vt-major-label" :fill="mv.isMain ? '#fff' : mv.color"
-            >{{ mv.isMain ? '主线 ' : '' }}{{ mv.version_no }}</text>
+            >{{ mv.isMain ? '主干 ' : '' }}{{ mv.version_no }}</text>
             <title>{{ mv.version_no }} {{ mv.title }}</title>
           </g>
         </g>
@@ -129,16 +129,25 @@ const layout = computed(() => {
   const top = 34
   const laneGap = 64
 
-  // 1) 解析每个大版本的起止 + 迭代节点日期
+  // 1) 解析每个大版本的起止 + 版本节点日期
+  //    节点画的是「版本」而不是迭代版本：一个大版本下的构建有几十上百个，画上去只剩黑线
   const raw = props.majors.map((m) => {
-    const iters = (m.iteration_versions || [])
-      .map((iv) => ({ id: iv.id, version_no: iv.version_no, title: iv.title || '', t: ts(iv.planned_date) }))
+    const iters = (m.release_versions || [])
+      .map((rv) => ({
+        id: rv.id,
+        version_no: rv.version_no,
+        title: rv.title || '',
+        builds: (rv.iteration_versions || []).length,
+        // 发了就按实际发布日定位，没发就按计划日
+        t: ts(rv.actual_release_date) ?? ts(rv.planned_date),
+      }))
       .filter((iv) => iv.t != null)
       .sort((a, b) => a.t - b.t)
     const iterTs = iters.map((iv) => iv.t)
+    const relTs = (m.release_versions || []).map((rv) => ts(rv.actual_release_date)).filter((t) => t != null)
     const startT = ts(m.range_start) ?? (iterTs.length ? Math.min(...iterTs) : null)
-    const relT = ts(m.actual_release_date)
-    const endT = relT ?? ts(m.range_end) ?? (iterTs.length ? Math.max(...iterTs) : startT)
+    const relT = relTs.length ? Math.max(...relTs) : null   // 最近一次实际发布
+    const endT = ts(m.range_end) ?? (iterTs.length ? Math.max(...iterTs) : startT)
     return { m, iters, startT, endT, relT }
   })
 
@@ -175,20 +184,27 @@ const layout = computed(() => {
   maxT += span * 0.04
   const xOf = (t) => padL + ((Math.max(t, clipMin) - minT) / (maxT - minT)) * (W - padL - padR)
 
-  // 3) 排序：最新（起始最晚）在最上 = 主线
+  // 3) 排序：主干在最上，其余按起始时间倒序
+  //    主干由后端的 line 字段说了算，不再靠「起始最晚」猜——猜错的表现是
+  //    时间轴画的主线和实际在主干上的大版本不是同一个，且看着完全正常
   placeable.sort((a, b) => {
+    const am = a.m.line === 'master' ? 0 : 1
+    const bm = b.m.line === 'master' ? 0 : 1
+    if (am !== bm) return am - bm
     if (b.startT !== a.startT) return b.startT - a.startT
     return String(b.m.version_no).localeCompare(String(a.m.version_no), 'zh-Hans-CN', { numeric: true })
   })
 
+  const hasMaster = placeable.some((r) => r.m.line === 'master')
   const mainY = top + 12
   const majors = placeable.map((r, i) => {
     const color = PALETTE[i % PALETTE.length]
     const y = mainY + i * laneGap
     const startX = xOf(r.startT)
     const endX = xOf(r.endT ?? r.startT)
-    const isMain = i === 0
-    const labelText = (isMain ? '主线 ' : '') + (r.m.version_no || '')
+    // 一条主干都没标时退回「排在最前的那条」，免得整张图没有主线可挂分支
+    const isMain = hasMaster ? r.m.line === 'master' : i === 0
+    const labelText = (isMain ? '主干 ' : '') + (r.m.version_no || '')
     const labelW = Math.max(34, labelText.length * 8 + 14)
     let labelX = startX - labelW - 8
     if (labelX < 2) labelX = startX + 8

@@ -50,7 +50,23 @@ def resolve_group_id(db: Session, value: Optional[str], kind: str = "pl") -> Opt
     return g.id if g else None
 
 
+def _first_iteration_of(db: Session, **filters) -> Optional[int]:
+    iv = (
+        db.query(models.IterationVersion)
+        .filter_by(**filters)
+        .order_by(models.IterationVersion.sort_order, models.IterationVersion.id)
+        .first()
+    )
+    return iv.id if iv else None
+
+
 def resolve_iteration_version_id(db: Session, value: Optional[str]) -> Optional[int]:
+    """字符串版本号 → 迭代版本 id。三层都试，由细到粗。
+
+    命中顺序是 迭代版本（C10SPC101B001）→ 版本（C10SPC101）→ 大版本（C10SPC100），
+    后两档落到该层下**序号最小的**那个构建。粗匹配落空返回 None 而不是报错，
+    留给「数据对账」页事后补（见 CLAUDE.md「主数据与 FK 反查」）。
+    """
     if not value:
         return None
     s = value.strip()
@@ -59,17 +75,12 @@ def resolve_iteration_version_id(db: Session, value: Optional[str]) -> Optional[
     v = db.query(models.IterationVersion).filter(models.IterationVersion.version_no == s).first()
     if v:
         return v.id
-    # 兜底：major_version 命中也算（粗匹配）
+    rv = db.query(models.ReleaseVersion).filter(models.ReleaseVersion.version_no == s).first()
+    if rv:
+        return _first_iteration_of(db, release_version_id=rv.id)
     mv = db.query(models.MajorVersion).filter(models.MajorVersion.version_no == s).first()
     if mv:
-        # 找该大版本下序号最小的迭代版本作为缺省落点
-        iv = (
-            db.query(models.IterationVersion)
-            .filter(models.IterationVersion.major_version_id == mv.id)
-            .order_by(models.IterationVersion.sort_order, models.IterationVersion.id)
-            .first()
-        )
-        return iv.id if iv else None
+        return _first_iteration_of(db, major_version_id=mv.id)
     return None
 
 
