@@ -149,6 +149,23 @@ KEY_FEATURE_STATUSES = ("可商用", "beta验证", "测试", "开发", "设计",
 KEY_FEATURE_STATUS_DEFAULT = "分析"
 
 
+# ── 版本管理 · 主干 / 分支 ────────────────────────────────────────────────────
+# 版本体系是三层：大版本（C10SPC100，号段）→ 版本（C10SPC101，真正发布的一级）
+# → 迭代版本（C10SPC101B001，构建）。主干/分支是**大版本**的属性：
+# C10SPC100 在 C10SPC110 还没出版本时跑在主干上，C110 一开始发版，C100 就被拉成分支。
+# 不变量「同一项目同一时刻只有一个大版本在主干」由服务端保证（见 routers/major_versions.py
+# 的 set_master），不要做成两个各自独立的开关——手点必然出现两个主干或零个主干，
+# 而这种错没人会当 bug 报。
+VERSION_LINES = ("master", "branch")
+VERSION_LINE_DEFAULT = "master"
+VERSION_LINE_LABELS = {"master": "主干", "branch": "分支"}
+
+
+def norm_version_line(v, *, partial: bool = False) -> Optional[str]:
+    """大版本的主干/分支状态。"""
+    return _norm_choice(v, VERSION_LINES, VERSION_LINE_DEFAULT, "主干/分支", partial=partial)
+
+
 def norm_key_feature_status(v, *, partial: bool = False) -> Optional[str]:
     return _norm_choice(v, KEY_FEATURE_STATUSES, KEY_FEATURE_STATUS_DEFAULT,
                         "交付状态", partial=partial)

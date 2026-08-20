@@ -353,12 +353,20 @@ export const customerCustomReqApi = {
   remove: (id) => http.delete(`/customer-custom-reqs/${id}`),
 }
 
-// 遗留版本表：只读，仅项目简介页消费旧数据；写接口已在后端下线
+// 版本三层：大版本（C10SPC100）→ 版本（C10SPC101）→ 迭代版本（C10SPC101B001）。
+// 哪一层给谁用见 backend/routers/major_versions.py 顶部：
+// 客户面用「版本」，迭代管理与问题单用「迭代版本」，达成率看「版本」。
 export const majorVersionApi = {
   list: (project_id) => http.get('/major-versions', { params: project_id != null ? { project_id } : {} }),
   create: (data) => http.post('/major-versions', data),
   update: (id, data) => http.put(`/major-versions/${id}`, data),
   remove: (id) => http.delete(`/major-versions/${id}`),
+  // 主干只能整体切换：后端会把同项目的原主干一并降为分支，别做成普通字段
+  setMaster: (id) => http.post(`/major-versions/${id}/set-master`),
+  allReleaseVersions: () => http.get('/release-versions/all'),
+  createRelease: (data) => http.post('/release-versions', data),
+  updateRelease: (id, data) => http.put(`/release-versions/${id}`, data),
+  removeRelease: (id) => http.delete(`/release-versions/${id}`),
   allIterationVersions: () => http.get('/iteration-versions/all'),
   createIterVersion: (data) => http.post('/iteration-versions', data),
   updateIterVersion: (id, data) => http.put(`/iteration-versions/${id}`, data),

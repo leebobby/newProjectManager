@@ -9,15 +9,15 @@
               v-model="selectedVersionId"
               filterable
               clearable
-              placeholder="选择大版本"
-              style="width: 280px"
+              placeholder="选择版本"
+              style="width: 320px"
               @change="loadVersion"
             >
               <el-option
                 v-for="v in versions"
                 :key="v.id"
                 :value="v.id"
-                :label="`${v.version_no}${v.title ? ' — ' + v.title : ''}`"
+                :label="`${v.major_version_no ? v.major_version_no + ' / ' : ''}${v.version_no}${v.title ? ' — ' + v.title : ''}`"
               />
             </el-select>
             <el-button :icon="Refresh" :disabled="!selectedVersionId" @click="loadVersion">刷新</el-button>
@@ -267,8 +267,11 @@ const versionMetric = ref(null)
 const versionLoading = ref(false)
 
 async function loadVersionList() {
+  // 达成率看「版本」（C10SPC101）——需求填的是它下面的构建号，后端按版本汇总。
+  // 原来这里用 majorVersionApi.list()，那个接口不带 project_id 时只返回未挂项目的
+  // 大版本，实际是个空列表。
   try {
-    const { data } = await majorVersionApi.list()
+    const { data } = await majorVersionApi.allReleaseVersions()
     versions.value = data
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载版本列表失败')

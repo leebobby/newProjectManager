@@ -423,28 +423,16 @@ async function loadCustomers() {
 }
 
 async function loadVersions() {
+  // 客户面看的是「版本」这一层（C10SPC101），不是大版本号段、也不是构建号——
+  // 现场装的就是某个发布版本。下拉仍是 allow-create，历史里手输的串不会被挡。
   try {
-    const [majorRes, iterRes] = await Promise.all([
-      majorVersionApi.list(),
-      majorVersionApi.allIterationVersions(),
-    ])
-    const iter = (iterRes.data || []).map(v => ({
+    const { data } = await majorVersionApi.allReleaseVersions()
+    versions.value = (data || []).map(v => ({
       value: v.version_no,
       label: v.title ? `${v.version_no} · ${v.title}` : v.version_no,
     }))
-    const major = (majorRes.data || []).map(v => ({
-      value: v.version_no,
-      label: v.title ? `${v.version_no} · ${v.title}` : v.version_no,
-    }))
-    // 去重，迭代版本在前（更接近客户实际现场版本）
-    const seen = new Set()
-    const merged = []
-    for (const v of [...iter, ...major]) {
-      if (!seen.has(v.value)) { seen.add(v.value); merged.push(v) }
-    }
-    versions.value = merged
-    if (!merged.length) {
-      console.warn('[CustomerStatus] 版本列表为空：请到「版本管理」新增大版本/迭代版本')
+    if (!versions.value.length) {
+      console.warn('[CustomerStatus] 版本列表为空：请到「版本管理」新增版本')
     }
   } catch (e) {
     console.error('[CustomerStatus] 加载版本列表失败:', e)

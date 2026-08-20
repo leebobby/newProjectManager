@@ -36,7 +36,7 @@ cd frontend && npm install && npm run dev
 | 档位 | 依赖 | 适用 |
 | --- | --- | --- |
 | **登录用户**（协作编辑域） | `Depends(get_current_user)` | 日常填报与记录：进展、事务、风险、问题条目、出差、调试版本、领域内容、领域遗留问题、关键特性…… |
-| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、专项元数据、专项版式模板、一本通、干系人、阵型、领域问题单目标、`config.json`、数据对账 |
+| **仅 admin** | `Depends(require_admin)` | 主数据与配置：用户、资源组、客户、里程碑项目、版本三层、专项元数据、专项版式模板、一本通、干系人、阵型、领域问题单目标、`config.json`、数据对账 |
 | **字段级白名单** | 路由内按角色逐字段判 | 同一行里不同字段权限不同，见 [routers/customer_status.py](backend/routers/customer_status.py) |
 
 配套硬规则：
@@ -101,6 +101,44 @@ cd frontend && npm install && npm run dev
   模板外的分段与已填的行一律保留。版式是配置，填进去的内容不是。
 - 权限分档：改模板、套模板＝**仅 admin**（配置类主数据 / 改的是整页版式）；
   某专项内部的分段改名、停用、排序＝**登录用户**（协作编辑，走 `PUT /content` 的乐观锁）。
+
+## 版本：三层与主干/分支
+
+```
+major_versions        大版本    C10SPC100        号段，自己不发布
+  └ release_versions  版本      C10SPC101/102    真正对外发布的一级
+      └ iteration_versions  迭代版本  C10SPC101B001  构建
+```
+
+**哪一层给谁用**（改口径前先看这张表，改错了各页面对不上，而且看着都正常）：
+
+| 场景 | 用哪层 |
+| --- | --- |
+| 客户面：现场版本、客户定制化需求的预计合入版本 | **版本** |
+| 迭代管理：领域/产品需求的计划交付版本；问题单的「版本信息」 | **迭代版本** |
+| 版本达成率 `GET /api/metrics/version/{id}` | **版本**（id 是 release_version_id） |
+| 时间轴 `VersionTimeline`：泳道 / 节点 | 大版本 / **版本** |
+
+- `iteration_versions.major_version_id` 是**冗余列**，只由服务端从父版本推导
+  （`_sync_major_id`），客户端传的一律忽略；改挂父版本时要把子行一起搬走，
+  否则达成率会按旧大版本聚合。
+- 字符串反查 `resolve_iteration_version_id()` 由细到粗试三层，落到该层下**序号最小**的构建；
+  粗匹配落空返回 None 留给数据对账，不要瞎猜一个。
+
+**主干/分支是大版本的属性**，不变量是「同一项目同一时刻只有一个主干」：
+
+- 只能走 `POST /api/major-versions/{id}/set-master`——它在同一事务里把原主干降为分支、
+  盖上 `branched_at`、补上 `branch_name`。`line` 刻意不在 `MajorVersionUpdate` 里：
+  做成普通字段就会出现两个主干或零个主干，页面上看着完全正常，没人会当 bug 报。
+- 新建的大版本默认 `branch`，接管主干要显式点一次。
+- **不要改成自动推断**（「出现已发布的版本就自动接管主干」）：拉分支是研发流程动作，
+  不必然和发版同一天；推断错了，页面上的分支状态和 Git 实际状态对不上，比漏点一次更难查。
+
+**老库迁移**（`alembic/versions/0010_version_three_tier.py`）：两层时代的 `iteration_versions`
+里混着两级——`C10SPC101` 其实是「版本」，`C10SPC101B001` 才是构建。迁移按 `B\d+` 后缀劈开；
+被提升成「版本」的原行**只有在没被 `*_requirements.target_version_id` 引用时才删**，
+被引用的留着让人工处理（SET NULL 掉别人填了半年的计划交付版本更糟）。
+`major_versions.actual_release_date` 是遗留列，值已下沉到同号的版本，新代码不读写它。
 
 ## 领域管理：问题单口径与目标
 
@@ -245,4 +283,5 @@ DateTime 列有两类，**口径不同，别混**：
 
 - `GET /api/system/storage` 无前端消费方。
 - `models.Version` / `models.Iteration` 是为兼容老库存量表保留的死模型，新代码勿用。
+- `major_versions.actual_release_date` 是两层版本体系的遗留列，0010 迁移后无人读写。
 - 单进程假设：APScheduler 与问题单采集锁都是进程内内存态，上多 worker 会重复执行。

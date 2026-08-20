@@ -82,8 +82,10 @@ class VersionItem(BaseModel):
 
 
 class VersionMetric(BaseModel):
+    release_version_id: int
     major_version_id: int
     version_no: str
+    major_version_no: str
     total: int
     done: int
     avg_completion: float    # 0-1
@@ -94,19 +96,26 @@ class VersionMetric(BaseModel):
     items: List[VersionItem]
 
 
-@router.get("/version/{major_version_id}", response_model=VersionMetric)
+@router.get("/version/{release_version_id}", response_model=VersionMetric)
 def version_metric(
-    major_version_id: int,
+    release_version_id: int,
     db: Session = Depends(get_db),
 ):
-    mv = db.query(models.MajorVersion).filter(models.MajorVersion.id == major_version_id).first()
-    if not mv:
-        raise HTTPException(404, "Not found")
+    """版本达成率 —— 看的是「版本」这一层（C10SPC101），不是大版本。
 
-    # 该大版本下所有迭代版本 id
-    iv_ids = [iv.id for iv in mv.iteration_versions]
-    iv_no_set = {iv.version_no for iv in mv.iteration_versions if iv.version_no}
-    iv_no_set.add(mv.version_no)
+    需求填的是迭代版本（C10SPC101B001），所以这里把该版本下所有构建的 id 收齐再聚合；
+    字符串回退时把版本号本身也算进来，因为不少需求就直接写了 C10SPC101。
+    """
+    rv = db.query(models.ReleaseVersion).filter(
+        models.ReleaseVersion.id == release_version_id).first()
+    if not rv:
+        raise HTTPException(404, "Not found")
+    mv = rv.major_version
+
+    # 该版本下所有迭代版本 id
+    iv_ids = [iv.id for iv in rv.iteration_versions]
+    iv_no_set = {iv.version_no for iv in rv.iteration_versions if iv.version_no}
+    iv_no_set.add(rv.version_no)
 
     # 取领域 / 产品需求，FK 命中 或 字符串命中
     domain_q = db.query(models.IterationRequirement).filter(or_(
@@ -153,8 +162,10 @@ def version_metric(
 
     avg = sum(completions) / len(completions) if completions else 0.0
     return VersionMetric(
-        major_version_id=mv.id,
-        version_no=mv.version_no or "",
+        release_version_id=rv.id,
+        major_version_id=rv.major_version_id,
+        version_no=rv.version_no or "",
+        major_version_no=(mv.version_no if mv else "") or "",
         total=len(items),
         done=done_cnt,
         avg_completion=round(avg, 3),

@@ -68,12 +68,13 @@ async function loadIteration() {
 
 async function loadVersionGroups() {
   try {
+    // 需求的计划交付版本填的是**迭代版本**（构建号），分组按「大版本 · 版本」两层，
+    // 否则同一个大版本下几十个构建挤在一组里根本挑不出来
     const { data } = await majorVersionApi.allIterationVersions()
     const map = new Map()
     for (const v of data) {
-      const groupLabel = v.project_name
-        ? `${v.project_name} · ${v.major_version_no}`
-        : v.major_version_no
+      const head = v.project_name ? `${v.project_name} · ${v.major_version_no}` : v.major_version_no
+      const groupLabel = v.release_version_no ? `${head} · ${v.release_version_no}` : head
       if (!map.has(groupLabel)) map.set(groupLabel, [])
       map.get(groupLabel).push(v)
     }

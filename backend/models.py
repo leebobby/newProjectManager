@@ -579,22 +579,36 @@ class RoadmapMilestone(Base):
 
 
 class MajorVersion(Base):
-    """大版本：归属于某个里程碑项目，包含若干迭代版本。"""
+    """大版本：号段那一层（C10SPC100），归属于某个里程碑项目，下辖若干「版本」。
+
+    三层体系里大版本自己不发布——发布的是下面的 ReleaseVersion（C10SPC101/102）。
+    因此这里只留规划区间与主干/分支状态；actual_release_date 是两层时代的遗留列，
+    数据已在 0010 迁移里下沉到首个版本，新代码不再读写它（见 CLAUDE.md「已知待处理」）。
+    """
     __tablename__ = "major_versions"
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("roadmap_projects.id", ondelete="SET NULL"), nullable=True, index=True)
-    version_no = Column(String(64), nullable=False, comment="大版本号")
+    version_no = Column(String(64), nullable=False, comment="大版本号，如 C10SPC100")
     title = Column(String(256), default="", comment="标题")
     description = Column(Text, default="", comment="版本说明")
     range_start = Column(DateTime, nullable=True, comment="版本范围开始")
     range_end = Column(DateTime, nullable=True, comment="版本范围结束")
-    actual_release_date = Column(DateTime, nullable=True, comment="实际发布时间")
+    actual_release_date = Column(DateTime, nullable=True, comment="【遗留】两层时代的实际发布时间，勿用")
+    line = Column(String(16), default="master", comment="master=主干 / branch=已拉分支")
+    branch_name = Column(String(128), default="", comment="分支名，如 release/C10SPC100；主干时为空")
+    branched_at = Column(DateTime, nullable=True, comment="被新大版本接管主干的时间（服务端盖章，UTC）")
     sort_order = Column(Integer, default=0, comment="排序")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     project = relationship("RoadmapProject", back_populates="major_versions")
+    release_versions = relationship(
+        "ReleaseVersion",
+        back_populates="major_version",
+        cascade="all, delete-orphan",
+        order_by="ReleaseVersion.sort_order",
+    )
     iteration_versions = relationship(
         "IterationVersion",
         back_populates="major_version",
@@ -603,18 +617,56 @@ class MajorVersion(Base):
     )
 
 
+class ReleaseVersion(Base):
+    """版本：大版本下真正对外发布的一级（C10SPC100 下的 C10SPC101 / 102 / 103）。
+
+    三层里只有这一层同时有「计划发布」和「实际发布」——大版本是号段，
+    迭代版本是它的构建（B001/B002）。客户面的现场版本、版本达成率都看这一层；
+    问题单里 DTS 回来的「版本信息」是构建号，落在下面的 IterationVersion。
+    """
+    __tablename__ = "release_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    major_version_id = Column(Integer, ForeignKey("major_versions.id", ondelete="CASCADE"),
+                              nullable=False, index=True)
+    version_no = Column(String(64), nullable=False, comment="版本号，如 C10SPC101")
+    title = Column(String(256), default="", comment="标题")
+    description = Column(Text, default="", comment="版本说明")
+    planned_date = Column(DateTime, nullable=True, comment="计划发布日期（用户填写，不做时区转换）")
+    actual_release_date = Column(DateTime, nullable=True, comment="实际发布日期（用户填写，不做时区转换）")
+    sort_order = Column(Integer, default=0, comment="排序")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    major_version = relationship("MajorVersion", back_populates="release_versions")
+    iteration_versions = relationship(
+        "IterationVersion",
+        back_populates="release_version",
+        cascade="all, delete-orphan",
+        order_by="IterationVersion.sort_order",
+    )
+
+
 class IterationVersion(Base):
-    """迭代版本：隶属于大版本，预计每周一个。"""
+    """迭代版本：隶属于某个版本的构建（C10SPC101B001），预计每周一个。
+
+    major_version_id 是冗余列，**只由服务端从 release_version 推导**（见 routers/
+    major_versions.py 的 _sync_major_id），客户端传的值一律忽略。留着它是因为
+    「某大版本下的全部构建」在指标与反查里是热路径，多一次 join 换不来什么。
+    """
     __tablename__ = "iteration_versions"
 
     id = Column(Integer, primary_key=True, index=True)
+    release_version_id = Column(Integer, ForeignKey("release_versions.id", ondelete="CASCADE"),
+                                nullable=True, index=True)
     major_version_id = Column(Integer, ForeignKey("major_versions.id", ondelete="CASCADE"), nullable=False, index=True)
-    version_no = Column(String(64), nullable=False, comment="迭代版本号")
+    version_no = Column(String(64), nullable=False, comment="迭代版本号，如 C10SPC101B001")
     title = Column(String(256), default="", comment="标题")
     planned_date = Column(DateTime, nullable=True, comment="预计发布日期")
     sort_order = Column(Integer, default=0, comment="排序")
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    release_version = relationship("ReleaseVersion", back_populates="iteration_versions")
     major_version = relationship("MajorVersion", back_populates="iteration_versions")
 
 

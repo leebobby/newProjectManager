@@ -375,6 +375,18 @@ npm run dev
   加权分目标），**仅 admin 可写**（管理口径属配置类主数据），读对所有登录用户开放；
   总览页超标标红。`project=""` 的通用目标兜底，项目专属目标优先并在设定弹窗里标出
   「继承通用」。
+- **版本体系改三层**（Alembic `0010`）：大版本 `C10SPC100`（号段，自己不发布）→
+  版本 `C10SPC101/102`（新表 `release_versions`，真正对外发布的一级，带计划/实际发布日）→
+  迭代版本 `C10SPC101B001`（构建）。客户面的现场版本与预计合入版本改看**版本**这一层，
+  迭代需求与问题单仍用**迭代版本**，版本达成率 `GET /api/metrics/version/{id}` 的入参
+  由 major_version_id 改为 release_version_id。新增/编辑时版本号按尾数自动 +1 给建议值。
+- **大版本主干/分支**：`major_versions` 加 `line`（master/branch）/ `branch_name` /
+  `branched_at`。`POST /api/major-versions/{id}/set-master` 在同一事务里把同项目原主干降为
+  分支并盖时间戳——`line` 刻意不开放给普通 PUT，避免出现两个主干。时间轴改按 `line`
+  画主线与分叉，节点由迭代版本改为版本。
+- **迁移注意**：老库 `iteration_versions` 里混着两级（`C10SPC101` 与 `C10SPC101B001` 同层），
+  `0010` 按 `B\d+` 后缀劈开；被提升为「版本」的原行只有在没被需求的
+  `target_version_id` 引用时才删除，被引用的保留待人工处理。
 
 ---
 

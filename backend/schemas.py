@@ -829,7 +829,9 @@ class RoadmapProjectDetailOut(RoadmapProjectOut):
     milestones: List[RoadmapMilestoneOut] = []
 
 
-# ===== MajorVersion / IterationVersion =====
+# ===== 版本三层：MajorVersion（大版本）/ ReleaseVersion（版本）/ IterationVersion（迭代版本） =====
+# planned_date / actual_release_date / range_* 都是**用户填的日期**，一律用 datetime 而非
+# LocalDT——标成 LocalDT 会凭空加 8 小时。只有 branched_at 是服务端盖章的，用 LocalDT。
 class IterationVersionBase(BaseModel):
     version_no: str
     title: Optional[str] = ""
@@ -838,7 +840,7 @@ class IterationVersionBase(BaseModel):
 
 
 class IterationVersionCreate(IterationVersionBase):
-    major_version_id: int
+    release_version_id: int
 
 
 class IterationVersionUpdate(BaseModel):
@@ -846,13 +848,49 @@ class IterationVersionUpdate(BaseModel):
     title: Optional[str] = None
     planned_date: Optional[datetime] = None
     sort_order: Optional[int] = None
+    release_version_id: Optional[int] = None   # 挂到别的版本下（改错父级时用）
 
 
 class IterationVersionOut(IterationVersionBase):
     id: int
+    release_version_id: Optional[int] = None
     major_version_id: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReleaseVersionBase(BaseModel):
+    version_no: str
+    title: Optional[str] = ""
+    description: Optional[str] = ""
+    planned_date: Optional[datetime] = None
+    actual_release_date: Optional[datetime] = None
+    sort_order: Optional[int] = 0
+
+
+class ReleaseVersionCreate(ReleaseVersionBase):
+    major_version_id: int
+
+
+class ReleaseVersionUpdate(BaseModel):
+    version_no: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    planned_date: Optional[datetime] = None
+    actual_release_date: Optional[datetime] = None
+    sort_order: Optional[int] = None
+    major_version_id: Optional[int] = None     # 挂到别的大版本下（迁移后归位时用）
+
+
+class ReleaseVersionOut(ReleaseVersionBase):
+    id: int
+    major_version_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReleaseVersionDetailOut(ReleaseVersionOut):
+    iteration_versions: List[IterationVersionOut] = []
 
 
 class MajorVersionBase(BaseModel):
@@ -861,7 +899,7 @@ class MajorVersionBase(BaseModel):
     description: Optional[str] = ""
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
-    actual_release_date: Optional[datetime] = None
+    branch_name: Optional[str] = ""
     sort_order: Optional[int] = 0
 
 
@@ -875,19 +913,23 @@ class MajorVersionUpdate(BaseModel):
     description: Optional[str] = None
     range_start: Optional[datetime] = None
     range_end: Optional[datetime] = None
-    actual_release_date: Optional[datetime] = None
+    branch_name: Optional[str] = None
     sort_order: Optional[int] = None
+    # line / branched_at 不在这里：主干只能通过 POST /major-versions/{id}/set-master 切换，
+    # 那里才会把原主干降级。开放成普通字段就会出现两个主干。
 
 
 class MajorVersionOut(MajorVersionBase):
     id: int
     project_id: Optional[int] = None
+    line: Optional[str] = enums.VERSION_LINE_DEFAULT
+    branched_at: Optional[LocalDT] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class MajorVersionDetailOut(MajorVersionOut):
-    iteration_versions: List[IterationVersionOut] = []
+    release_versions: List[ReleaseVersionDetailOut] = []
 
 
 # ===== Stakeholder =====
