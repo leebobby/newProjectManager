@@ -53,9 +53,9 @@
       </div>
 
       <!-- ── 主表 ─────────────────────────────────── -->
-      <el-table :data="filteredRows" v-loading="!customerIssues.loaded && customerIssues.loading" border stripe size="small"
-                :row-class-name="rowClass" max-height="calc(100vh - 320px)">
-        <el-table-column type="index" label="编号" width="60" align="center" />
+      <el-table :data="pagedRows" v-loading="!customerIssues.loaded && customerIssues.loading" border stripe size="small"
+                :row-class-name="rowClass" max-height="calc(100vh - 360px)">
+        <el-table-column type="index" :index="rowIndex" label="编号" width="60" align="center" />
         <el-table-column prop="battlefield" label="客户" width="120" show-overflow-tooltip />
 
         <el-table-column label="机台编号" width="110">
@@ -83,7 +83,7 @@
 
         <el-table-column label="责任人" width="130" align="center">
           <template #default="{ row }">
-            <el-select :model-value="row.owner_user_id" size="small" clearable filterable
+            <el-select :model-value="row.owner_user_id" size="small" clearable filterable :persistent="false"
                        placeholder="未指派" @change="(v) => save(row, { owner_user_id: v ?? null })">
               <el-option v-for="u in users" :key="u.id" :label="u.full_name || u.username" :value="u.id" />
             </el-select>
@@ -92,7 +92,7 @@
 
         <el-table-column label="重要程度" width="118" align="center">
           <template #default="{ row }">
-            <el-select :model-value="row.urgency" size="small" @change="(v) => save(row, { urgency: v })">
+            <el-select :model-value="row.urgency" size="small" :persistent="false" @change="(v) => save(row, { urgency: v })">
               <el-option v-for="u in URGENCIES" :key="u" :label="u" :value="u" />
             </el-select>
           </template>
@@ -100,23 +100,19 @@
 
         <el-table-column label="提出时间" width="128" align="center">
           <template #default="{ row }">
-            <el-date-picker :model-value="row.raised_at" type="date" size="small" value-format="YYYY-MM-DD"
-                            placeholder="—" style="width:110px" @update:model-value="(v) => save(row, { raised_at: v || '' })" />
+            <DateCell :value="row.raised_at" @save="(v) => save(row, { raised_at: v })" />
           </template>
         </el-table-column>
 
         <el-table-column label="计划解决时间" width="132" align="center">
           <template #default="{ row }">
-            <el-date-picker :model-value="row.due_date" type="date" size="small" value-format="YYYY-MM-DD"
-                            placeholder="—" style="width:110px"
-                            :class="{ 'dp-overdue': row.overdue }"
-                            @update:model-value="(v) => save(row, { due_date: v || '' })" />
+            <DateCell :value="row.due_date" :overdue="row.overdue" @save="(v) => save(row, { due_date: v })" />
           </template>
         </el-table-column>
 
         <el-table-column label="责任领域" width="130" align="center">
           <template #default="{ row }">
-            <el-select :model-value="row.group_id" size="small" clearable filterable placeholder="—"
+            <el-select :model-value="row.group_id" size="small" clearable filterable placeholder="—" :persistent="false"
                        @change="(v) => save(row, { group_id: v ?? null })">
               <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
             </el-select>
@@ -132,7 +128,7 @@
 
         <el-table-column label="状态" width="108" align="center" fixed="right">
           <template #default="{ row }">
-            <el-select :model-value="row.status" size="small" @change="(v) => save(row, { status: v })">
+            <el-select :model-value="row.status" size="small" :persistent="false" @change="(v) => save(row, { status: v })">
               <el-option v-for="s in STATUSES" :key="s" :label="s" :value="s" />
             </el-select>
           </template>
@@ -151,6 +147,17 @@
         </el-table-column>
       </el-table>
 
+      <div class="pager">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :page-sizes="[50, 100, 200, 500]"
+          :total="filteredRows.length"
+          layout="total, sizes, prev, pager, next, jumper"
+          size="small"
+        />
+      </div>
+
       <div class="legend">
         <span><i class="dot d-open" />未闭环</span>
         <span><i class="dot d-hold" />挂起</span>
@@ -163,9 +170,9 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onActivated, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ElIcon, ElInput, ElMessage, ElMessageBox } from 'element-plus'
+import { ElDatePicker, ElIcon, ElInput, ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Download, Edit, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { customerApi, customerIssueApi, downloadBlob, resourceGroupApi, userApi } from '../api'
 import { auth } from '../store/auth'
@@ -265,12 +272,56 @@ const LinkableCell = defineComponent({
   },
 })
 
+// ── 内联组件：点开才挂载的日期单元格 ──────────────────────────────
+// el-date-picker 的面板是**立即渲染**的（它给 el-tooltip 传的 persistent 写死为真，
+// 没有关掉的入口），一行两个日期列就是两个完整月历（各 40+ 个格子）。几百行一起渲染，
+// 光日期面板就是几万个节点——这正是这张表卡的主因。所以这里退化成一个纯文本，
+// 点下去才挂 el-date-picker，关掉面板就卸载。
+// 下拉那几列不用这么做：el-select 支持 :persistent="false"，加上就不会预渲染选项了。
+const DateCell = defineComponent({
+  props: {
+    value: String,
+    overdue: { type: Boolean, default: false },
+    placeholder: { type: String, default: '—' },
+  },
+  emits: ['save'],
+  setup(props, { emit }) {
+    const editing = ref(false)
+    const picker = ref(null)
+    const start = () => {
+      editing.value = true
+      // 挂上之后直接把面板弹出来，省掉「点一下出输入框、再点一下出日历」
+      nextTick(() => {
+        const el = picker.value
+        if (el?.handleOpen) el.handleOpen()
+        else el?.focus?.()
+      })
+    }
+    return () => editing.value
+      ? h(ElDatePicker, {
+          ref: picker,
+          modelValue: props.value || '',
+          type: 'date', size: 'small', valueFormat: 'YYYY-MM-DD',
+          placeholder: props.placeholder, style: 'width:112px',
+          'onUpdate:modelValue': (v) => { emit('save', v || '') },
+          // 面板关掉就卸载：留着不卸载等于又回到「每行常驻一个月历」
+          onVisibleChange: (v) => { if (!v) editing.value = false },
+        })
+      : h('span', {
+          class: ['cell-text', props.value ? '' : 'muted', props.overdue ? 'date-overdue' : ''],
+          onClick: start,
+        }, props.value || props.placeholder)
+  },
+})
+
 const users = ref([])
 const customers = ref([])
 const groups = ref([])
 const exporting = ref(false)
 const importing = ref(false)
-const includeClosed = ref(true)
+// 默认只看未闭环：这张表是用来推问题的，已闭环的是历史，勾上才显示。
+// 导出也跟着这个开关走——导出的应当是屏幕上这一份。
+const includeClosed = ref(false)
 
 const filters = reactive({
   customer_id: null, urgency: null, group_id: null, status: null,
@@ -279,6 +330,10 @@ const filters = reactive({
 
 // 从总览点条目跳过来时高亮那一条（prop 优先，路由查询串兜底）
 const focusId = computed(() => props.focus || Number(route.query.focus) || null)
+
+// 分页：一屏 50 行。表格里每行都带下拉与可编辑格，全量铺开时行数一多就明显掉帧
+const page = ref(1)
+const pageSize = ref(50)
 
 // ── 统计卡：从缓存现算，不再单独请求 /summary ──
 const stats = computed(() => {
@@ -297,7 +352,8 @@ const stats = computed(() => {
 const filteredRows = computed(() => {
   let rows = customerIssues.rows.slice()
   const f = filters
-  if (!includeClosed.value) rows = rows.filter((r) => r.status !== 'CLOSED')
+  // 显式按「已闭环」筛时不再受开关拦截，否则点「已闭环」统计卡会得到一张空表
+  if (!includeClosed.value && f.status !== 'CLOSED') rows = rows.filter((r) => r.status !== 'CLOSED')
   if (f.customer_id) rows = rows.filter((r) => r.customer_id === f.customer_id)
   if (f.owner_user_id) rows = rows.filter((r) => r.owner_user_id === f.owner_user_id)
   if (f.group_id) rows = rows.filter((r) => r.group_id === f.group_id)
@@ -323,6 +379,32 @@ const filteredRows = computed(() => {
   return rows
 })
 
+// 筛选条件一变就回到第一页：留在第 7 页而结果只剩 2 条时，表看着是空的
+watch([filters, includeClosed], () => { page.value = 1 }, { deep: true })
+
+const pagedRows = computed(() => {
+  // 删行之后页码可能越界（最后一页只剩一条被删掉），这里兜一下，别让表变空白
+  const maxPage = Math.max(1, Math.ceil(filteredRows.value.length / pageSize.value))
+  const cur = Math.min(page.value, maxPage)
+  const start = (cur - 1) * pageSize.value
+  return filteredRows.value.slice(start, start + pageSize.value)
+})
+
+// 从总览点条目跳过来时，把那一条所在的页翻出来——否则「聚焦」聚了个看不见的行。
+// 只在 focus 变化或数据首次到位时跳一次：挂在 filteredRows 上的话，每存一格都会
+// 把页码拽回被聚焦那一页，人翻到第 3 页改点东西就被弹回去了
+watch([focusId, () => customerIssues.loaded], () => {
+  const id = focusId.value
+  if (!id || !customerIssues.loaded) return
+  const idx = filteredRows.value.findIndex((r) => r.id === id)
+  if (idx >= 0) page.value = Math.floor(idx / pageSize.value) + 1
+}, { immediate: true })
+
+// 行号跨页连续：默认的 type="index" 每页都从 1 重来，翻到第 3 页看见的还是 1、2、3
+function rowIndex(i) {
+  return (page.value - 1) * pageSize.value + i + 1
+}
+
 function rowClass({ row }) {
   if (row.id === focusId.value) return 'row-focus'
   if (row.status === 'CLOSED') return 'row-done'
@@ -334,6 +416,8 @@ function rowClass({ row }) {
 function toggleFilter(key, val) {
   filters[key] = filters[key] === val ? null : val
   filters.overdue_only = false
+  // 点「已闭环」卡片就是想看已闭环，顺手把开关打开，别让人再找一遍复选框
+  if (key === 'status' && filters.status === 'CLOSED') includeClosed.value = true
 }
 function toggleOverdue() {
   filters.overdue_only = !filters.overdue_only
@@ -481,7 +565,7 @@ onActivated(() => {
 :deep(.cell-text) { cursor: pointer; display: inline-block; min-height: 20px; min-width: 40px; }
 :deep(.cell-text:hover) { color: #409eff; }
 :deep(.cell-multiline) { white-space: pre-wrap; line-height: 1.5; }
-:deep(.dp-overdue .el-input__inner) { color: #f56c6c; }
+:deep(.date-overdue) { color: #f56c6c; font-weight: 600; }
 
 /* 链接单元格 */
 :deep(.machine-link), :deep(.issue-link) { color: #409eff; text-decoration: none; }
@@ -490,7 +574,8 @@ onActivated(() => {
 :deep(.linkcell .edit-ico) { cursor: pointer; color: #c0c4cc; font-size: 13px; }
 :deep(.linkcell .edit-ico:hover) { color: #409eff; }
 
-/* 图例 */
+/* 分页与图例 */
+.pager { display: flex; justify-content: flex-end; margin-top: 10px; }
 .legend { display: flex; align-items: center; gap: 16px; margin-top: 10px; font-size: 12px; color: #606266; flex-wrap: wrap; }
 .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .d-open { background: #fff; border: 1px solid #dcdfe6; }

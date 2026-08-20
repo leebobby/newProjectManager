@@ -3,45 +3,58 @@
     <el-empty description="此页面仅管理员可见。请从左侧选择具体专项 / 攻关查看详情。" />
   </div>
   <div v-else>
-    <el-card shadow="never">
-      <div class="toolbar">
-        <el-button type="primary" :icon="Plus" @click="openDialog()">新增</el-button>
-        <el-button :icon="Refresh" @click="load">刷新</el-button>
-        <el-checkbox v-model="includeInactive" @change="load">显示停用</el-checkbox>
-      </div>
-      <el-table :data="list" v-loading="loading" border stripe style="width: 100%">
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column label="类型" width="90" align="center">
-          <template #default="{ row }">
-            <el-tag :type="row.kind === 'assault' ? 'danger' : 'info'" size="small">
-              {{ row.kind === 'assault' ? '攻关' : '专项' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="name" label="名称" min-width="160" />
-        <el-table-column prop="owner" label="责任人" width="140" />
-        <el-table-column label="周报收件人" min-width="200" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.email_to || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="排序" width="80" align="center">
-          <template #default="{ row }">{{ row.sort_order }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="80" align="center">
-          <template #default="{ row }">
-            <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-              {{ row.is_active ? '启用' : '停用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
-          <template #default="{ row }">
-            <el-button size="small" @click="onOpen(row)">打开页面</el-button>
-            <el-button size="small" @click="openDialog(row)">编辑</el-button>
-            <el-button size="small" type="danger" @click="onDelete(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+    <!-- 专项本体与版式模板是同一件事的两面（有哪些专项 / 每个专项长什么样），
+         收进同一页的两个 tab；模板原来是顶层独立菜单，找起来不顺手 -->
+    <el-tabs v-model="pageTab" class="page-tabs">
+      <el-tab-pane label="专项 / 攻关" name="list">
+        <el-card shadow="never">
+          <div class="toolbar">
+            <el-button type="primary" :icon="Plus" @click="openDialog()">新增</el-button>
+            <el-button :icon="Refresh" @click="load">刷新</el-button>
+            <el-checkbox v-model="includeInactive" @change="load">显示停用</el-checkbox>
+          </div>
+          <el-table :data="list" v-loading="loading" border stripe style="width: 100%">
+            <el-table-column prop="id" label="ID" width="60" />
+            <el-table-column label="类型" width="90" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.kind === 'assault' ? 'danger' : 'info'" size="small">
+                  {{ row.kind === 'assault' ? '攻关' : '专项' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="name" label="名称" min-width="160" />
+            <el-table-column prop="owner" label="责任人" width="140" />
+            <el-table-column label="周报收件人" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.email_to || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="排序" width="80" align="center">
+              <template #default="{ row }">{{ row.sort_order }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="80" align="center">
+              <template #default="{ row }">
+                <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
+                  {{ row.is_active ? '启用' : '停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="240" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" @click="onOpen(row)">打开页面</el-button>
+                <el-button size="small" @click="openDialog(row)">编辑</el-button>
+                <el-button size="small" type="danger" @click="onDelete(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
+
+      <el-tab-pane label="版式模板" name="templates">
+        <!-- KeepAlive：首次懒加载，之后切回来秒显 -->
+        <KeepAlive>
+          <SpecialTemplates v-if="pageTab === 'templates'" />
+        </KeepAlive>
+      </el-tab-pane>
+    </el-tabs>
 
     <el-dialog v-model="dialog.visible" :title="dialog.editing ? '编辑' : '新增'" width="560px">
       <el-form :model="dialog.form" label-width="120px">
@@ -63,8 +76,8 @@
             </el-option>
           </el-select>
           <div class="tpl-hint">
-            决定详情页有哪些分段、各叫什么、什么顺序。模板在
-            <router-link to="/special-templates">专项模板</router-link> 页维护。
+            决定详情页有哪些分段、各叫什么、什么顺序。模板在本页的
+            <el-link type="primary" :underline="false" @click="gotoTemplates">版式模板</el-link> 标签页维护。
           </div>
         </el-form-item>
         <el-form-item label="责任人">
@@ -100,13 +113,19 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { specialApi, specialTemplateApi } from '../api'
 import { reloadSpecials } from '../store/specials'
 import { auth } from '../store/auth'
+import SpecialTemplates from './SpecialTemplates.vue'
+
+const route = useRoute()
+// 顶层 tab：list=专项/攻关 / templates=版式模板。支持 ?tab=templates 深链——
+// /special-templates 那条老路由还在（已从菜单隐藏），会重定向到这里
+const pageTab = ref(route.query.tab === 'templates' ? 'templates' : 'list')
 
 const list = ref([])
 const templates = ref([])
@@ -212,6 +231,16 @@ async function onDelete(row) {
 function onOpen(row) {
   router.push(`/specials/${row.id}`)
 }
+
+function gotoTemplates() {
+  dialog.visible = false
+  pageTab.value = 'templates'
+}
+
+// 从模板页切回来时重新拉一遍：刚在那边加的模板要能出现在「新增专项」的下拉里
+watch(pageTab, (v, old) => {
+  if (v === 'list' && old === 'templates') loadTemplates()
+})
 
 onMounted(() => { load(); loadTemplates() })
 </script>

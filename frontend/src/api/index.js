@@ -442,8 +442,10 @@ export const debugDemandApi = {
 }
 
 export const businessTripApi = {
-  // params: { user_id?, customer_id? }
+  // params: { user_id?, customer_id?, project_id?, support_mode? }
   list: (params) => http.get('/business-trips', { params }),
+  // params: { start?, end?, project_id?, support_mode? }
+  // 看板返回人次与工作量（人天）两套数字，人天口径见后端 _man_days_in
   dashboard: (params) => http.get('/business-trips/dashboard', { params }),
   create: (data) => http.post('/business-trips', data),
   update: (id, data) => http.put(`/business-trips/${id}`, data),

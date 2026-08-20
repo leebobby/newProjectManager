@@ -1214,22 +1214,34 @@ class DomainIssueTarget(Base):
 
 
 class BusinessTrip(Base):
-    """成员出差记录：谁、去哪个战场（客户主数据）、哪段时间、什么事由。
+    """客户面支撑记录：谁、支撑哪个战场/项目、现场还是线上、哪段时间、什么事由。
 
     协作编辑域——登录用户均可填，带乐观锁。状态按起止日期实时推导
-    （计划中/进行中/已完成），另有 cancelled 标记。新表由 create_all 自动建。
+    （计划中/进行中/已完成），另有 cancelled 标记。新表由 create_all 自动建，
+    0011 之后加的列走 Alembic。
+
+    man_days 是**工作量口径的单一来源**：填了就以它为准，留空才按日历天数推导
+    （见 routers/business_trips.py 的 _man_days）。之所以不做成必填也不做成纯推导：
+    现场支撑一去就是整段连续投入，按天数推是对的；线上支撑常常是五天里各花两小时，
+    按天数推会把 5 人天算给一个实际 1 人天的事，看板上没人能发现这个数是虚的。
     """
     __tablename__ = "business_trips"
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
-                     nullable=True, index=True, comment="出差人 FK（users）")
+                     nullable=True, index=True, comment="支撑人 FK（users）")
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="SET NULL"),
-                         nullable=True, index=True, comment="目的地战场 FK（customers）")
+                         nullable=True, index=True, comment="支撑战场 FK（customers）")
+    project_id = Column(Integer, ForeignKey("roadmap_projects.id", ondelete="SET NULL"),
+                        nullable=True, index=True, comment="支撑项目 FK（roadmap_projects）")
+    support_mode = Column(String(16), nullable=False, default="现场支撑",
+                          comment="支撑方式：现场支撑 / 线上支撑，见 enums.SUPPORT_MODES")
+    man_days = Column(Float, nullable=True,
+                      comment="工作量（人天）。留空＝按起止日历天数推导")
     location = Column(String(128), default="", comment="具体地点 / 非战场补充")
-    purpose = Column(String(256), default="", comment="出差事由")
-    start_date = Column(DateTime, nullable=True, comment="出发日期")
-    end_date = Column(DateTime, nullable=True, comment="返回日期")
+    purpose = Column(String(256), default="", comment="支撑事由")
+    start_date = Column(DateTime, nullable=True, comment="支撑开始日期")
+    end_date = Column(DateTime, nullable=True, comment="支撑结束日期")
     cancelled = Column(Boolean, nullable=False, default=False, comment="是否取消")
     remark = Column(Text, default="", comment="备注")
     sort_order = Column(Integer, default=0)
