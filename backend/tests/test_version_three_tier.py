@@ -384,3 +384,132 @@ def test_migration_is_idempotent(legacy_db):
     with legacy_db.connect() as c:
         n = c.execute(sa.text("SELECT COUNT(*) FROM release_versions")).scalar()
     assert n == 4, "重跑不能把版本翻倍——automigrate 会把整条升级链再走一遍"
+
+
+# ── 0012：0010 跑了一半留下的孤儿行 ──────────────────────────────────────────
+def _load_migration_0012():
+    import importlib.util
+    import pathlib
+    path = (pathlib.Path(__file__).resolve().parent.parent
+            / "alembic" / "versions" / "0012_reattach_orphan_iterations.py")
+    spec = importlib.util.spec_from_file_location("mig0012", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def half_migrated_db(tmp_path):
+    """0010 跑了一半的库：列都加了、生成了一个版本，剩下的迭代行还是孤儿。
+
+    这正是「迁移完只剩第一层」的现场——孤儿行在页面上完全不可见，
+    因为版本页是 大版本 → 版本 → 迭代版本 三层嵌套渲染的。
+    """
+    engine = sa.create_engine(f"sqlite:///{tmp_path}/half.db")
+    with engine.begin() as c:
+        c.execute(sa.text("""CREATE TABLE major_versions (
+            id INTEGER PRIMARY KEY, project_id INTEGER, version_no VARCHAR(64),
+            sort_order INTEGER, line VARCHAR(16), branch_name VARCHAR(128),
+            branched_at DATETIME)"""))
+        c.execute(sa.text("""CREATE TABLE release_versions (
+            id INTEGER PRIMARY KEY, major_version_id INTEGER, version_no VARCHAR(64),
+            title VARCHAR(256), description TEXT, planned_date DATETIME,
+            actual_release_date DATETIME, sort_order INTEGER,
+            created_at DATETIME, updated_at DATETIME)"""))
+        c.execute(sa.text("""CREATE TABLE iteration_versions (
+            id INTEGER PRIMARY KEY, major_version_id INTEGER, release_version_id INTEGER,
+            version_no VARCHAR(64), title VARCHAR(256), planned_date DATETIME,
+            sort_order INTEGER, created_at DATETIME)"""))
+        c.execute(sa.text(
+            "INSERT INTO major_versions (id, project_id, version_no, sort_order, line)"
+            " VALUES (1, 7, 'C10SPC100', 0, 'branch'), (2, 7, 'C10SPC110', 1, 'master')"))
+        # 半成品：只有 C10SPC100 这一条版本生成了
+        c.execute(sa.text(
+            "INSERT INTO release_versions (id, major_version_id, version_no, sort_order)"
+            " VALUES (1, 1, 'C10SPC100', 0)"))
+        rows = [
+            (1, 1, 1, "C10SPC100B001"),     # 已经挂好的，不要动它
+            (2, 1, None, "C10SPC101B001"),  # 孤儿：要补建 C10SPC101 并挂上
+            (3, 1, None, "C10SPC101B002"),
+            (4, 1, None, "C10SPC100B002"),  # 孤儿：挂到已存在的 C10SPC100，不许重复建号
+            (5, 2, None, "C10SPC111B001"),
+        ]
+        for rid, mid, rvid, no in rows:
+            c.execute(sa.text(
+                "INSERT INTO iteration_versions (id, major_version_id, release_version_id,"
+                " version_no, sort_order) VALUES (:i, :m, :r, :n, 0)"),
+                {"i": rid, "m": mid, "r": rvid, "n": no})
+    return engine
+
+
+def _run_0012(engine):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    mod = _load_migration_0012()
+    with engine.begin() as conn:
+        ctx = MigrationContext.configure(conn)
+        with Operations.context(ctx):
+            mod.upgrade()
+
+
+def test_0012_reattaches_orphans_without_duplicating_releases(half_migrated_db):
+    _run_0012(half_migrated_db)
+    with half_migrated_db.connect() as c:
+        assert c.execute(sa.text(
+            "SELECT COUNT(*) FROM iteration_versions WHERE release_version_id IS NULL"
+        )).scalar() == 0, "孤儿行必须全部挂回去，否则页面上还是看不见"
+
+        pairs = dict(c.execute(sa.text(
+            "SELECT iv.version_no, rv.version_no FROM iteration_versions iv"
+            " JOIN release_versions rv ON rv.id = iv.release_version_id")).fetchall())
+        assert pairs == {
+            "C10SPC100B001": "C10SPC100", "C10SPC100B002": "C10SPC100",
+            "C10SPC101B001": "C10SPC101", "C10SPC101B002": "C10SPC101",
+            "C10SPC111B001": "C10SPC111",
+        }
+        # 已存在的 C10SPC100 要被认领而不是再建一条同号版本
+        assert c.execute(sa.text(
+            "SELECT COUNT(*) FROM release_versions WHERE version_no = 'C10SPC100'")).scalar() == 1
+
+
+def test_0012_deletes_nothing(half_migrated_db):
+    """自愈补丁只挂接不删除：删是不可逆的，留给人工看过报告再决定。"""
+    before = 5
+    _run_0012(half_migrated_db)
+    with half_migrated_db.connect() as c:
+        assert c.execute(sa.text("SELECT COUNT(*) FROM iteration_versions")).scalar() == before
+
+
+def test_0012_is_idempotent(half_migrated_db):
+    _run_0012(half_migrated_db)
+    with half_migrated_db.connect() as c:
+        snap = c.execute(sa.text(
+            "SELECT id, release_version_id FROM iteration_versions ORDER BY id")).fetchall()
+        n_rel = c.execute(sa.text("SELECT COUNT(*) FROM release_versions")).scalar()
+    _run_0012(half_migrated_db)
+    with half_migrated_db.connect() as c:
+        assert c.execute(sa.text(
+            "SELECT id, release_version_id FROM iteration_versions ORDER BY id")).fetchall() == snap
+        assert c.execute(sa.text("SELECT COUNT(*) FROM release_versions")).scalar() == n_rel
+
+
+def test_0012_gives_empty_major_a_placeholder_release(tmp_path):
+    """一个迭代都没有、也没版本的大版本：补一条同号版本，页面上不至于是个空壳。"""
+    engine = sa.create_engine(f"sqlite:///{tmp_path}/empty.db")
+    with engine.begin() as c:
+        c.execute(sa.text("CREATE TABLE major_versions (id INTEGER PRIMARY KEY,"
+                          " project_id INTEGER, version_no VARCHAR(64), sort_order INTEGER)"))
+        c.execute(sa.text("""CREATE TABLE release_versions (
+            id INTEGER PRIMARY KEY, major_version_id INTEGER, version_no VARCHAR(64),
+            title VARCHAR(256), description TEXT, planned_date DATETIME,
+            actual_release_date DATETIME, sort_order INTEGER,
+            created_at DATETIME, updated_at DATETIME)"""))
+        c.execute(sa.text("""CREATE TABLE iteration_versions (
+            id INTEGER PRIMARY KEY, major_version_id INTEGER, release_version_id INTEGER,
+            version_no VARCHAR(64), sort_order INTEGER)"""))
+        c.execute(sa.text("INSERT INTO major_versions (id, version_no, sort_order)"
+                          " VALUES (1, 'C10SPC900', 0)"))
+    _run_0012(engine)
+    with engine.connect() as c:
+        assert c.execute(sa.text("SELECT version_no FROM release_versions")).fetchall() \
+            == [("C10SPC900",)]

@@ -155,9 +155,14 @@
             <span v-else style="color:#c0c4cc">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="版本数" width="70" align="center">
+        <!-- 两个数都摆在收起态的行上：只显示「版本数」时，一眼分不清是「没展开」
+             还是「下面真的空了」——迁移出问题时正是后者，得能立刻看出来 -->
+        <el-table-column label="下辖" width="140" align="center">
           <template #default="{ row }">
-            <el-tag type="info" size="small">{{ row.release_versions?.length || 0 }}</el-tag>
+            <el-tag type="info" size="small">{{ row.release_versions?.length || 0 }} 版本</el-tag>
+            <el-tag type="info" size="small" effect="plain" style="margin-left:4px">
+              {{ buildCount(row) }} 构建
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column v-if="isAdmin" label="操作" width="220" fixed="right">
@@ -324,6 +329,12 @@ const iterDialogVisible = ref(false)
 const editingIter = ref(null)
 const currentRelease = ref(null)
 const iterForm = reactive(defaultIterForm())
+
+// 大版本下所有构建的条数（跨它名下的全部版本）
+function buildCount(major) {
+  return (major.release_versions || []).reduce(
+    (n, rv) => n + (rv.iteration_versions?.length || 0), 0)
+}
 
 function defaultMajorForm() {
   return { version_no: '', title: '', description: '', range_start: null, range_end: null, branch_name: '' }
