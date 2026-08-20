@@ -298,6 +298,12 @@ DateTime 列有两类，**口径不同，别混**：
 - 详情页组件用 `:key="route.fullPath"`（见 App.vue）：参数变化时重建实例，
   避免迟到的异步响应写错对象（专项内容串台）。
 - 状态管理没用 Pinia，是 `store/` 下手写的 `reactive` 单例，跟随现有写法即可。
+- **大表格里别每行放 `el-date-picker`**。它给内部 tooltip 传的 `persistent` 写死为真，
+  面板**立即渲染**且没有关掉的入口——一行两个日期列＝两个完整月历（各 40+ 格），
+  几百行就是几万个节点，页面卡在这里。做法是退化成文本、点开才挂控件、面板关掉就卸载
+  （见 [CustomerIssueTracking.vue](frontend/src/views/CustomerIssueTracking.vue) 的 `DateCell`）。
+  `el-select` 有 `:persistent="false"` 这个入口，行内下拉加上它即可，不必改成点开才挂。
+  行数本身也要兜住：这类逐格可编辑的表一律分页，别整表铺开。
 
 ## 已知待处理
 

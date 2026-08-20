@@ -116,10 +116,12 @@ const routes = [
     meta: { title: '专项详情', hidden: true },
   },
   {
+    // 版式模板已并进「专项管理 · 专项配置」页的第二个 tab。这条老路径保留成重定向：
+    // 早先的书签与文档里还指着它，直接删会 404。hidden 让它不再出现在侧栏。
     path: '/special-templates',
     name: 'SpecialTemplates',
-    component: () => import('../views/SpecialTemplates.vue'),
-    meta: { title: '专项模板', icon: 'Files', requireAdmin: true, group: '进度管理' },
+    redirect: { path: '/specials', query: { tab: 'templates' } },
+    meta: { title: '专项模板', requireAdmin: true, hidden: true },
   },
   {
     path: '/resource-groups',

@@ -166,6 +166,9 @@
 /**
  * 专项模板（版式预设）管理页。
  *
+ * 作为「专项管理 · 专项配置」页（SpecialList.vue）的第二个 tab 内嵌渲染，
+ * 不再是顶层菜单项；/special-templates 保留成重定向给老书签用。
+ *
  * 页面把后端的 layout_json（{order, config, blocks}）摊平成一个可排序的分段列表：
  * 内置分段 8 条固定存在（只能改标题 / 停用），自定义分段可增删并定义列。
  * 保存时再折回 layout_json —— order 里的自定义分段写成 tpl:<tkey>，
