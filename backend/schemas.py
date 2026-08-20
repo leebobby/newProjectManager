@@ -1723,6 +1723,9 @@ class DebugRecipientOut(DebugRecipientBase):
 class BusinessTripBase(BaseModel):
     user_id: Optional[int] = None
     customer_id: Optional[int] = None
+    project_id: Optional[int] = None          # 支撑项目（roadmap_projects）
+    support_mode: Optional[str] = None        # 现场支撑 / 线上支撑
+    man_days: Optional[float] = None          # 工作量（人天），留空按日历天推导
     location: Optional[str] = ""
     purpose: Optional[str] = ""
     start_date: Optional[datetime] = None
@@ -1732,14 +1735,29 @@ class BusinessTripBase(BaseModel):
     sort_order: Optional[int] = 0
 
 
+# norm_support_mode 只挂 Create / Update，不挂 Base——Out 继承 Base 且走 from_attributes
+# 读库，老库里 support_mode 为空的行会让读取直接 422（见 CLAUDE.md「枚举：单一来源」）。
 class BusinessTripCreate(BusinessTripBase):
-    pass
+    @field_validator("support_mode")
+    @classmethod
+    def _v_mode(cls, v):
+        return enums.norm_support_mode(v)
+
+    @field_validator("man_days")
+    @classmethod
+    def _v_man_days(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("工作量（人天）不能为负")
+        return v
 
 
 class BusinessTripUpdate(BaseModel):
     version: int
     user_id: Optional[int] = None
     customer_id: Optional[int] = None
+    project_id: Optional[int] = None
+    support_mode: Optional[str] = None
+    man_days: Optional[float] = None
     location: Optional[str] = None
     purpose: Optional[str] = None
     start_date: Optional[datetime] = None
@@ -1748,22 +1766,37 @@ class BusinessTripUpdate(BaseModel):
     remark: Optional[str] = None
     sort_order: Optional[int] = None
 
+    @field_validator("support_mode")
+    @classmethod
+    def _v_mode(cls, v):
+        return enums.norm_support_mode(v, partial=True)
+
+    @field_validator("man_days")
+    @classmethod
+    def _v_man_days(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("工作量（人天）不能为负")
+        return v
+
 
 class BusinessTripOut(BusinessTripBase):
     id: int
     user_name: Optional[str] = None       # 由后端解析回填
-    user_group: Optional[str] = None      # 出差人所属 PL 组（展示用）
+    user_group: Optional[str] = None      # 支撑人所属 PL 组（展示用）
     customer_name: Optional[str] = None   # 由后端解析回填
+    project_name: Optional[str] = None    # 由后端解析回填
     status: str = ""                      # 计划中/进行中/已完成/已取消（按日期推导）
+    calc_man_days: float = 0              # 整段人天：man_days 填了用它，否则日历天数
     version: int
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class TripDimStat(BaseModel):
-    """看板某一维度（战场/人/领域）的区间统计项。"""
+    """看板某一维度（战场/人/领域/项目/方式）的区间统计项。"""
     name: str
-    count: int = 0       # 区间内支撑人次
+    count: int = 0            # 区间内支撑人次
+    man_days: float = 0       # 区间内工作量（人天）
 
 
 class BusinessTripDashboardOut(BaseModel):
@@ -1771,6 +1804,11 @@ class BusinessTripDashboardOut(BaseModel):
     planned: int = 0         # 计划中人次（now 快照）
     range_label: str = ""    # 区间口径标签，如 "2026-06-01 ~ 2026-06-30"
     range_total: int = 0     # 区间内支撑人次合计
+    range_man_days: float = 0        # 区间内工作量合计（人天）
+    onsite_man_days: float = 0       # 其中：现场支撑
+    online_man_days: float = 0       # 其中：线上支撑
     by_customer: List[TripDimStat] = []   # 区间内按战场
     by_person: List[TripDimStat] = []     # 区间内按支撑人
     by_domain: List[TripDimStat] = []     # 区间内按领域（支撑人所属 PL 组）
+    by_project: List[TripDimStat] = []    # 区间内按支撑项目
+    by_mode: List[TripDimStat] = []       # 区间内按支撑方式（现场/线上）

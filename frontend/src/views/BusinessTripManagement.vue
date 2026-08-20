@@ -16,7 +16,15 @@
           style="width: 260px"
           @change="loadDash"
         />
-        <span class="muted">口径：{{ dash.range_label || '—' }}</span>
+        <el-select v-model="scopeProjectId" placeholder="全部项目" clearable filterable
+                   size="small" style="width: 170px" @change="loadDash">
+          <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+        </el-select>
+        <el-radio-group v-model="scopeMode" size="small" @change="loadDash">
+          <el-radio-button label="">全部</el-radio-button>
+          <el-radio-button v-for="m in SUPPORT_MODES" :key="m" :label="m">{{ m }}</el-radio-button>
+        </el-radio-group>
+        <span class="muted">口径：{{ dash.range_label || '—' }}｜项目与支撑方式同时作用于下方明细</span>
       </div>
 
       <div class="stat-cards">
@@ -32,6 +40,13 @@
           <div class="stat-num">{{ dash.range_total }}</div>
           <div class="stat-label">区间支撑（人次）</div>
         </div>
+        <div class="stat-card load">
+          <div class="stat-num">{{ fmtMd(dash.range_man_days) }}</div>
+          <div class="stat-label">
+            区间工作量（人天）
+            <span class="stat-split">现场 {{ fmtMd(dash.onsite_man_days) }}｜线上 {{ fmtMd(dash.online_man_days) }}</span>
+          </div>
+        </div>
       </div>
 
       <div class="dim-cards">
@@ -41,8 +56,9 @@
           <div v-else class="dim-list">
             <div v-for="it in dim.items" :key="it.name" class="dim-row">
               <span class="dim-name" :title="it.name">{{ it.name }}</span>
-              <div class="dim-bar-wrap"><div class="dim-bar" :style="{ width: dimWidth(it.count, dim.items) }"></div></div>
-              <span class="dim-count">{{ it.count }}</span>
+              <div class="dim-bar-wrap"><div class="dim-bar" :style="{ width: dimWidth(it.man_days, dim.items) }"></div></div>
+              <span class="dim-count">{{ fmtMd(it.man_days) }}<i class="dim-unit">人天</i></span>
+              <span class="dim-sub">{{ it.count }} 人次</span>
             </div>
           </div>
         </el-card>
@@ -67,6 +83,7 @@
           <span class="lg now">进行中</span>
           <span class="lg plan">计划中</span>
           <span class="lg done">已完成</span>
+          <span class="lg online">线上支撑（斜纹）</span>
         </span>
       </div>
 
@@ -113,7 +130,7 @@
               >
                 <div
                   class="gantt-bar"
-                  :class="bar.statusClass"
+                  :class="[bar.statusClass, { 'bar-online': bar.online }]"
                   :style="{ left: bar.leftPct + '%', width: bar.widthPct + '%' }"
                   @click="openEdit(bar.trip)"
                 >{{ bar.label }}</div>
@@ -124,7 +141,9 @@
       </div>
 
       <!-- ===== 明细表 ===== -->
-      <div class="table-title">支撑明细（共 {{ filteredTrips.length }} 条）</div>
+      <div class="table-title">
+        支撑明细（共 {{ filteredTrips.length }} 条，合计 {{ fmtMd(tableManDays) }} 人天）
+      </div>
       <el-table :data="filteredTrips" v-loading="loading" border stripe size="small" style="width: 100%">
         <el-table-column label="成员" width="120">
           <template #default="{ row }">
@@ -139,13 +158,32 @@
             <div v-if="row.location" class="cell-sub">{{ row.location }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="purpose" label="事由" min-width="160" show-overflow-tooltip />
+        <el-table-column label="支撑项目" width="130">
+          <template #default="{ row }">
+            <span v-if="row.project_name">{{ row.project_name }}</span>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="方式" width="92" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.support_mode === '线上支撑' ? 'warning' : 'success'" size="small" effect="plain">
+              {{ row.support_mode || '现场支撑' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="purpose" label="事由" min-width="150" show-overflow-tooltip />
         <el-table-column label="支撑时间" width="200">
           <template #default="{ row }">
             <span v-if="row.start_date || row.end_date">
               {{ fmt(row.start_date) }} ~ {{ fmt(row.end_date) }}
             </span>
             <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="工作量" width="96" align="right">
+          <template #default="{ row }">
+            <span class="md-cell">{{ fmtMd(row.calc_man_days) }} 人天</span>
+            <div v-if="row.man_days == null" class="cell-sub">按天数推导</div>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="90" align="center">
@@ -176,6 +214,16 @@
             <el-option v-for="c in customers" :key="c.id" :value="c.id" :label="custLabel(c)" />
           </el-select>
         </el-form-item>
+        <el-form-item label="支撑项目">
+          <el-select v-model="form.project_id" filterable clearable placeholder="选择项目（可留空）" style="width: 100%">
+            <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="支撑方式" required>
+          <el-radio-group v-model="form.support_mode">
+            <el-radio v-for="m in SUPPORT_MODES" :key="m" :label="m">{{ m }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
         <el-form-item label="具体地点">
           <el-input v-model="form.location" placeholder="可选：城市 / 站点 / 非战场地点" />
         </el-form-item>
@@ -192,6 +240,14 @@
             value-format="YYYY-MM-DDTHH:mm:ss"
             style="width: 100%"
           />
+        </el-form-item>
+        <el-form-item label="工作量">
+          <el-input-number v-model="form.man_days" :min="0" :step="0.5" :precision="1"
+                           controls-position="right" style="width: 160px" />
+          <span class="form-tip">
+            人天。留空＝按起止日历天数（{{ formSpanDays || '—' }} 天）推导；
+            线上支撑通常不是整天，建议手填。
+          </span>
         </el-form-item>
         <el-form-item v-if="form.id" label="已取消">
           <el-switch v-model="form.cancelled" />
@@ -212,16 +268,28 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, ArrowRight, Plus, Refresh } from '@element-plus/icons-vue'
-import { businessTripApi, customerApi, userApi } from '../api'
+import { businessTripApi, customerApi, roadmapApi, userApi } from '../api'
 
 const STATUSES = ['计划中', '进行中', '已完成', '已取消']
+// 与后端 enums.SUPPORT_MODES 一一对应，改一边要改两边
+const SUPPORT_MODES = ['现场支撑', '线上支撑']
 
 const loading = ref(false)
 const saving = ref(false)
 const trips = ref([])
 const users = ref([])
 const customers = ref([])
-const dash = ref({ on_trip_now: 0, planned: 0, range_label: '', range_total: 0, by_customer: [], by_person: [], by_domain: [] })
+const projects = ref([])
+const dash = ref({
+  on_trip_now: 0, planned: 0, range_label: '', range_total: 0,
+  range_man_days: 0, onsite_man_days: 0, online_man_days: 0,
+  by_customer: [], by_person: [], by_domain: [], by_project: [], by_mode: [],
+})
+
+// 项目 / 支撑方式是**页面级口径**：看板、甘特、明细三处同时收窄，
+// 否则上面的看板和下面的明细对不上，看着像统计错了
+const scopeProjectId = ref(null)
+const scopeMode = ref('')
 
 const filterUserId = ref(null)
 const filterCustomerId = ref(null)
@@ -266,10 +334,17 @@ const dimCards = computed(() => [
   { title: '按领域', items: dash.value.by_domain || [] },
   { title: '按人', items: dash.value.by_person || [] },
   { title: '按战场', items: dash.value.by_customer || [] },
+  { title: '按项目', items: dash.value.by_project || [] },
+  { title: '按支撑方式', items: dash.value.by_mode || [] },
 ])
-function dimWidth(count, items) {
-  const max = Math.max(1, ...items.map((i) => i.count))
-  return `${Math.round((count / max) * 100)}%`
+function dimWidth(val, items) {
+  const max = Math.max(0.01, ...items.map((i) => i.man_days || 0))
+  return `${Math.round(((val || 0) / max) * 100)}%`
+}
+// 人天统一保留一位小数、去掉多余的 .0：后端已经 round 过，这里只管显示
+function fmtMd(v) {
+  const n = Number(v || 0)
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
 }
 
 // ── 展示辅助 ──
@@ -290,16 +365,30 @@ function statusTagType(s) {
 function statusClass(s) {
   return { 进行中: 'bar-now', 计划中: 'bar-plan', 已完成: 'bar-done' }[s] || 'bar-done'
 }
+function dayCount(a, b) {
+  if (!a) return 0
+  const s = new Date(a)
+  const e = b ? new Date(b) : s
+  return Math.round((new Date(e.getFullYear(), e.getMonth(), e.getDate())
+    - new Date(s.getFullYear(), s.getMonth(), s.getDate())) / 86400000) + 1
+}
 
 // ── 过滤 + 时间轴 ──
 const filteredTrips = computed(() => {
   return trips.value.filter((t) => {
+    if (scopeProjectId.value && t.project_id !== scopeProjectId.value) return false
+    if (scopeMode.value && (t.support_mode || '现场支撑') !== scopeMode.value) return false
     if (filterUserId.value && t.user_id !== filterUserId.value) return false
     if (filterCustomerId.value && t.customer_id !== filterCustomerId.value) return false
     if (filterStatus.value && t.status !== filterStatus.value) return false
     return true
   })
 })
+
+// 明细合计走**整段**人天（calc_man_days），与看板的区间分摊值口径不同：
+// 表里一行就是一整条记录，按区间截一刀反而对不上那一行自己显示的数
+const tableManDays = computed(() =>
+  filteredTrips.value.reduce((sum, t) => sum + (t.cancelled ? 0 : (t.calc_man_days || 0)), 0))
 
 const timelineRows = computed(() => {
   const { y, m } = ym.value
@@ -324,6 +413,7 @@ const timelineRows = computed(() => {
       leftPct: ((startDay - 1) / daysInMonth.value) * 100,
       widthPct: (spanDays / daysInMonth.value) * 100,
       statusClass: statusClass(t.status),
+      online: t.support_mode === '线上支撑',
       label: t.customer_name || t.location || '支撑',
       trip: t,
     })
@@ -333,7 +423,16 @@ const timelineRows = computed(() => {
 
 function barTip(bar) {
   const t = bar.trip
-  return `${t.customer_name || t.location || '支撑'}｜${fmt(t.start_date)} ~ ${fmt(t.end_date)}｜${t.status}${t.purpose ? '｜' + t.purpose : ''}`
+  const parts = [
+    t.customer_name || t.location || '支撑',
+    t.project_name || '未指定项目',
+    t.support_mode || '现场支撑',
+    `${fmt(t.start_date)} ~ ${fmt(t.end_date)}`,
+    `${fmtMd(t.calc_man_days)} 人天`,
+    t.status,
+  ]
+  if (t.purpose) parts.push(t.purpose)
+  return parts.join('｜')
 }
 
 // ── 数据加载 ──
@@ -351,18 +450,24 @@ async function loadTrips() {
 async function loadDash() {
   try {
     const [start, end] = dashRange.value || []
-    const { data } = await businessTripApi.dashboard({ start, end })
+    const { data } = await businessTripApi.dashboard({
+      start, end,
+      project_id: scopeProjectId.value || undefined,
+      support_mode: scopeMode.value || undefined,
+    })
     dash.value = data
   } catch { /* 看板失败不阻塞 */ }
 }
 async function loadOptions() {
   try {
-    const [{ data: us }, { data: cs }] = await Promise.all([
+    const [{ data: us }, { data: cs }, { data: ps }] = await Promise.all([
       userApi.options({ include_inactive: false }),
       customerApi.list(),
+      roadmapApi.listProjects(true),   // 停用的项目也要能选：老记录还挂在上面
     ])
     users.value = us
     customers.value = cs
+    projects.value = ps
   } catch { /* 下拉为空不阻塞 */ }
 }
 async function loadAll() {
@@ -372,19 +477,28 @@ async function loadAll() {
 // ── CRUD ──
 const dialogVisible = ref(false)
 const form = reactive(blankForm())
+const formSpanDays = computed(() => dayCount(form.dateRange?.[0], form.dateRange?.[1]))
 function blankForm() {
   return {
     id: null, version: 0, user_id: null, customer_id: null,
+    project_id: null, support_mode: '现场支撑', man_days: null,
     location: '', purpose: '', dateRange: null, cancelled: false, remark: '',
   }
 }
 function openCreate() {
-  Object.assign(form, blankForm())
+  // 新建时默认跟随当前看板口径：连着登记同一个项目的支撑时少点几次
+  Object.assign(form, blankForm(), {
+    project_id: scopeProjectId.value || null,
+    support_mode: scopeMode.value || '现场支撑',
+  })
   dialogVisible.value = true
 }
 function openEdit(row) {
   Object.assign(form, blankForm(), {
     id: row.id, version: row.version, user_id: row.user_id, customer_id: row.customer_id,
+    project_id: row.project_id ?? null,
+    support_mode: row.support_mode || '现场支撑',
+    man_days: row.man_days ?? null,
     location: row.location || '', purpose: row.purpose || '',
     dateRange: row.start_date && row.end_date ? [row.start_date, row.end_date] : null,
     cancelled: !!row.cancelled, remark: row.remark || '',
@@ -397,6 +511,10 @@ async function onSubmit() {
   if (!form.dateRange || !form.dateRange[0]) { ElMessage.warning('请选择支撑时间'); return }
   const payload = {
     user_id: form.user_id, customer_id: form.customer_id,
+    project_id: form.project_id || null,
+    support_mode: form.support_mode,
+    // 留空要显式传 null，不能传 0——0 人天和「按天数推导」是两回事
+    man_days: form.man_days === '' || form.man_days === undefined ? null : form.man_days,
     location: form.location, purpose: form.purpose,
     start_date: form.dateRange[0], end_date: form.dateRange[1],
     cancelled: form.cancelled, remark: form.remark,
@@ -432,7 +550,7 @@ onMounted(() => { loadAll(); loadOptions() })
 
 /* 看板 */
 .board { margin-bottom: 12px; }
-.board-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.board-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
 .board-title { font-size: 15px; font-weight: 600; }
 .stat-cards { display: flex; gap: 12px; margin-bottom: 12px; }
 .stat-card {
@@ -442,18 +560,22 @@ onMounted(() => { loadAll(); loadOptions() })
 .stat-card.now { background: linear-gradient(135deg, #67C23A, #4e9e2c); }
 .stat-card.plan { background: linear-gradient(135deg, #409EFF, #2a7fd4); }
 .stat-card.month { background: linear-gradient(135deg, #E6A23C, #c8842a); }
+.stat-card.load { background: linear-gradient(135deg, #7B5BE6, #5b3fc4); }
+.stat-split { display: block; font-size: 12px; opacity: 0.85; margin-top: 2px; }
 .stat-num { font-size: 26px; font-weight: 700; line-height: 1.1; }
 .stat-label { font-size: 13px; opacity: 0.92; margin-top: 4px; }
 
-.dim-cards { display: flex; gap: 12px; }
-.dim-card { flex: 1; }
+.dim-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+.dim-card { flex: 1 1 300px; min-width: 260px; }
 .dim-title { font-weight: 600; margin-bottom: 10px; }
 .dim-list { display: flex; flex-direction: column; gap: 7px; max-height: 200px; overflow-y: auto; }
 .dim-row { display: flex; align-items: center; gap: 10px; }
-.dim-name { flex: 0 0 96px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dim-name { flex: 0 0 84px; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dim-bar-wrap { flex: 1 1 auto; background: #f0f2f5; border-radius: 4px; height: 14px; overflow: hidden; }
 .dim-bar { height: 100%; background: #409EFF; border-radius: 4px; min-width: 2px; transition: width 0.3s; }
-.dim-count { flex: 0 0 auto; font-size: 13px; color: #1f2329; font-weight: 600; min-width: 22px; text-align: right; }
+.dim-count { flex: 0 0 auto; font-size: 13px; color: #1f2329; font-weight: 600; min-width: 34px; text-align: right; }
+.dim-unit { font-style: normal; font-weight: 400; font-size: 11px; color: #909399; margin-left: 2px; }
+.dim-sub { flex: 0 0 54px; font-size: 11px; color: #909399; text-align: right; }
 .muted { color: #909399; font-size: 13px; }
 
 /* 工具栏 */
@@ -464,6 +586,7 @@ onMounted(() => { loadAll(); loadOptions() })
 .lg.now::before { background: #67C23A; }
 .lg.plan::before { background: #409EFF; }
 .lg.done::before { background: #c0c4cc; }
+.lg.online::before { background: repeating-linear-gradient(45deg, #67C23A, #67C23A 2px, #fff 2px, #fff 4px); }
 
 /* 甘特 */
 .gantt-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -499,10 +622,15 @@ onMounted(() => { loadAll(); loadOptions() })
 .gantt-bar.bar-now { background: #67C23A; }
 .gantt-bar.bar-plan { background: #409EFF; }
 .gantt-bar.bar-done { background: #b4bcc8; }
+/* 线上支撑叠一层斜纹：颜色仍归状态管，不要再给方式分配一套颜色——
+   一根横条同时表达两件事时，用纹理区分比再加三种颜色好认 */
+.gantt-bar.bar-online { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.35) 0 4px, transparent 4px 8px); }
 .gantt-bar:hover { filter: brightness(1.06); }
 .gantt-empty { padding: 22px; text-align: center; color: #909399; font-size: 13px; }
 
 /* 明细表 */
 .table-title { font-weight: 600; margin: 4px 0 10px; }
 .cell-sub { font-size: 11px; color: #909399; }
+.md-cell { font-weight: 600; font-size: 13px; }
+.form-tip { margin-left: 10px; color: #909399; font-size: 12px; line-height: 1.5; }
 </style>

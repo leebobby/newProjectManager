@@ -166,6 +166,20 @@ def norm_version_line(v, *, partial: bool = False) -> Optional[str]:
     return _norm_choice(v, VERSION_LINES, VERSION_LINE_DEFAULT, "主干/分支", partial=partial)
 
 
+# ── 客户面支撑方式 ────────────────────────────────────────────────────────────
+# 现场支撑＝人到战场（原来的「出差」就是这一档，历史数据全部按它回填）；
+# 线上支撑＝远程接入 / 电话会议，人没动地方。两者的工作量口径不同：现场按日历天
+# 连续投入，线上往往是一天里的几小时，所以人天要允许手填（见 models.BusinessTrip
+# 的 man_days），不要一律按天数推。
+SUPPORT_MODES = ("现场支撑", "线上支撑")
+SUPPORT_MODE_DEFAULT = "现场支撑"
+
+
+def norm_support_mode(v, *, partial: bool = False) -> Optional[str]:
+    """支撑方式：现场 / 线上。"""
+    return _norm_choice(v, SUPPORT_MODES, SUPPORT_MODE_DEFAULT, "支撑方式", partial=partial)
+
+
 def norm_key_feature_status(v, *, partial: bool = False) -> Optional[str]:
     return _norm_choice(v, KEY_FEATURE_STATUSES, KEY_FEATURE_STATUS_DEFAULT,
                         "交付状态", partial=partial)
