@@ -386,6 +386,139 @@ def test_migration_is_idempotent(legacy_db):
     assert n == 4, "重跑不能把版本翻倍——automigrate 会把整条升级链再走一遍"
 
 
+# ── 手工排序与挪位置 ─────────────────────────────────────────────────────────
+def _detail(client, headers, project_id, major_id):
+    rows = client.get("/api/major-versions", headers=headers,
+                      params={"project_id": project_id}).json()
+    return next(m for m in rows if m["id"] == major_id)
+
+
+def test_reorder_releases_follows_given_order(client, admin_headers, project_id):
+    """页面上的顺序＝sort_order，重排接口说了算，不按版本号大小自作主张。"""
+    m = _major(client, admin_headers, project_id, "C10SPCORD1")
+    a = _release(client, admin_headers, m["id"], "C10SPCORD1-A")
+    b = _release(client, admin_headers, m["id"], "C10SPCORD1-B")
+    c = _release(client, admin_headers, m["id"], "C10SPCORD1-C")
+
+    r = client.post("/api/release-versions/reorder", headers=admin_headers,
+                    json={"parent_id": m["id"], "ids": [c["id"], a["id"], b["id"]]})
+    assert r.status_code == 200, r.text
+    got = [rv["version_no"] for rv in _detail(client, admin_headers, project_id, m["id"])["release_versions"]]
+    assert got == ["C10SPCORD1-C", "C10SPCORD1-A", "C10SPCORD1-B"]
+
+
+def test_reorder_appends_siblings_missing_from_the_list(client, admin_headers, project_id):
+    """列表是旧的（别人刚新增了一条）时，没提到的那条排到后面，而不是被挤乱。"""
+    m = _major(client, admin_headers, project_id, "C10SPCORD2")
+    a = _release(client, admin_headers, m["id"], "C10SPCORD2-A")
+    b = _release(client, admin_headers, m["id"], "C10SPCORD2-B")
+    c = _release(client, admin_headers, m["id"], "C10SPCORD2-C")
+
+    client.post("/api/release-versions/reorder", headers=admin_headers,
+                json={"parent_id": m["id"], "ids": [b["id"], a["id"]]})
+    got = [rv["version_no"] for rv in _detail(client, admin_headers, project_id, m["id"])["release_versions"]]
+    assert got == ["C10SPCORD2-B", "C10SPCORD2-A", "C10SPCORD2-C"]
+    assert c["version_no"] == "C10SPCORD2-C"
+
+
+def test_reorder_rejects_id_from_another_parent(client, admin_headers, project_id):
+    """混进别的父级的 id 直接 400：静默忽略会让人以为排序时灵时不灵。"""
+    m1 = _major(client, admin_headers, project_id, "C10SPCORD3")
+    m2 = _major(client, admin_headers, project_id, "C10SPCORD4")
+    a = _release(client, admin_headers, m1["id"], "C10SPCORD3-A")
+    outsider = _release(client, admin_headers, m2["id"], "C10SPCORD4-A")
+
+    r = client.post("/api/release-versions/reorder", headers=admin_headers,
+                    json={"parent_id": m1["id"], "ids": [a["id"], outsider["id"]]})
+    assert r.status_code == 400
+    assert str(outsider["id"]) in r.json()["detail"]
+
+
+def test_reorder_majors_and_iterations(client, admin_headers, project_id):
+    m = _major(client, admin_headers, project_id, "C10SPCORD5")
+    rv = _release(client, admin_headers, m["id"], "C10SPCORD5-A")
+    i1 = _iter(client, admin_headers, rv["id"], "C10SPCORD5-AB001")
+    i2 = _iter(client, admin_headers, rv["id"], "C10SPCORD5-AB002")
+
+    r = client.post("/api/iteration-versions/reorder", headers=admin_headers,
+                    json={"parent_id": rv["id"], "ids": [i2["id"], i1["id"]]})
+    assert r.status_code == 200, r.text
+    detail = _detail(client, admin_headers, project_id, m["id"])
+    got = [iv["version_no"] for iv in detail["release_versions"][0]["iteration_versions"]]
+    assert got == ["C10SPCORD5-AB002", "C10SPCORD5-AB001"]
+
+    # 大版本这一层同理，parent_id 是项目 id
+    rows = client.get("/api/major-versions", headers=admin_headers,
+                      params={"project_id": project_id}).json()
+    reversed_ids = [x["id"] for x in rows][::-1]
+    r = client.post("/api/major-versions/reorder", headers=admin_headers,
+                    json={"parent_id": project_id, "ids": reversed_ids})
+    assert r.status_code == 200, r.text
+    after = client.get("/api/major-versions", headers=admin_headers,
+                       params={"project_id": project_id}).json()
+    assert [x["id"] for x in after] == reversed_ids
+
+
+def test_reorder_is_admin_only(client, normal_headers, project_id):
+    r = client.post("/api/release-versions/reorder", headers=normal_headers,
+                    json={"parent_id": 1, "ids": []})
+    assert r.status_code == 403
+
+
+def test_moving_release_to_another_major_lands_at_the_end(client, admin_headers, project_id):
+    """挪到新父级下要排在末尾——带着旧序号过去会插进中间，看着像随机落点。"""
+    src = _major(client, admin_headers, project_id, "C10SPCMOV1")
+    dst = _major(client, admin_headers, project_id, "C10SPCMOV2")
+    _release(client, admin_headers, dst["id"], "C10SPCMOV2-A", sort_order=0)
+    _release(client, admin_headers, dst["id"], "C10SPCMOV2-B", sort_order=1)
+    stray = _release(client, admin_headers, src["id"], "C10SPCMOV1-X", sort_order=0)
+
+    r = client.put(f"/api/release-versions/{stray['id']}", headers=admin_headers,
+                   json={"major_version_id": dst["id"]})
+    assert r.status_code == 200, r.text
+    got = [rv["version_no"] for rv in _detail(client, admin_headers, project_id, dst["id"])["release_versions"]]
+    assert got == ["C10SPCMOV2-A", "C10SPCMOV2-B", "C10SPCMOV1-X"]
+    assert not _detail(client, admin_headers, project_id, src["id"])["release_versions"]
+
+
+def test_moving_iteration_to_another_release_lands_at_the_end(client, admin_headers, project_id):
+    m = _major(client, admin_headers, project_id, "C10SPCMOV3")
+    src = _release(client, admin_headers, m["id"], "C10SPCMOV3-A")
+    dst = _release(client, admin_headers, m["id"], "C10SPCMOV3-B")
+    _iter(client, admin_headers, dst["id"], "C10SPCMOV3-BB001", sort_order=0)
+    stray = _iter(client, admin_headers, src["id"], "C10SPCMOV3-AB001", sort_order=0)
+
+    r = client.put(f"/api/iteration-versions/{stray['id']}", headers=admin_headers,
+                   json={"release_version_id": dst["id"]})
+    assert r.status_code == 200, r.text
+    detail = _detail(client, admin_headers, project_id, m["id"])
+    dst_row = next(rv for rv in detail["release_versions"] if rv["id"] == dst["id"])
+    assert [iv["version_no"] for iv in dst_row["iteration_versions"]] \
+        == ["C10SPCMOV3-BB001", "C10SPCMOV3-AB001"]
+
+
+def test_explicit_sort_order_still_wins_when_moving(client, admin_headers, project_id):
+    """显式给了 sort_order 就按它来，别被「排到末尾」的兜底盖掉。"""
+    src = _major(client, admin_headers, project_id, "C10SPCMOV4")
+    dst = _major(client, admin_headers, project_id, "C10SPCMOV5")
+    _release(client, admin_headers, dst["id"], "C10SPCMOV5-A", sort_order=5)
+    stray = _release(client, admin_headers, src["id"], "C10SPCMOV4-X")
+
+    client.put(f"/api/release-versions/{stray['id']}", headers=admin_headers,
+               json={"major_version_id": dst["id"], "sort_order": 0})
+    got = [rv["version_no"] for rv in _detail(client, admin_headers, project_id, dst["id"])["release_versions"]]
+    assert got == ["C10SPCMOV4-X", "C10SPCMOV5-A"]
+
+
+def test_moving_release_to_a_missing_major_is_404(client, admin_headers, project_id):
+    m = _major(client, admin_headers, project_id, "C10SPCMOV6")
+    rv = _release(client, admin_headers, m["id"], "C10SPCMOV6-A")
+    r = client.put(f"/api/release-versions/{rv['id']}", headers=admin_headers,
+                   json={"major_version_id": 999999})
+    assert r.status_code == 404
+
+
+
 # ── 0012：0010 跑了一半留下的孤儿行 ──────────────────────────────────────────
 def _load_migration_0012():
     import importlib.util

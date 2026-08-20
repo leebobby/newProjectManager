@@ -919,6 +919,17 @@ class MajorVersionUpdate(BaseModel):
     # 那里才会把原主干降级。开放成普通字段就会出现两个主干。
 
 
+class VersionReorderIn(BaseModel):
+    """按 ids 给出的先后重排同一父级下的兄弟节点。
+
+    只带顺序，不带别的字段——排序是一次整体操作，逐个 PUT sort_order 会在中途被别人
+    的读打断，出现「排到一半」的顺序。parent_id 的含义随层级而变：
+    大版本＝里程碑项目 id（可空＝未挂项目的那批），版本＝大版本 id，迭代版本＝版本 id。
+    """
+    parent_id: Optional[int] = None
+    ids: List[int] = []
+
+
 class MajorVersionOut(MajorVersionBase):
     id: int
     project_id: Optional[int] = None
