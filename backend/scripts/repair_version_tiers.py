@@ -74,24 +74,50 @@ def main() -> int:
     n_orphan = conn.execute(
         "SELECT COUNT(*) FROM iteration_versions WHERE release_version_id IS NULL").fetchone()[0]
 
+    split = _load_split()
+    ref_tables = [t for t in ("iteration_requirements", "iteration_product_requirements")
+                  if t in tables]
+
+    # 「它本身其实是一个版本」的冗余行：没有 B<数字> 后缀的迭代行。
+    # 0010 迁移日志里那个「因仍被需求引用而保留 K 条」说的就是它们，这里重新算一遍——
+    # 迁移只在第一次追平时打印，日志滚掉就抓不到了。
+    redundant_drop, redundant_keep = [], []
+    for it in conn.execute(
+        "SELECT iv.id, iv.version_no, mv.version_no AS major_no FROM iteration_versions iv "
+        "JOIN major_versions mv ON mv.id = iv.major_version_id ORDER BY iv.id"
+    ):
+        _base, is_release = split(it["version_no"], it["major_no"])
+        if not is_release:
+            continue
+        refs = sum(conn.execute(
+            f"SELECT COUNT(*) FROM {t} WHERE target_version_id = ?", (it["id"],)
+        ).fetchone()[0] for t in ref_tables)
+        (redundant_keep if refs else redundant_drop).append(dict(it))
+
     print("── 体检 ──────────────────────────────────────────")
     print(f"库                : {path}")
     print(f"alembic 版本      : {ver['version_num'] if ver else '（未被 alembic 跟踪）'}")
     print(f"大版本            : {n_major}")
     print(f"版本              : {n_rel}")
     print(f"迭代版本          : {n_iter}，其中**没挂上版本**的 {n_orphan} 条")
-    if n_orphan == 0 and n_rel:
-        print("\n三层都挂好了，无需修复。页面上看不到版本的话，问题不在数据。")
+    print(f"「本身就是版本」的冗余行: {len(redundant_drop) + len(redundant_keep)} 条"
+          f"（可清理 {len(redundant_drop)}，被需求引用需人工处理 {len(redundant_keep)}）")
+    for it in redundant_keep[:10]:
+        print(f"    ! {it['major_no']} / {it['version_no']} —— 仍被需求的计划交付版本引用")
+    if len(redundant_keep) > 10:
+        print(f"    …… 另外 {len(redundant_keep) - 10} 条")
+
+    if n_orphan == 0 and n_rel and not redundant_drop:
+        print("\n三层都挂好了，也没有可清理的冗余行。"
+              + ("\n仍有被引用的冗余行需要人工在页面上确认（见上面的 ! 行）。"
+                 if redundant_keep else "")
+              + "\n页面上看不到版本的话，问题不在数据。")
         return 0
     if n_iter == 0 and n_rel == 0:
         print("\n迭代版本表本身就是空的——这不是「挂丢了」，是库里确实没有这层数据。")
         return 0
 
-    split = _load_split()
-    ref_tables = [t for t in ("iteration_requirements", "iteration_product_requirements")
-                  if t in tables]
-
-    plan_new, plan_link, plan_drop, plan_keep = [], [], [], []
+    plan_new, plan_link = [], []
     for m in conn.execute("SELECT id, version_no FROM major_versions ORDER BY sort_order, id"):
         iters = conn.execute(
             "SELECT id, version_no, title, planned_date, sort_order FROM iteration_versions "
@@ -104,7 +130,7 @@ def main() -> int:
             "SELECT id, version_no FROM release_versions WHERE major_version_id = ?", (m["id"],))}
         seen_new = {}
         for it in iters:
-            base, is_release = split(it["version_no"], m["version_no"])
+            base, _is_release = split(it["version_no"], m["version_no"])
             if base in have:
                 rid = have[base]
             elif base in seen_new:
@@ -114,11 +140,6 @@ def main() -> int:
                 seen_new[base] = None
                 plan_new.append((m["id"], m["version_no"], base, it))
             plan_link.append((it, m["version_no"], base, rid))
-            if is_release:
-                refs = sum(conn.execute(
-                    f"SELECT COUNT(*) FROM {t} WHERE target_version_id = ?", (it["id"],)
-                ).fetchone()[0] for t in ref_tables)
-                (plan_keep if refs else plan_drop).append((it, m["version_no"]))
 
     print("\n── 修复方案 ──────────────────────────────────────")
     print(f"新建版本          : {len(plan_new)} 个")
@@ -127,8 +148,9 @@ def main() -> int:
     if len(plan_new) > 20:
         print(f"    …… 另外 {len(plan_new) - 20} 个")
     print(f"重新挂上的迭代版本: {len(plan_link)} 条")
-    print(f"删除的冗余行      : {len(plan_drop)} 条（它本身就是一个版本，且没有需求引用它）")
-    print(f"保留待人工处理    : {len(plan_keep)} 条（仍被需求的计划交付版本引用，删了会丢别人填的数据）")
+    print(f"删除的冗余行      : {len(redundant_drop)} 条（它本身就是一个版本，且没有需求引用它）")
+    print(f"保留待人工处理    : {len(redundant_keep)} 条（仍被需求的计划交付版本引用，"
+          f"删了会丢别人填的数据）")
 
     if not args.apply:
         print("\n以上只是预演，没有改动任何数据。确认无误后加 --apply 执行（务必先备份 app.db）。")
@@ -160,14 +182,14 @@ def main() -> int:
                     (target, it["id"]))
         linked += 1
 
-    for it, _mno in plan_drop:
+    for it in redundant_drop:
         cur.execute("DELETE FROM iteration_versions WHERE id = ?", (it["id"],))
 
     conn.commit()
     left = conn.execute(
         "SELECT COUNT(*) FROM iteration_versions WHERE release_version_id IS NULL").fetchone()[0]
     print(f"\n已修复：新建版本 {len(rid_cache)} 个，挂回迭代版本 {linked} 条，"
-          f"删除冗余行 {len(plan_drop)} 条，保留 {len(plan_keep)} 条。")
+          f"删除冗余行 {len(redundant_drop)} 条，保留 {len(redundant_keep)} 条。")
     print(f"剩余未挂上的迭代版本：{left} 条" + ("（应该是 0）" if left else " ✔"))
     print("重启后端即可在页面上看到三层。")
     return 0
