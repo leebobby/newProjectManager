@@ -158,6 +158,33 @@ major_versions        大版本    C10SPC100        号段，自己不发布
 （默认只读预演，`--apply` 才写库）。**新写幂等守卫时别按「结果表非空」判，
 要按「这一行还没处理」判**——前者在半成品上会把剩下的活全跳过。
 
+## 迭代需求：项目维度与按项目度量
+
+**迭代不属于任何项目**——它是按年月排的，同一个月的迭代里同时排着多个项目的需求。
+所以项目维度挂在**需求行**上：`iteration_requirements.project_id` /
+`iteration_product_requirements.project_id`（FK → `roadmap_projects`，可空）。
+不要反过来往 `annual_iterations` 上加 `project_id`：那样一个月就要开 N 条迭代，
+迭代号从「2026-03」变成「2026-03-甲」，问题单、版本、周报里所有按年月找迭代的地方都要跟着改。
+
+度量口径收口在 `metrics._split_by_project()`，四个接口（版本完成率 / 迭代 / 年度迭代质量 /
+组级负载）都吃可选的 `project_id`：
+
+- **没填项目的行不计入任何一个项目**。把它们摊进当前项目、或按「库里只有一个项目就算它的」
+  兜底，数字看着都合理，偏了没人看得出来。
+- 作为补偿，响应里带一个 `unassigned`＝同口径下因没填项目而被排除的条数，
+  前端拿它渲染一条黄条提示去补录。**加新的按项目度量接口时要一并返回它**——
+  只筛不报的表现是「按项目一看数字小了一截」，而没人知道少的是哪些。
+- 不传 `project_id` ＝ 全量口径，此时 `unassigned` 恒为 0（没有「被排除」这回事）。
+- 密度类指标（用例密度 / 问题单密度）要**分子分母一起筛**。只筛分子会得到一个
+  分母含别的项目的密度，量纲对、数值错。
+
+前端：项目下拉在 `IterationDetail.vue` 里加载一次、传给两个需求 Tab，别各拉一遍。
+筛选下拉里的「未指定项目」用哨兵值 `UNASSIGNED = -1`——用 `null` 会被 `clearable`
+当成「没筛」，那批最该被找出来补录的行反而永远筛不出来。
+Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_project_id`），
+不做模糊匹配：`YLS3000` 很容易被认到 `YLS3000-PLUS` 上，错挂的需求在度量时只是数字偏一点。
+反查不中留空、不报错，交给页面事后补选。
+
 ## 领域管理：问题单口径与目标
 
 领域总览的「问题单情况」有**两个可能的数据源**，判断逻辑收口在
@@ -280,14 +307,18 @@ DateTime 列有两类，**口径不同，别混**：
 
 ## 主数据与 FK 反查
 
-`customers` / `users` / `resource_groups` / `iteration_versions` 是主数据，业务表逐步从
-「存字符串」迁到「存 FK + 字符串快照」。
+`customers` / `users` / `resource_groups` / `iteration_versions` / `roadmap_projects` 是主数据，
+业务表逐步从「存字符串」迁到「存 FK + 字符串快照」。
 
 - 字符串 → FK 的反查统一走 [routers/_lookups.py](backend/routers/_lookups.py)
   （`resolve_*` / `fill_*_fk`），不要在各 router 里重写匹配规则。
 - 反查失败**不要报错**，留空让「数据对账」页（`/data-mapping`）事后补全。
 - 快照字段（`owner` / `owner_group` / `planned_version` …）保留用于展示与导入兜底，
   FK 为空时前端回退到它。
+- **项目是个例外：只存 FK，不留字符串快照**（`project_id` 无 `project_name` 列）。
+  项目表只有个位数行且会改名，存快照就得到处同步；出接口时用
+  `_lookups.project_name_map()` 一次性回填 `project_name`（响应字段，非模型列），
+  逐行 join 会变成 N+1。
 
 ## 导出与上传
 

@@ -6,6 +6,18 @@
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button v-if="isAdmin" :icon="Setting" @click="openFeatureDialog">管理所属特性</el-button>
       <el-select
+        v-model="filterProjectId"
+        placeholder="按项目筛选"
+        clearable
+        filterable
+        size="small"
+        style="width: 170px"
+        :persistent="false"
+      >
+        <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+        <el-option :value="UNASSIGNED" label="未指定项目" />
+      </el-select>
+      <el-select
         v-model="filterUserId"
         placeholder="按特性角色筛选"
         clearable
@@ -58,6 +70,21 @@
           <div v-else class="editable-cell" @dblclick="startEdit(row, 'title')">
             {{ row.title || '—' }}
           </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="项目" width="140">
+        <template #default="{ row }">
+          <EditSelectCell
+            :value="row.project_id"
+            :display-text="row.project_name || ''"
+            clearable
+            filterable
+            placeholder="未指定"
+            @change="(v) => onProjectChange(row, v)"
+          >
+            <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+          </EditSelectCell>
         </template>
       </el-table-column>
 
@@ -242,6 +269,17 @@
         <el-form-item label="需求标题">
           <el-input v-model="form.title" />
         </el-form-item>
+        <el-form-item label="项目">
+          <el-select
+            v-model="form.project_id"
+            clearable
+            filterable
+            placeholder="选择所属项目"
+            style="width: 100%"
+          >
+            <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="计划交付版本">
           <el-select
             v-model="form.planned_version"
@@ -326,6 +364,7 @@
       <p class="import-tip">
         1. 先下载模板，按格式填写产品需求清单；<br />
         2. 表头列名请勿改动；进展列填「未开始/进行中/已完成/已延期/已变更/不涉及」，优先级填 P0/P1/P2/P3（旧高/中/低导入时自动转换）；<br />
+        「项目」列要与系统里的项目名完全一致，对不上会留空，导入后在页面上补选；<br />
         3. 上传 .xlsx 文件，系统将批量创建到当前迭代下。
       </p>
       <el-button :icon="Download" link type="primary" @click="onDownloadTemplate">
@@ -393,7 +432,12 @@ import EditSelectCell from '../EditSelectCell.vue'
 const props = defineProps({
   iterationId: { type: Number, required: true },
   versionGroups: { type: Array, default: () => [] },
+  projects: { type: Array, default: () => [] },
 })
+
+// 「未指定项目」在筛选下拉里得有个自己的值——用 null 会被 clearable 当成"没筛"，
+// 于是那批最该被找出来补录的行反而永远筛不出来。
+const UNASSIGNED = -1
 
 const isAdmin = auth.isAdmin
 
@@ -443,6 +487,7 @@ const list = ref([])
 const features = ref([])
 const userOptions = ref([])
 const filterUserId = ref(null)
+const filterProjectId = ref(null)
 const loading = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(null)
@@ -453,13 +498,21 @@ const editingCell = ref(null)
 const featureDialog = reactive({ visible: false, saving: false, list: [] })
 
 const filteredList = computed(() => {
-  if (!filterUserId.value) return list.value
   const uid = filterUserId.value
-  return list.value.filter((r) =>
-    r.feature_fo_user_id === uid ||
-    r.feature_se_user_id === uid ||
-    r.feature_tfo_user_id === uid
-  )
+  const pid = filterProjectId.value
+  return list.value.filter((r) => {
+    if (pid === UNASSIGNED) {
+      if (r.project_id) return false
+    } else if (pid && r.project_id !== pid) {
+      return false
+    }
+    if (uid && !(
+      r.feature_fo_user_id === uid ||
+      r.feature_se_user_id === uid ||
+      r.feature_tfo_user_id === uid
+    )) return false
+    return true
+  })
 })
 
 const importVisible = ref(false)
@@ -470,6 +523,7 @@ const uploadRef = ref(null)
 
 function defaultForm() {
   return {
+    project_id: null,
     seq: 0,
     req_no: '',
     req_url: '',
@@ -622,6 +676,24 @@ async function onFieldChange(row, field, value) {
     row.version = data.version
   } catch (e) {
     row[field] = original
+    if (e.response?.status !== 409) ElMessage.error(e.response?.data?.detail || '保存失败')
+    else load()
+  }
+}
+
+async function onProjectChange(row, value) {
+  // el-select 的清空回的是空串而不是 null，直接发过去会被后端当成"没改"
+  const pid = value || null
+  if (pid === row.project_id) return
+  const original = { id: row.project_id, name: row.project_name }
+  try {
+    const { data } = await productRequirementApi.update(row.id, { project_id: pid, version: row.version })
+    row.project_id = data.project_id
+    row.project_name = data.project_name   // 名字由后端回填，别在前端拼
+    row.version = data.version
+  } catch (e) {
+    row.project_id = original.id
+    row.project_name = original.name
     if (e.response?.status !== 409) ElMessage.error(e.response?.data?.detail || '保存失败')
     else load()
   }

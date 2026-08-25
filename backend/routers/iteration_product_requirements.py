@@ -4,7 +4,7 @@
 权限：登录用户均可读写（与领域需求保持一致）。
 """
 import io
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -16,7 +16,9 @@ import schemas
 from auth import get_current_user
 from database import get_db
 from op_log import log_op
-from routers._lookups import fill_user_fk, fill_version_fk
+from routers._lookups import (
+    fill_user_fk, fill_version_fk, project_name_map, resolve_project_id,
+)
 
 
 def _fill_product_fks(db, data):
@@ -37,6 +39,7 @@ _IMPORT_COLUMNS = [
     ("需求编号", "req_no", False),
     ("需求超链接", "req_url", False),
     ("需求标题", "title", True),
+    ("项目", "_project_name", False),
     ("计划交付版本", "planned_version", False),
     ("优先级", "priority", False),
     ("所属特性", "feature", False),
@@ -71,18 +74,29 @@ def _validate_enums(data: dict) -> None:
         raise HTTPException(status_code=400, detail=f"优先级「{data['priority']}」非法，应为 P0/P1/P2/P3")
 
 
+def _out(item: models.IterationProductRequirement,
+         pmap: dict) -> schemas.IterationProductRequirementOut:
+    out = schemas.IterationProductRequirementOut.model_validate(item)
+    out.project_name = pmap.get(item.project_id)
+    return out
+
+
 @router.get("", response_model=List[schemas.IterationProductRequirementOut])
 def list_by_iteration(
     iteration_id: int = Query(..., description="迭代 ID"),
+    project_id: Optional[int] = Query(None, description="只看某个项目；不传＝全部（含未指定项目的行）"),
     db: Session = Depends(get_db),
 ):
-    return (
+    q = (
         db.query(models.IterationProductRequirement)
         .filter(models.IterationProductRequirement.iteration_id == iteration_id)
-        .order_by(models.IterationProductRequirement.seq.asc(),
-                  models.IterationProductRequirement.id.asc())
-        .all()
     )
+    if project_id is not None:
+        q = q.filter(models.IterationProductRequirement.project_id == project_id)
+    items = q.order_by(models.IterationProductRequirement.seq.asc(),
+                       models.IterationProductRequirement.id.asc()).all()
+    pmap = project_name_map(db)
+    return [_out(i, pmap) for i in items]
 
 
 @router.get("/by-version", response_model=List[schemas.IterationProductRequirementOut])
@@ -91,13 +105,15 @@ def list_by_version(
     db: Session = Depends(get_db),
 ):
     """版本管理用：列出"计划交付版本"指向该迭代版本的产品需求。"""
-    return (
+    items = (
         db.query(models.IterationProductRequirement)
         .filter(models.IterationProductRequirement.target_version_id == version_id)
         .order_by(models.IterationProductRequirement.seq.asc(),
                   models.IterationProductRequirement.id.asc())
         .all()
     )
+    pmap = project_name_map(db)
+    return [_out(i, pmap) for i in items]
 
 
 @router.post("", response_model=schemas.IterationProductRequirementOut)
@@ -131,7 +147,7 @@ def create_item(
     log_op(db, action="新增", target="迭代产品需求", target_id=item.id,
            detail=f"iteration_id={item.iteration_id} title={item.title}",
            user=current_user, request=request)
-    return item
+    return _out(item, project_name_map(db))
 
 
 @router.put("/{item_id}", response_model=schemas.IterationProductRequirementOut)
@@ -163,7 +179,7 @@ def update_item(
     log_op(db, action="修改", target="迭代产品需求", target_id=item.id,
            detail=f"title={item.title} fields={','.join(changes.keys()) or '无'}",
            user=current_user, request=request)
-    return item
+    return _out(item, project_name_map(db))
 
 
 @router.get("/import-template.xlsx")
@@ -184,14 +200,14 @@ def download_import_template():
 
     example = [
         1, "PRD-2026-001", "https://example.com/prd/2026-001", "示例产品需求标题",
-        "v0.6.0", "P1", "智能投顾", "李四", "王五", "赵六",
+        "YLS3000", "v0.6.0", "P1", "智能投顾", "李四", "王五", "赵六",
         "推荐引擎 / 用户画像",
         "已完成", "已完成", "进行中", "进行中", "未开始", "未开始", "未开始",
         "300", "180", "2人周", "关键算法依赖未到位",
     ]
     ws.append(example)
 
-    widths = [6, 16, 26, 30, 14, 8, 16, 10, 10, 10, 18,
+    widths = [6, 16, 26, 30, 14, 14, 8, 16, 10, 10, 10, 18,
               10, 10, 10, 10, 10, 10, 10,
               10, 10, 10, 30]
     for i, w in enumerate(widths[: len(headers)], start=1):
@@ -203,6 +219,7 @@ def download_import_template():
     ws.cell(row=tip_row, column=1, value=(
         "提示：进展列填写「未开始/进行中/已完成/已延期/已变更/不涉及」之一；"
         "优先级填 P0/P1/P2/P3（旧高/中/低导入时会自动转换）；预估/实际代码量、实际工作量可填任意文本；"
+        "「项目」要与系统里的项目名完全一致，对不上会留空（导入后可在页面上补选，不会报错）；"
         "序号留空将自动按现有最大序号顺序累加；删除示例行后再导入。"
     )).font = Font(italic=True, color="909399")
     ws.merge_cells(start_row=tip_row, start_column=1, end_row=tip_row, end_column=len(headers))
@@ -327,6 +344,8 @@ async def import_from_excel(
 
     for d in pending:
         _fill_product_fks(db, d)
+        # 「项目」列不是模型字段，只是反查 FK 的入参，落库前摘掉。
+        d["project_id"] = resolve_project_id(db, d.pop("_project_name", None))
         item = models.IterationProductRequirement(**d)
         db.add(item)
         created += 1

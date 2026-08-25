@@ -546,6 +546,7 @@ class AnnualIterationOut(AnnualIterationBase):
 
 # ===== IterationRequirement =====
 class IterationRequirementBase(BaseModel):
+    project_id: Optional[int] = None
     seq: Optional[int] = 0
     req_no: Optional[str] = ""
     req_url: Optional[str] = ""
@@ -590,6 +591,7 @@ class IterationRequirementCreate(IterationRequirementBase):
 
 class IterationRequirementUpdate(BaseModel):
     version: int
+    project_id: Optional[int] = None
     seq: Optional[int] = None
     req_no: Optional[str] = None
     req_url: Optional[str] = None
@@ -627,6 +629,7 @@ class IterationRequirementUpdate(BaseModel):
 class IterationRequirementOut(IterationRequirementBase):
     id: int
     iteration_id: int
+    project_name: Optional[str] = None    # 由后端解析回填
     version: int
 
     model_config = ConfigDict(from_attributes=True)
@@ -634,6 +637,7 @@ class IterationRequirementOut(IterationRequirementBase):
 
 # ===== IterationProductRequirement =====
 class IterationProductRequirementBase(BaseModel):
+    project_id: Optional[int] = None
     seq: Optional[int] = 0
     req_no: Optional[str] = ""
     req_url: Optional[str] = ""
@@ -683,6 +687,7 @@ class IterationProductRequirementCreate(IterationProductRequirementBase):
 
 class IterationProductRequirementUpdate(BaseModel):
     version: int
+    project_id: Optional[int] = None
     seq: Optional[int] = None
     req_no: Optional[str] = None
     req_url: Optional[str] = None
@@ -724,6 +729,7 @@ class IterationProductRequirementUpdate(BaseModel):
 class IterationProductRequirementOut(IterationProductRequirementBase):
     id: int
     iteration_id: int
+    project_name: Optional[str] = None    # 由后端解析回填
     version: int
 
     model_config = ConfigDict(from_attributes=True)

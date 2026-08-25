@@ -1,9 +1,10 @@
 """跨 router 复用的"字符串 → 主数据 FK"反查工具。
 
-Owner / 资源组 / 版本 是散布在多张表上的字符串字段，这里集中处理：
+Owner / 资源组 / 版本 / 项目 是散布在多张表上的字符串字段，这里集中处理：
 - 用户：优先按 emp_no 精确匹配，其次按 full_name 完全匹配
 - 资源组（PL 组）：按 code 或 name 完全匹配
 - 迭代版本：按 version_no 完全匹配
+- 项目：按 name 完全匹配（roadmap_projects）
 
 所有 resolve 函数返回 Optional[int]；不要在调用方报错，让 UI 在导入后能通过对账页补全。
 """
@@ -84,6 +85,22 @@ def resolve_iteration_version_id(db: Session, value: Optional[str]) -> Optional[
     return None
 
 
+def resolve_project_id(db: Session, value: Optional[str]) -> Optional[int]:
+    """项目名 → roadmap_projects.id。只做完全匹配。
+
+    项目名是人手填的短名（"YLS3000"），模糊匹配很容易把 "YLS3000" 认到
+    "YLS3000-PLUS" 上去，而错挂的需求在按项目度量时只是数字偏一点，没人查得出来。
+    """
+    if not value:
+        return None
+    # 导入路径可能递进来数字（项目名恰好是纯数字时 openpyxl 会给 int），先转字符串
+    s = str(value).strip()
+    if not s:
+        return None
+    p = db.query(models.RoadmapProject).filter(models.RoadmapProject.name == s).first()
+    return p.id if p else None
+
+
 def fill_user_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
     """便利函数：在 model_dump 后的字典上原位填 FK。
 
@@ -108,3 +125,18 @@ def fill_version_fk(db: Session, data: dict, str_field: str, fk_field: str) -> N
         return
     if str_field in data and data.get(str_field):
         data[fk_field] = resolve_iteration_version_id(db, data[str_field])
+
+
+def fill_project_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
+    if fk_field in data:
+        return
+    if str_field in data and data.get(str_field):
+        data[fk_field] = resolve_project_id(db, data[str_field])
+
+
+def project_name_map(db: Session) -> dict:
+    """{roadmap_projects.id: name}。列表接口回填 project_name 用。
+
+    项目表只有个位数行，一次全量取出比逐行 join 便宜，也避免 N+1。
+    """
+    return {p.id: p.name for p in db.query(models.RoadmapProject).all()}

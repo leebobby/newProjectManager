@@ -171,9 +171,14 @@ export const mappingApi = {
 }
 
 export const metricsApi = {
-  version: (major_version_id) => http.get(`/metrics/version/${major_version_id}`),
-  iteration: (iteration_id) => http.get(`/metrics/iteration/${iteration_id}`),
-  iterationQuality: (year) => http.get(`/metrics/iteration-quality/${year}`),
+  // params 里可带 project_id：项目挂在需求行上，传了就只统计该项目的需求，
+  // 未填项目的老数据不计入任何项目（后端回一个 unassigned 让页面提示去补）。
+  version: (release_version_id, params = {}) =>
+    http.get(`/metrics/version/${release_version_id}`, { params }),
+  iteration: (iteration_id, params = {}) =>
+    http.get(`/metrics/iteration/${iteration_id}`, { params }),
+  iterationQuality: (year, params = {}) =>
+    http.get(`/metrics/iteration-quality/${year}`, { params }),
   group: (group_id, params = {}) => http.get(`/metrics/group/${group_id}`, { params }),
 }
 
@@ -388,7 +393,8 @@ export const annualIterationApi = {
 }
 
 export const iterationRequirementApi = {
-  list: (iteration_id) => http.get('/iteration-requirements', { params: { iteration_id } }),
+  list: (iteration_id, params = {}) =>
+    http.get('/iteration-requirements', { params: { iteration_id, ...params } }),
   byVersion: (version_id) => http.get('/iteration-requirements/by-version', { params: { version_id } }),
   create: (data) => http.post('/iteration-requirements', data),
   update: (id, data) => http.put(`/iteration-requirements/${id}`, data),
@@ -459,7 +465,8 @@ export const businessTripApi = {
 }
 
 export const productRequirementApi = {
-  list: (iteration_id) => http.get('/iteration-product-requirements', { params: { iteration_id } }),
+  list: (iteration_id, params = {}) =>
+    http.get('/iteration-product-requirements', { params: { iteration_id, ...params } }),
   byVersion: (version_id) => http.get('/iteration-product-requirements/by-version', { params: { version_id } }),
   create: (data) => http.post('/iteration-product-requirements', data),
   update: (id, data) => http.put(`/iteration-product-requirements/${id}`, data),
