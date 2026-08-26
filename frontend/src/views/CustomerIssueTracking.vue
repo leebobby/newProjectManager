@@ -43,6 +43,7 @@
 
         <div class="filter-right">
           <span class="muted">共 {{ filteredRows.length }} 条<span v-if="customerIssues.loading"> · 刷新中…</span></span>
+          <el-button size="small" type="primary" :icon="Plus" @click="openCreate">新增</el-button>
           <el-button size="small" :icon="Refresh" :loading="customerIssues.loading" @click="reloadIssues">刷新</el-button>
           <el-button size="small" text :icon="Document" @click="onImportTemplate">模板</el-button>
           <el-upload :auto-upload="false" :show-file-list="false" accept=".xlsx" :on-change="onImport">
@@ -163,9 +164,79 @@
         <span><i class="dot d-hold" />挂起</span>
         <span><i class="dot d-done" />已闭环</span>
         <span><i class="dot d-over" />逾期</span>
-        <span class="muted">条目在「客户面状态」总览的对应单元格里新增；此处维护跟踪信息，缓存共享、秒开。</span>
+        <span class="muted">此处新增要先选机台（条目始终挂在机台上）；在「客户面状态」总览的单元格里新增更快，那里机台是现成的。</span>
       </div>
     </el-card>
+
+    <!-- 新增条目：条目始终挂在机台上（后端要 machine_status_id，customer_id 由它推导），
+         所以这里必须先选客户再选机台——汇总页不像总览那样天然带着机台上下文。 -->
+    <el-dialog v-model="createVisible" title="新增客户面条目" width="620px" :close-on-click-modal="false">
+      <el-form :model="createForm" label-width="100px">
+        <el-form-item label="客户 / 战场" required>
+          <el-select v-model="createForm.customer_id" filterable placeholder="选择客户" style="width: 100%"
+                     @change="onCreateCustomerChange">
+            <el-option v-for="c in customers" :key="c.id" :label="c.display_name || c.code" :value="c.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="机台" required>
+          <el-select v-model="createForm.machine_status_id" filterable :loading="machineLoading"
+                     :placeholder="createForm.customer_id ? '选择机台' : '请先选客户'"
+                     :disabled="!createForm.customer_id" style="width: 100%">
+            <el-option v-for="m in machineOptions" :key="m.id"
+                       :label="m.model ? `${m.machine_id}（${m.model}）` : m.machine_id" :value="m.id" />
+          </el-select>
+          <div v-if="createForm.customer_id && !machineLoading && !machineOptions.length" class="muted">
+            该客户名下还没有机台，先去「客户面状态」建机台。
+          </div>
+        </el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="createForm.kind">
+            <el-radio-button v-for="k in KINDS" :key="k.value" :value="k.value">{{ k.label }}</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="描述" required>
+          <el-input v-model="createForm.description" type="textarea" :rows="3" placeholder="关键问题 / 需求 / 事务的描述" />
+        </el-form-item>
+        <el-form-item label="问题单号">
+          <el-input v-model="createForm.issue_ref" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="重要程度">
+          <el-select v-model="createForm.urgency" style="width: 160px">
+            <el-option v-for="u in URGENCIES" :key="u" :label="u" :value="u" />
+          </el-select>
+          <span class="muted" style="margin-left: 12px">状态</span>
+          <el-select v-model="createForm.status" style="width: 130px; margin-left: 8px">
+            <el-option v-for="st in STATUSES" :key="st" :label="st" :value="st" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="责任人">
+          <el-select v-model="createForm.owner_user_id" clearable filterable placeholder="选填" style="width: 100%">
+            <el-option v-for="u in users" :key="u.id" :label="u.full_name || u.username" :value="u.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="责任领域">
+          <el-select v-model="createForm.group_id" clearable filterable placeholder="选填" style="width: 100%">
+            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="提出时间">
+          <el-date-picker v-model="createForm.raised_at" type="date" value-format="YYYY-MM-DD" style="width: 170px" />
+          <span class="muted" style="margin-left: 12px">计划解决</span>
+          <el-date-picker v-model="createForm.due_date" type="date" value-format="YYYY-MM-DD"
+                          style="width: 170px; margin-left: 8px" />
+        </el-form-item>
+        <el-form-item label="分类专项">
+          <el-input v-model="createForm.category" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="问题进展">
+          <el-input v-model="createForm.progress_note" type="textarea" :rows="2" placeholder="选填" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" :loading="creating" @click="submitCreate">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -173,7 +244,7 @@
 import { computed, defineComponent, h, nextTick, onActivated, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ElDatePicker, ElIcon, ElInput, ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Document, Download, Edit, Refresh, Search, Upload } from '@element-plus/icons-vue'
+import { Delete, Document, Download, Edit, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
 import { customerApi, customerIssueApi, downloadBlob, resourceGroupApi, userApi } from '../api'
 import { auth } from '../store/auth'
 import {
@@ -191,6 +262,13 @@ const isAdmin = auth.isAdmin
 // 与后端 enums.py 保持一致
 const URGENCIES = ['重要紧急', '重要', '一般']
 const STATUSES = ['OPEN', 'CLOSED', '挂起']
+// 与后端 enums.CUSTOMER_ISSUE_KINDS 一致。这张汇总表三类都显示，所以新增时也要能选：
+// 只给「问题」一档的话，事务和需求就只能回总览页去建，等于没解决问题。
+const KINDS = [
+  { value: 'issue', label: '问题' },
+  { value: 'demand', label: '需求' },
+  { value: 'task', label: '事务' },
+]
 const STATUS_RANK = { OPEN: 0, 挂起: 1, CLOSED: 2 }
 const URGENCY_RANK = { 重要紧急: 0, 重要: 1, 一般: 2 }
 
@@ -327,6 +405,110 @@ const filters = reactive({
   customer_id: null, urgency: null, group_id: null, status: null,
   owner_user_id: null, q: '', overdue_only: false,
 })
+
+// ── 新增条目 ────────────────────────────────────────────────────────────────
+// 条目在库里始终挂在**机台**上（machine_status_id 是必填，customer_id 由它推导），
+// 总览页天然带着机台上下文所以能一行搞定；汇总页没有，只能先选客户再选机台。
+const createVisible = ref(false)
+const creating = ref(false)
+const machineLoading = ref(false)
+const machineOptions = ref([])
+// 客户 → 机台列表的缓存：来回换客户不重复请求
+const machineCache = new Map()
+
+function defaultCreateForm() {
+  return {
+    customer_id: null,
+    machine_status_id: null,
+    kind: 'issue',
+    description: '',
+    issue_ref: '',
+    urgency: '一般',
+    status: 'OPEN',
+    owner_user_id: null,
+    group_id: null,
+    raised_at: today(),
+    due_date: '',
+    category: '',
+    progress_note: '',
+  }
+}
+
+const createForm = reactive(defaultCreateForm())
+
+function today() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function openCreate() {
+  Object.assign(createForm, defaultCreateForm())
+  // 正按某个客户筛着就默认建在这个客户下——不带过去的话，建完立刻被自己的筛选藏起来
+  if (filters.customer_id) {
+    createForm.customer_id = filters.customer_id
+    loadMachines(filters.customer_id)
+  } else {
+    machineOptions.value = []
+  }
+  if (filters.group_id) createForm.group_id = filters.group_id
+  if (filters.urgency) createForm.urgency = filters.urgency
+  createVisible.value = true
+}
+
+async function loadMachines(customerId) {
+  if (machineCache.has(customerId)) {
+    machineOptions.value = machineCache.get(customerId)
+    return
+  }
+  machineLoading.value = true
+  try {
+    const { data } = await customerApi.machines(customerId)
+    machineCache.set(customerId, data)
+    machineOptions.value = data
+  } catch (e) {
+    machineOptions.value = []
+    ElMessage.error(e.response?.data?.detail || '机台加载失败')
+  } finally {
+    machineLoading.value = false
+  }
+}
+
+function onCreateCustomerChange(v) {
+  createForm.machine_status_id = null
+  machineOptions.value = []
+  if (v) loadMachines(v)
+}
+
+// 新增的行会不会被当前筛选藏起来——藏起来就明说，否则看着像"保存了但没进去"
+function hiddenByFilters(row) {
+  return !filteredRows.value.some((r) => r.id === row.id)
+}
+
+async function submitCreate() {
+  if (!createForm.machine_status_id) {
+    ElMessage.warning('请先选客户和机台')
+    return
+  }
+  if (!createForm.description.trim()) {
+    ElMessage.warning('描述不能为空')
+    return
+  }
+  creating.value = true
+  try {
+    // customer_id 不传：后端始终跟着机台走，传了反而可能与机台对不上
+    const { customer_id, ...payload } = createForm
+    payload.description = payload.description.trim()
+    const { data } = await customerIssueApi.create(payload)
+    upsertIssue(data)
+    createVisible.value = false
+    if (data.status === 'CLOSED' && !includeClosed.value) includeClosed.value = true
+    ElMessage.success(hiddenByFilters(data) ? '已新增（当前筛选条件下不显示）' : '已新增')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '新增失败')
+  } finally {
+    creating.value = false
+  }
+}
 
 // 从总览点条目跳过来时高亮那一条（prop 优先，路由查询串兜底）
 const focusId = computed(() => props.focus || Number(route.query.focus) || null)
