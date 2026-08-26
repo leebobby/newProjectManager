@@ -20,7 +20,10 @@
       <div class="toolbar">
         <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openCreateMajor">新增大版本</el-button>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
-        <span class="tip">大版本（C10SPC100）→ 版本（C10SPC101）→ 迭代版本（C10SPC101B001）</span>
+        <span class="tip">
+          大版本（C10SPC100）→ 版本（C10SPC101）→ 迭代版本（C10SPC101B001）
+          <template v-if="isAdmin">｜三层都可以用 ↑↓ 排成你要的顺序；放错父级的用「编辑」改所属</template>
+        </span>
       </div>
 
       <el-table
@@ -75,12 +78,10 @@
                         border
                         size="small"
                         style="width: 100%"
-                        :default-sort="{ prop: 'version_no', order: 'ascending' }"
                       >
-                        <el-table-column prop="version_no" label="版本号" width="170" sortable
-                          :sort-method="(a, b) => naturalCompare(a.version_no, b.version_no)" />
+                        <el-table-column prop="version_no" label="版本号" width="170" />
                         <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
-                        <el-table-column prop="planned_date" label="预计发布日期" width="150" sortable>
+                        <el-table-column prop="planned_date" label="预计发布日期" width="150">
                           <template #default="{ row: ir }">{{ fmtDate(ir.planned_date) }}</template>
                         </el-table-column>
                         <el-table-column label="合入需求" width="100" align="center">
@@ -88,8 +89,13 @@
                             <el-button link type="primary" size="small" @click.stop="openMerge(ir)">查看</el-button>
                           </template>
                         </el-table-column>
-                        <el-table-column v-if="isAdmin" label="操作" width="140" fixed="right">
-                          <template #default="{ row: ir }">
+                        <el-table-column v-if="isAdmin" label="操作" width="200" fixed="right">
+                          <template #default="{ row: ir, $index: i }">
+                            <el-button size="small" title="上移" :icon="Top" :disabled="i === 0"
+                              @click.stop="moveIter(rv, i, -1)" />
+                            <el-button size="small" title="下移" :icon="Bottom"
+                              :disabled="i === (rv.iteration_versions?.length || 0) - 1"
+                              @click.stop="moveIter(rv, i, 1)" />
                             <el-button size="small" @click.stop="openEditIter(ir, rv)">编辑</el-button>
                             <el-button size="small" type="danger" @click.stop="onDeleteIter(ir)">删除</el-button>
                           </template>
@@ -99,14 +105,13 @@
                   </template>
                 </el-table-column>
 
-                <el-table-column prop="version_no" label="版本号" width="140" sortable
-                  :sort-method="(a, b) => naturalCompare(a.version_no, b.version_no)" />
+                <el-table-column prop="version_no" label="版本号" width="140" />
                 <el-table-column prop="title" label="标题" min-width="160" show-overflow-tooltip />
                 <el-table-column prop="description" label="版本说明" min-width="180" show-overflow-tooltip />
-                <el-table-column prop="planned_date" label="计划发布" width="120" sortable>
+                <el-table-column prop="planned_date" label="计划发布" width="120">
                   <template #default="{ row: rv }">{{ fmtDate(rv.planned_date) || '—' }}</template>
                 </el-table-column>
-                <el-table-column prop="actual_release_date" label="实际发布" width="120" sortable>
+                <el-table-column prop="actual_release_date" label="实际发布" width="120">
                   <template #default="{ row: rv }">
                     <el-tag v-if="rv.actual_release_date" type="success" size="small">
                       {{ fmtDate(rv.actual_release_date) }}
@@ -119,8 +124,13 @@
                     <el-tag type="info" size="small">{{ rv.iteration_versions?.length || 0 }}</el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column v-if="isAdmin" label="操作" width="150" fixed="right">
-                  <template #default="{ row: rv }">
+                <el-table-column v-if="isAdmin" label="操作" width="210" fixed="right">
+                  <template #default="{ row: rv, $index: i }">
+                    <el-button size="small" title="上移" :icon="Top" :disabled="i === 0"
+                      @click.stop="moveRelease(row, i, -1)" />
+                    <el-button size="small" title="下移" :icon="Bottom"
+                      :disabled="i === (row.release_versions?.length || 0) - 1"
+                      @click.stop="moveRelease(row, i, 1)" />
                     <el-button size="small" @click.stop="openEditRelease(rv, row)">编辑</el-button>
                     <el-button size="small" type="danger" @click.stop="onDeleteRelease(rv)">删除</el-button>
                   </template>
@@ -130,8 +140,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="version_no" label="大版本号" width="130" sortable
-          :sort-method="(a, b) => naturalCompare(a.version_no, b.version_no)" />
+        <el-table-column prop="version_no" label="大版本号" width="130" />
         <el-table-column label="代码线" width="180">
           <template #default="{ row }">
             <el-tag v-if="row.line === 'master'" type="success" size="small" effect="dark">主干</el-tag>
@@ -144,8 +153,7 @@
             </template>
           </template>
         </el-table-column>
-        <el-table-column prop="title" label="标题" min-width="140" sortable
-          :sort-method="(a, b) => naturalCompare(a.title, b.title)" />
+        <el-table-column prop="title" label="标题" min-width="140" />
         <el-table-column prop="description" label="版本说明" min-width="160" show-overflow-tooltip />
         <el-table-column label="版本范围" width="210">
           <template #default="{ row }">
@@ -165,8 +173,11 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column v-if="isAdmin" label="操作" width="220" fixed="right">
-          <template #default="{ row }">
+        <el-table-column v-if="isAdmin" label="操作" width="320" fixed="right">
+          <template #default="{ row, $index: i }">
+            <el-button size="small" title="上移" :icon="Top" :disabled="i === 0" @click="moveMajor(i, -1)" />
+            <el-button size="small" title="下移" :icon="Bottom" :disabled="i === majorVersions.length - 1"
+              @click="moveMajor(i, 1)" />
             <el-button size="small" @click="openEditMajor(row)">编辑</el-button>
             <el-button
               v-if="row.line !== 'master'"
@@ -225,8 +236,14 @@
       @closed="editingRelease = null"
     >
       <el-form :model="releaseForm" label-width="110px">
-        <el-form-item label="所属大版本">
-          <el-input :model-value="currentMajor?.version_no || ''" disabled />
+        <el-form-item label="所属大版本" required>
+          <el-select v-model="releaseForm.major_version_id" filterable style="width: 100%">
+            <el-option v-for="m in majorVersions" :key="m.id" :value="m.id"
+              :label="m.title ? `${m.version_no} · ${m.title}` : m.version_no" />
+          </el-select>
+          <div v-if="editingRelease" class="form-tip">
+            改这里就是把这个版本整个挪到别的大版本下，它名下的迭代版本会跟着走，排在末尾。
+          </div>
         </el-form-item>
         <el-form-item label="版本号" required>
           <el-input v-model="releaseForm.version_no" placeholder="例如 C10SPC101" />
@@ -268,8 +285,16 @@
       @closed="editingIter = null"
     >
       <el-form :model="iterForm" label-width="110px">
-        <el-form-item label="所属版本">
-          <el-input :model-value="currentRelease?.version_no || ''" disabled />
+        <el-form-item label="所属版本" required>
+          <el-select v-model="iterForm.release_version_id" filterable style="width: 100%">
+            <el-option-group v-for="g in releaseOptions" :key="g.majorId" :label="g.majorLabel">
+              <el-option v-for="rv in g.items" :key="rv.id" :value="rv.id"
+                :label="rv.title ? `${rv.version_no} · ${rv.title}` : rv.version_no" />
+            </el-option-group>
+          </el-select>
+          <div v-if="editingIter" class="form-tip">
+            改这里就是把这个迭代版本挪到别的版本下，会排在目标版本的末尾。
+          </div>
         </el-form-item>
         <el-form-item label="版本号" required>
           <el-input v-model="iterForm.version_no" placeholder="例如 C10SPC101B001" />
@@ -293,7 +318,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { Bottom, Plus, Refresh, Top } from '@element-plus/icons-vue'
 import { majorVersionApi, roadmapApi } from '../api'
 import { fmtDate, naturalCompare } from '../utils/format'
 import { auth } from '../store/auth'
@@ -336,6 +361,48 @@ function buildCount(major) {
     (n, rv) => n + (rv.iteration_versions?.length || 0), 0)
 }
 
+// 「所属版本」下拉：当前项目下所有版本，按大版本分组，便于把放错地方的迭代版本挪走
+const releaseOptions = computed(() => majorVersions.value.map((m) => ({
+  majorId: m.id,
+  majorLabel: m.title ? `${m.version_no} · ${m.title}` : m.version_no,
+  items: m.release_versions || [],
+})).filter((g) => g.items.length))
+
+// ── 手工排序 ────────────────────────────────────────────────────────────────
+// 整体提交新顺序而不是逐个改 sort_order：后者中途失败就留下一个「排到一半」的顺序，
+// 而顺序错了不会报错，只是看着不对，没人会当 bug 报
+function movedIds(list, index, delta) {
+  const ids = (list || []).map((x) => x.id)
+  const to = index + delta
+  if (index < 0 || to < 0 || to >= ids.length) return null
+  ids.splice(to, 0, ids.splice(index, 1)[0])
+  return ids
+}
+
+async function applyOrder(fn, parentId, ids) {
+  if (!ids) return
+  try {
+    await fn(parentId, ids)
+    await load()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '排序保存失败')
+    await load()          // 失败也重载：别让页面停在一个没落库的顺序上
+  }
+}
+
+function moveMajor(index, delta) {
+  applyOrder(majorVersionApi.reorderMajors, Number(activeTab.value),
+             movedIds(majorVersions.value, index, delta))
+}
+function moveRelease(major, index, delta) {
+  applyOrder(majorVersionApi.reorderReleases, major.id,
+             movedIds(major.release_versions, index, delta))
+}
+function moveIter(release, index, delta) {
+  applyOrder(majorVersionApi.reorderIterVersions, release.id,
+             movedIds(release.iteration_versions, index, delta))
+}
+
 function defaultMajorForm() {
   return { version_no: '', title: '', description: '', range_start: null, range_end: null, branch_name: '' }
 }
@@ -343,10 +410,11 @@ function defaultMajorForm() {
 // 把别人排好的顺序悄悄改掉
 function defaultReleaseForm() {
   return { version_no: '', title: '', description: '', planned_date: null,
-           actual_release_date: null, sort_order: 0 }
+           actual_release_date: null, sort_order: 0, major_version_id: null }
 }
 function defaultIterForm() {
-  return { version_no: '', title: '', planned_date: null, sort_order: 0 }
+  return { version_no: '', title: '', planned_date: null, sort_order: 0,
+           release_version_id: null }
 }
 
 // ── 版本号建议 ────────────────────────────────────────────────────────────
@@ -482,6 +550,7 @@ function openCreateRelease(majorRow) {
   currentMajor.value = majorRow
   Object.assign(releaseForm, defaultReleaseForm(), {
     version_no: suggestReleaseNo(majorRow),
+    major_version_id: majorRow.id,
     sort_order: majorRow.release_versions?.length || 0,
   })
   releaseDialogVisible.value = true
@@ -496,7 +565,10 @@ function openEditRelease(rv, majorRow) {
     description: rv.description,
     planned_date: rv.planned_date,
     actual_release_date: rv.actual_release_date,
-    sort_order: rv.sort_order ?? 0,
+    major_version_id: rv.major_version_id ?? majorRow.id,
+    // 编辑时不带 sort_order：改挂大版本后由服务端排到新父级末尾，
+    // 把旧序号原样传回去会让它插进目标那一堆的中间，看着像随机落点
+    sort_order: undefined,
   })
   releaseDialogVisible.value = true
 }
@@ -506,14 +578,19 @@ async function onSubmitRelease() {
     ElMessage.warning('版本号不能为空')
     return
   }
+  if (!releaseForm.major_version_id) {
+    ElMessage.warning('请选择所属大版本')
+    return
+  }
   try {
     if (editingRelease.value) {
-      await majorVersionApi.updateRelease(editingRelease.value.id, releaseForm)
-      ElMessage.success('已更新')
+      const moved = releaseForm.major_version_id !== editingRelease.value.major_version_id
+      const { sort_order, ...rest } = releaseForm       // eslint-disable-line no-unused-vars
+      await majorVersionApi.updateRelease(editingRelease.value.id, rest)
+      ElMessage.success(moved ? '已挪到新的大版本下' : '已更新')
     } else {
       await majorVersionApi.createRelease({
         ...releaseForm,
-        major_version_id: currentMajor.value.id,
         sort_order: releaseForm.sort_order ?? 0,
       })
       ElMessage.success('已创建')
@@ -548,6 +625,7 @@ function openCreateIter(releaseRow) {
   currentRelease.value = releaseRow
   Object.assign(iterForm, defaultIterForm(), {
     version_no: suggestIterNo(releaseRow),
+    release_version_id: releaseRow.id,
     sort_order: releaseRow.iteration_versions?.length || 0,
   })
   iterDialogVisible.value = true
@@ -560,7 +638,8 @@ function openEditIter(row, releaseRow) {
     version_no: row.version_no,
     title: row.title,
     planned_date: row.planned_date,
-    sort_order: row.sort_order ?? 0,
+    release_version_id: row.release_version_id ?? releaseRow.id,
+    sort_order: undefined,      // 同上：改挂版本后由服务端排到末尾
   })
   iterDialogVisible.value = true
 }
@@ -570,14 +649,19 @@ async function onSubmitIter() {
     ElMessage.warning('版本号不能为空')
     return
   }
+  if (!iterForm.release_version_id) {
+    ElMessage.warning('请选择所属版本')
+    return
+  }
   try {
     if (editingIter.value) {
-      await majorVersionApi.updateIterVersion(editingIter.value.id, iterForm)
-      ElMessage.success('已更新')
+      const moved = iterForm.release_version_id !== editingIter.value.release_version_id
+      const { sort_order, ...rest } = iterForm          // eslint-disable-line no-unused-vars
+      await majorVersionApi.updateIterVersion(editingIter.value.id, rest)
+      ElMessage.success(moved ? '已挪到新的版本下' : '已更新')
     } else {
       await majorVersionApi.createIterVersion({
         ...iterForm,
-        release_version_id: currentRelease.value.id,
         sort_order: iterForm.sort_order ?? 0,
       })
       ElMessage.success('已创建')

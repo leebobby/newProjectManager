@@ -546,6 +546,7 @@ class AnnualIterationOut(AnnualIterationBase):
 
 # ===== IterationRequirement =====
 class IterationRequirementBase(BaseModel):
+    project_id: Optional[int] = None
     seq: Optional[int] = 0
     req_no: Optional[str] = ""
     req_url: Optional[str] = ""
@@ -590,6 +591,7 @@ class IterationRequirementCreate(IterationRequirementBase):
 
 class IterationRequirementUpdate(BaseModel):
     version: int
+    project_id: Optional[int] = None
     seq: Optional[int] = None
     req_no: Optional[str] = None
     req_url: Optional[str] = None
@@ -627,6 +629,7 @@ class IterationRequirementUpdate(BaseModel):
 class IterationRequirementOut(IterationRequirementBase):
     id: int
     iteration_id: int
+    project_name: Optional[str] = None    # 由后端解析回填
     version: int
 
     model_config = ConfigDict(from_attributes=True)
@@ -634,6 +637,7 @@ class IterationRequirementOut(IterationRequirementBase):
 
 # ===== IterationProductRequirement =====
 class IterationProductRequirementBase(BaseModel):
+    project_id: Optional[int] = None
     seq: Optional[int] = 0
     req_no: Optional[str] = ""
     req_url: Optional[str] = ""
@@ -683,6 +687,7 @@ class IterationProductRequirementCreate(IterationProductRequirementBase):
 
 class IterationProductRequirementUpdate(BaseModel):
     version: int
+    project_id: Optional[int] = None
     seq: Optional[int] = None
     req_no: Optional[str] = None
     req_url: Optional[str] = None
@@ -724,6 +729,7 @@ class IterationProductRequirementUpdate(BaseModel):
 class IterationProductRequirementOut(IterationProductRequirementBase):
     id: int
     iteration_id: int
+    project_name: Optional[str] = None    # 由后端解析回填
     version: int
 
     model_config = ConfigDict(from_attributes=True)
@@ -917,6 +923,17 @@ class MajorVersionUpdate(BaseModel):
     sort_order: Optional[int] = None
     # line / branched_at 不在这里：主干只能通过 POST /major-versions/{id}/set-master 切换，
     # 那里才会把原主干降级。开放成普通字段就会出现两个主干。
+
+
+class VersionReorderIn(BaseModel):
+    """按 ids 给出的先后重排同一父级下的兄弟节点。
+
+    只带顺序，不带别的字段——排序是一次整体操作，逐个 PUT sort_order 会在中途被别人
+    的读打断，出现「排到一半」的顺序。parent_id 的含义随层级而变：
+    大版本＝里程碑项目 id（可空＝未挂项目的那批），版本＝大版本 id，迭代版本＝版本 id。
+    """
+    parent_id: Optional[int] = None
+    ids: List[int] = []
 
 
 class MajorVersionOut(MajorVersionBase):
@@ -1420,11 +1437,12 @@ class DomainRiskItem(BaseModel):
 
 
 class DomainReqSummary(BaseModel):
-    total: int = 0
+    total: int = 0                # 已剔除「已变更」后的条数，下面几档都基于它
     done: int = 0
     in_progress: int = 0
     not_started: int = 0
     delayed: int = 0
+    changed: int = 0              # 因标了「已变更」而整行排除的条数
     by_priority: dict = {}        # {"P0": n, "P1": n, ...}
 
 
@@ -1459,6 +1477,18 @@ class DomainIterationOpt(BaseModel):
     in_progress: bool = False
 
 
+class DomainVersionOpt(BaseModel):
+    """领域总览顶部「按版本」标签的一个可选项（= 一个版本，C10SPC101 这一层）。
+
+    只列出**当前挂着领域需求**的版本，req_count 就是挂着多少条；
+    全量列版本的话一排标签里大半点进去是空的。
+    """
+    id: int                        # release_versions.id
+    version_no: str = ""
+    major_version_no: str = ""
+    req_count: int = 0
+
+
 class DomainContentUpdate(BaseModel):
     recent_work: Optional[str] = None
     risks: Optional[List[DomainRiskItem]] = None
@@ -1485,6 +1515,8 @@ class DomainListOut(BaseModel):
     selected_year: Optional[int] = None     # 选中的月份（未选时为空＝进行中口径）
     selected_month: Optional[int] = None
     iterations: List[DomainIterationOpt] = []   # 可选月份列表（年度迭代）
+    versions: List[DomainVersionOpt] = []       # 可选版本列表（只含挂着需求的版本）
+    selected_release_version_id: Optional[int] = None   # 非空＝当前是「按版本」口径，此时 year/month 不生效
     projects: List[DomainProjectOpt] = []       # 可选问题单项目（来自问题单管理的快照）
     selected_project: Optional[str] = None      # 当前生效的问题单项目
     rows: List[DomainRowOut] = []

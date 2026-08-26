@@ -1,6 +1,23 @@
 <template>
   <div>
     <el-card shadow="never">
+      <div class="project-bar">
+        <span class="project-label">度量项目</span>
+        <el-select
+          v-model="projectId"
+          placeholder="全部项目"
+          clearable
+          filterable
+          style="width: 220px"
+          @change="onProjectChange"
+        >
+          <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+        </el-select>
+        <span class="muted">
+          项目挂在需求行上（同一个迭代里排着多个项目的需求）；调试版本看板按客户统计，不受此处影响
+        </span>
+      </div>
+
       <el-tabs v-model="active">
         <!-- 版本完成率 -->
         <el-tab-pane label="版本完成率" name="version">
@@ -22,6 +39,12 @@
             </el-select>
             <el-button :icon="Refresh" :disabled="!selectedVersionId" @click="loadVersion">刷新</el-button>
           </div>
+
+          <ExclusionNote
+            :unassigned="versionMetric?.unassigned || 0"
+            :changed="versionMetric?.changed || 0"
+            scope="该版本下"
+          />
 
           <div v-if="versionMetric" class="metric-summary">
             <div class="stat">
@@ -106,6 +129,12 @@
             <el-button :icon="Refresh" :disabled="!selectedIterationId" @click="loadIteration">刷新</el-button>
           </div>
 
+          <ExclusionNote
+            :unassigned="iterMetric?.unassigned || 0"
+            :changed="iterMetric?.changed || 0"
+            scope="该迭代里"
+          />
+
           <div v-if="iterMetric" class="metric-summary">
             <div class="stat"><div class="label">领域需求</div><div class="value">{{ iterMetric.total_domain }}</div></div>
             <div class="stat"><div class="label">产品需求</div><div class="value">{{ iterMetric.total_product }}</div></div>
@@ -155,9 +184,15 @@
                   </span>
                 </template>
               </el-table-column>
+              <el-table-column label="已变更" width="90" align="right">
+                <template #default="{ row }">
+                  <span :class="row.changed ? '' : 'muted'">{{ row.changed || '—' }}</span>
+                </template>
+              </el-table-column>
             </el-table>
             <div class="quality-tip">
               密度 = 数量 ÷ (代码量 / 1000)；代码量为空的迭代不计算密度。数据来源于领域需求页填报的版本质量统计。
+              标了「已变更」的需求整行不计入（分子分母一起剔），「已变更」列是本年度各迭代被剔掉的条数。
             </div>
           </el-card>
         </el-tab-pane>
@@ -184,6 +219,12 @@
             </el-select>
             <el-button :icon="Refresh" :disabled="!selectedGroupId" @click="loadGroup">刷新</el-button>
           </div>
+
+          <ExclusionNote
+            :unassigned="groupMetric?.unassigned || 0"
+            :changed="groupMetric?.changed || 0"
+            scope="该组名下"
+          />
 
           <div v-if="groupMetric" class="metric-summary">
             <div class="stat"><div class="label">未完成数</div><div class="value primary">{{ groupMetric.total_open }}</div></div>
@@ -251,14 +292,74 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { ElAlert, ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { annualIterationApi, debugVersionApi, majorVersionApi, metricsApi, resourceGroupApi } from '../api'
+import {
+  annualIterationApi, debugVersionApi, majorVersionApi, metricsApi, resourceGroupApi, roadmapApi,
+} from '../api'
 
 const active = ref('version')
 
 const pct = (v) => `${Math.round((v || 0) * 100)}%`
+
+// 有两种行会被排除在统计之外：标了「已变更」的（本轮不做了，后端 _split_changed）、
+// 按项目筛时没填项目的（后端 _split_by_project）。这条提示是那两个口径的配套：
+// 数字偏小是有原因的，让人看得见、知道去哪补，而不是对着一个说不清的数发愣。
+// 两个数都为 0 时整条不渲染。
+const ExclusionNote = defineComponent({
+  props: {
+    unassigned: { type: Number, default: 0 },
+    changed: { type: Number, default: 0 },
+    scope: { type: String, default: '' },
+  },
+  setup(props) {
+    return () => {
+      const lines = []
+      if (props.changed) {
+        lines.push(`${props.scope}有 ${props.changed} 条需求标了「已变更」，已整行排除`)
+      }
+      if (props.unassigned) {
+        lines.push(`${props.scope}还有 ${props.unassigned} 条需求没填项目，未计入本次统计`)
+      }
+      if (!lines.length) return null
+      return h(ElAlert, {
+        type: 'warning',
+        showIcon: true,
+        closable: false,
+        style: 'margin-bottom: 12px',
+        title: lines.join('；'),
+        description: props.unassigned
+          ? '去「迭代管理 → 对应迭代」的需求列表里补选项目后，数字才会完整。'
+          : '已变更的需求在迭代管理里是置灰的，本就不参与度量。',
+      })
+    }
+  },
+})
+
+// ── 项目维度（作用于版本 / 迭代 / 组级三个 tab）──
+const projects = ref([])
+const projectId = ref(null)
+
+async function loadProjects() {
+  try {
+    const { data } = await roadmapApi.listProjects()
+    projects.value = data.map((p) => ({ id: p.id, name: p.name }))
+  } catch (e) {
+    /* 下拉为空不阻塞，等同于「全部项目」 */
+  }
+}
+
+// 项目参数：三个 tab 共用一份，避免各自拼一遍口径漂移
+const projectParams = () => (projectId.value ? { project_id: projectId.value } : {})
+
+function onProjectChange() {
+  // 换项目后已经展示着的数字全都过期了，一次性重算，别让人以为某个 tab 没跟着变
+  loadVersion()
+  loadIteration()
+  loadQuality()
+  loadGroup()
+}
 
 // 版本
 const versions = ref([])
@@ -282,7 +383,7 @@ async function loadVersion() {
   if (!selectedVersionId.value) return
   versionLoading.value = true
   try {
-    const { data } = await metricsApi.version(selectedVersionId.value)
+    const { data } = await metricsApi.version(selectedVersionId.value, projectParams())
     versionMetric.value = data
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
@@ -315,7 +416,7 @@ async function loadQuality() {
   if (!selectedYear.value) return
   qualityLoading.value = true
   try {
-    const { data } = await metricsApi.iterationQuality(selectedYear.value)
+    const { data } = await metricsApi.iterationQuality(selectedYear.value, projectParams())
     qualityRows.value = data
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载迭代质量失败')
@@ -347,7 +448,7 @@ async function onYearChange() {
 async function loadIteration() {
   if (!selectedIterationId.value) return
   try {
-    const { data } = await metricsApi.iteration(selectedIterationId.value)
+    const { data } = await metricsApi.iteration(selectedIterationId.value, projectParams())
     iterMetric.value = data
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
@@ -374,7 +475,8 @@ async function loadGroup() {
   if (!selectedGroupId.value) return
   groupLoading.value = true
   try {
-    const params = groupYear.value ? { year: groupYear.value } : {}
+    const params = { ...projectParams() }
+    if (groupYear.value) params.year = groupYear.value
     const { data } = await metricsApi.group(selectedGroupId.value, params)
     groupMetric.value = data
   } catch (e) {
@@ -402,12 +504,25 @@ async function loadDebug() {
 }
 
 onMounted(async () => {
+  // 项目下拉先到位：loadYears() 会顺带拉当月迭代的数字，晚了就得再算一遍
+  await loadProjects()
   await Promise.all([loadVersionList(), loadYears(), loadGroupList(), loadDebug()])
 })
 </script>
 
 <style scoped>
 .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.project-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid #ebeef5;
+}
+.project-label { font-weight: 600; color: #303133; }
+.project-bar .muted { font-size: 12px; }
 .metric-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

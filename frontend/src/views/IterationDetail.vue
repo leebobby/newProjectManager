@@ -19,6 +19,8 @@
             v-if="activeTab === 'product' || productMounted"
             :iteration-id="iterationId"
             :version-groups="versionGroups"
+            :projects="projects"
+            v-model:project-scope="projectScope"
             @vue:mounted="productMounted = true"
           />
         </el-tab-pane>
@@ -27,6 +29,8 @@
             v-if="activeTab === 'domain' || domainMounted"
             :iteration-id="iterationId"
             :version-groups="versionGroups"
+            :projects="projects"
+            v-model:project-scope="projectScope"
             @vue:mounted="domainMounted = true"
           />
         </el-tab-pane>
@@ -40,7 +44,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
-import { annualIterationApi, downloadBlob, majorVersionApi } from '../api'
+import { annualIterationApi, downloadBlob, majorVersionApi, roadmapApi } from '../api'
 import { auth } from '../store/auth'
 import DomainRequirementTab from '../components/iteration/DomainRequirementTab.vue'
 import ProductRequirementTab from '../components/iteration/ProductRequirementTab.vue'
@@ -52,7 +56,11 @@ const isAdmin = auth.isAdmin
 const iterationId = Number(route.params.id)
 const iteration = ref(null)
 const versionGroups = ref([])
+const projects = ref([])
 const activeTab = ref('product')
+// 项目标签放在这里而不是各自的 Tab 里：产品/领域两张表共用一个项目选择，
+// 来回切标签页时筛选跟着走，否则会以为"切回来筛选自己变了"。
+const projectScope = ref('all')
 const productMounted = ref(false)
 const domainMounted = ref(false)
 
@@ -84,6 +92,16 @@ async function loadVersionGroups() {
   }
 }
 
+async function loadProjects() {
+  // 迭代本身跨项目，项目挂在需求行上，两个 tab 共用这一份下拉。
+  try {
+    const { data } = await roadmapApi.listProjects()
+    projects.value = data.map((p) => ({ id: p.id, name: p.name }))
+  } catch (e) {
+    /* 下拉为空不阻塞 */
+  }
+}
+
 function goBack() {
   router.push('/iterations')
 }
@@ -102,6 +120,7 @@ async function onExport() {
 onMounted(() => {
   loadIteration()
   loadVersionGroups()
+  loadProjects()
 })
 </script>
 

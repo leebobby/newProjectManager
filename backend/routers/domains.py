@@ -17,14 +17,17 @@ import json
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func
+from sqlalchemy import false as sa_false, func
 from sqlalchemy.orm import Session
 
+import enums
 import models
 import schemas
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
+from routers import _req_scope
+from routers._lookups import project_name_map
 from routers.config import _load as _load_config
 
 router = APIRouter(prefix="/api/domains", tags=["domains"])
@@ -67,6 +70,106 @@ def _scope_iterations(db: Session, year: Optional[int], month: Optional[int]) ->
     return _in_progress_iterations(db)
 
 
+class _ReqScope:
+    """需求口径：**要么按迭代、要么按版本，二选一**。
+
+    两者不叠加是有意的：版本是跨迭代的（C10SPC101 上的需求分散在好几个月里），
+    叠上「当前迭代」会得到一个既不是这个版本、也不是这个迭代的数，
+    页面上看着像"这个版本怎么只有 3 条"，而没人会想到是被月份截了一刀。
+    生效的是哪一档由 `label` 明写在页头，别让人猜。
+    """
+
+    def __init__(self, iteration_ids: Optional[List[int]] = None,
+                 release_version: Optional[models.ReleaseVersion] = None,
+                 label: str = ""):
+        self.iteration_ids = iteration_ids or []
+        self.release_version = release_version
+        self.label = label
+
+    @property
+    def by_version(self) -> bool:
+        return self.release_version is not None
+
+
+def _resolve_req_scope(db: Session, year: Optional[int], month: Optional[int],
+                       release_version_id: Optional[int]) -> _ReqScope:
+    if release_version_id:
+        rv = (
+            db.query(models.ReleaseVersion)
+            .filter(models.ReleaseVersion.id == release_version_id)
+            .first()
+        )
+        if not rv:
+            raise HTTPException(404, "版本不存在")
+        mv = rv.major_version
+        head = f"{mv.version_no} · " if mv and mv.version_no else ""
+        return _ReqScope(release_version=rv, label=f"版本 {head}{rv.version_no or ''}")
+    its = _scope_iterations(db, year, month)
+    return _ReqScope(iteration_ids=[it.id for it in its], label=_iteration_label(its))
+
+
+def _req_query(db: Session, scope: _ReqScope):
+    """按当前口径筛出领域需求。口径落空时返回一个必然为空的查询，而不是 None——
+    调用方少一次判空，也不会出现"忘了判空就把全表算进去"。"""
+    q = db.query(models.IterationRequirement)
+    if scope.by_version:
+        return q.filter(_req_scope.version_clause(models.IterationRequirement,
+                                                  scope.release_version))
+    if not scope.iteration_ids:
+        return q.filter(sa_false())
+    return q.filter(models.IterationRequirement.iteration_id.in_(scope.iteration_ids))
+
+
+def _version_options(db: Session) -> List[schemas.DomainVersionOpt]:
+    """可选版本＝**当前确实挂着领域需求**的那些版本，带上条数。
+
+    不把版本表整个列出来：三层版本里光构建就上百个，铺成一排标签没法看，
+    而且点进去大半是空的。条数在这里一次算完（一趟扫描），
+    不要改成每个版本各查一次——版本一多就是几十条 SQL。
+    """
+    rvs = (
+        db.query(models.ReleaseVersion)
+        .join(models.MajorVersion, models.ReleaseVersion.major_version_id == models.MajorVersion.id)
+        .order_by(models.MajorVersion.sort_order, models.MajorVersion.id,
+                  models.ReleaseVersion.sort_order, models.ReleaseVersion.id)
+        .all()
+    )
+    if not rvs:
+        return []
+    by_iv: Dict[int, int] = {}      # 构建 id → 版本 id
+    by_no: Dict[str, int] = {}      # 版本号 / 构建号 → 版本 id
+    for rv in rvs:
+        if rv.version_no:
+            by_no.setdefault(rv.version_no, rv.id)
+        for iv in rv.iteration_versions:
+            by_iv[iv.id] = rv.id
+            if iv.version_no:
+                by_no.setdefault(iv.version_no, rv.id)
+
+    counts: Dict[int, int] = {}
+    rows = db.query(models.IterationRequirement.target_version_id,
+                    models.IterationRequirement.planned_version).all()
+    for target_id, planned in rows:
+        # 与 _req_scope.version_clause 同款：FK 优先，FK 为空才看字符串
+        rid = by_iv.get(target_id) if target_id else by_no.get((planned or "").strip())
+        if rid:
+            counts[rid] = counts.get(rid, 0) + 1
+
+    out: List[schemas.DomainVersionOpt] = []
+    for rv in rvs:
+        n = counts.get(rv.id, 0)
+        if not n:
+            continue
+        mv = rv.major_version
+        out.append(schemas.DomainVersionOpt(
+            id=rv.id,
+            version_no=rv.version_no or "",
+            major_version_no=(mv.version_no if mv else "") or "",
+            req_count=n,
+        ))
+    return out
+
+
 def _available_iterations(db: Session) -> List[schemas.DomainIterationOpt]:
     its = (
         db.query(models.AnnualIteration)
@@ -84,19 +187,19 @@ def _available_iterations(db: Session) -> List[schemas.DomainIterationOpt]:
 
 
 # ─── helpers：需求聚合 ─────────────────────────────────────────────────────────
-def _req_summary(db: Session, group_id: int, iteration_ids: List[int]) -> schemas.DomainReqSummary:
+def _req_summary(db: Session, group_id: int, scope: "_ReqScope") -> schemas.DomainReqSummary:
     s = schemas.DomainReqSummary(by_priority={})
-    if not iteration_ids:
-        return s
     rows = (
-        db.query(models.IterationRequirement)
-        .filter(
-            models.IterationRequirement.group_id == group_id,
-            models.IterationRequirement.iteration_id.in_(iteration_ids),
-        )
+        _req_query(db, scope)
+        .filter(models.IterationRequirement.group_id == group_id)
         .all()
     )
     for r in rows:
+        # 「已变更」＝本轮不做了，整行不进统计，与度量看板同口径
+        # （判定收口在 enums.is_changed_row；两处各写一份迟早分叉）。
+        if enums.is_changed_row(r, _PROG_FIELDS):
+            s.changed += 1
+            continue
         s.total += 1
         vals = [getattr(r, f) or "未开始" for f in _PROG_FIELDS]
         delayed = any(v == "已延期" for v in vals)
@@ -326,6 +429,8 @@ def _leader_name(db: Session, g: models.ResourceGroup) -> Optional[str]:
 def list_domains(
     year: Optional[int] = Query(None, description="按年度迭代月份取需求口径；与 month 同时给"),
     month: Optional[int] = Query(None, ge=1, le=12),
+    release_version_id: Optional[int] = Query(
+        None, description="按版本取需求口径（跨迭代）；给了它就**忽略 year/month**"),
     include_hidden: bool = Query(False, description="是否一并返回已隐藏（不管理）的领域"),
     project: Optional[str] = Query(None, description="问题单项目/版本；省略取第一个有快照的项目"),
     db: Session = Depends(get_db),
@@ -339,8 +444,7 @@ def list_domains(
     hidden_ids = {h.group_id for h in db.query(models.DomainHidden).all()}
     if not include_hidden:
         groups = [g for g in groups if g.id not in hidden_ids]
-    its = _scope_iterations(db, year, month)
-    iteration_ids = [it.id for it in its]
+    scope = _resolve_req_scope(db, year, month, release_version_id)
     src = _resolve_issue_source(db, project)
     targets = _targets_map(db, src.project)
 
@@ -358,7 +462,7 @@ def list_domains(
             dept_name=_dept_name(db, g),
             leader_name=_leader_name(db, g),
             member_count=member_count,
-            req_summary=_req_summary(db, g.id, iteration_ids),
+            req_summary=_req_summary(db, g.id, scope),
             issue_summary=issue_summary,
             recent_work=(content.recent_work if content else "") or "",
             risks=_parse_risks(content.risks_json if content else "[]"),
@@ -366,9 +470,12 @@ def list_domains(
             hidden=(g.id in hidden_ids),
         ))
     return schemas.DomainListOut(
-        iteration_label=_iteration_label(its),
-        selected_year=year, selected_month=month,
+        iteration_label=scope.label,
+        selected_year=None if scope.by_version else year,
+        selected_month=None if scope.by_version else month,
         iterations=_available_iterations(db),
+        versions=_version_options(db),
+        selected_release_version_id=(scope.release_version.id if scope.by_version else None),
         projects=_issue_projects(db),
         selected_project=src.project,
         rows=rows,
@@ -389,23 +496,30 @@ def list_group_requirements(
     group_id: int,
     year: Optional[int] = Query(None),
     month: Optional[int] = Query(None, ge=1, le=12),
+    release_version_id: Optional[int] = Query(None, description="与总览同款：给了它就按版本、忽略 year/month"),
     db: Session = Depends(get_db),
 ):
-    """下钻：该领域在选定月份（或进行中迭代）下的需求明细。"""
+    """下钻：该领域在当前口径（选定月份 / 进行中迭代 / 选定版本）下的需求明细。
+
+    口径必须与总览用同一个 `_resolve_req_scope`——两边各筛一次的表现是
+    「格子里写 8 条、点进去 5 条」，看着像丢数据。
+    """
     _require_pl_group(db, group_id)
-    iteration_ids = [it.id for it in _scope_iterations(db, year, month)]
-    if not iteration_ids:
-        return []
-    return (
-        db.query(models.IterationRequirement)
-        .filter(
-            models.IterationRequirement.group_id == group_id,
-            models.IterationRequirement.iteration_id.in_(iteration_ids),
-        )
+    scope = _resolve_req_scope(db, year, month, release_version_id)
+    pmap = project_name_map(db)
+    items = (
+        _req_query(db, scope)
+        .filter(models.IterationRequirement.group_id == group_id)
         .order_by(models.IterationRequirement.iteration_id.desc(),
                   models.IterationRequirement.seq.asc())
         .all()
     )
+    out = []
+    for it in items:
+        o = schemas.IterationRequirementOut.model_validate(it)
+        o.project_name = pmap.get(it.project_id)
+        out.append(o)
+    return out
 
 
 @router.get("/{group_id}/issues")

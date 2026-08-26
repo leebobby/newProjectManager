@@ -1,5 +1,17 @@
 <template>
   <div>
+    <!-- 项目分标签：项目挂在需求行上（迭代本身跨项目），这里只是**前端切片**，
+         数据一次拉全、切标签不重新请求。标签上的条数按当前其它筛选后的结果算，
+         点进去看到多少条就写多少条，否则「标签写 12、点进去 3 条」没人说得清。 -->
+    <el-tabs v-model="projectTab" type="card" class="project-tabs">
+      <el-tab-pane
+        v-for="t in projectTabs"
+        :key="t.name"
+        :name="t.name"
+        :label="`${t.label} (${t.count})`"
+      />
+    </el-tabs>
+
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openCreate">新增产品需求</el-button>
       <el-button :icon="Upload" type="warning" @click="openImport">批量导入</el-button>
@@ -20,10 +32,21 @@
           :label="`${u.full_name || u.username}${u.emp_no ? ' (' + u.emp_no + ')' : ''}`"
         />
       </el-select>
-      <span class="tip">共 {{ filteredList.length }}/{{ list.length }} 条；特性 FO/SE/TFO 任一命中即匹配</span>
+      <el-checkbox v-model="hideChanged" size="small">隐藏已变更</el-checkbox>
+      <span class="tip">
+        共 {{ filteredList.length }}/{{ list.length }} 条<template v-if="changedCount">，
+        其中 <b>{{ changedCount }}</b> 条已变更（置灰，不计入任何统计看板）</template>；特性 FO/SE/TFO 任一命中即匹配
+      </span>
     </div>
 
-    <el-table :data="filteredList" v-loading="loading" border stripe style="width: 100%">
+    <el-table
+      :data="filteredList"
+      v-loading="loading"
+      :row-class-name="rowClass"
+      border
+      stripe
+      style="width: 100%"
+    >
       <el-table-column prop="seq" label="序号" width="70" align="center" fixed="left" />
       <el-table-column label="需求编号" width="160" fixed="left">
         <template #default="{ row }">
@@ -56,8 +79,30 @@
             @keyup.esc="cancel(row, 'title')"
           />
           <div v-else class="editable-cell" @dblclick="startEdit(row, 'title')">
+            <el-tag
+              v-if="isChangedRow(row)"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="changed-tag"
+            >已变更</el-tag>
             {{ row.title || '—' }}
           </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="项目" width="140">
+        <template #default="{ row }">
+          <EditSelectCell
+            :value="row.project_id"
+            :display-text="row.project_name || ''"
+            clearable
+            filterable
+            placeholder="未指定"
+            @change="(v) => onProjectChange(row, v)"
+          >
+            <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+          </EditSelectCell>
         </template>
       </el-table-column>
 
@@ -242,6 +287,17 @@
         <el-form-item label="需求标题">
           <el-input v-model="form.title" />
         </el-form-item>
+        <el-form-item label="项目">
+          <el-select
+            v-model="form.project_id"
+            clearable
+            filterable
+            placeholder="选择所属项目"
+            style="width: 100%"
+          >
+            <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="计划交付版本">
           <el-select
             v-model="form.planned_version"
@@ -326,6 +382,7 @@
       <p class="import-tip">
         1. 先下载模板，按格式填写产品需求清单；<br />
         2. 表头列名请勿改动；进展列填「未开始/进行中/已完成/已延期/已变更/不涉及」，优先级填 P0/P1/P2/P3（旧高/中/低导入时自动转换）；<br />
+        「项目」列要与系统里的项目名完全一致，对不上会留空，导入后在页面上补选；<br />
         3. 上传 .xlsx 文件，系统将批量创建到当前迭代下。
       </p>
       <el-button :icon="Download" link type="primary" @click="onDownloadTemplate">
@@ -390,9 +447,24 @@ import { configApi, downloadBlob, productRequirementApi, userApi } from '../../a
 import { auth } from '../../store/auth'
 import EditSelectCell from '../EditSelectCell.vue'
 
+// 项目标签的两个特殊页签。「未指定」必须是一个**显式**页签：
+// 没填项目的行正是最该被找出来补录的那批，混在「全部」里就永远没人去补。
+const ALL = 'all'
+const NONE = 'none'
+
 const props = defineProps({
   iterationId: { type: Number, required: true },
   versionGroups: { type: Array, default: () => [] },
+  projects: { type: Array, default: () => [] },
+  // 当前项目标签，由 IterationDetail 持有：产品需求 / 领域需求两个 Tab 共用一个选择，
+  // 来回切的时候不会各自记一份，看着像"切回来筛选自己变了"。
+  projectScope: { type: String, default: 'all' },   // 值同 ALL，defineProps 里只能写字面量
+})
+const emit = defineEmits(['update:projectScope'])
+
+const projectTab = computed({
+  get: () => props.projectScope,
+  set: (v) => emit('update:projectScope', v),
 })
 
 const isAdmin = auth.isAdmin
@@ -401,11 +473,40 @@ const isAdmin = auth.isAdmin
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3']
 const PROGRESS_STATUSES = ['未开始', '进行中', '已完成', '已延期', '已变更', '不涉及']
 
-// 进展着色：已完成→绿、已延期→红，其余默认（仅着色单元格本身）
+// 进展着色：已完成→绿、已延期→红、已变更→橙，其余默认（仅着色单元格本身）
 function progressTone(v) {
   if (v === '已完成') return 'success'
   if (v === '已延期') return 'danger'
+  if (v === CHANGED) return 'warning'
   return ''
+}
+
+// 「已变更」＝这条需求本轮不做了。整行置灰，且**后端所有统计口径都不计入它**
+// （见 backend/enums.py 的 is_changed_row）。判定必须与后端同款：任一进展子项标了就算，
+// 两边分叉的表现是「页面上灰着的行还在看板的数里」，看着都正常，没人会当 bug 报。
+const CHANGED = '已变更'
+
+function isChangedRow(row) {
+  return PROGRESS_COLS.some((c) => row[c.field] === CHANGED)
+}
+
+function rowClass({ row }) {
+  return isChangedRow(row) ? 'row-changed' : ''
+}
+
+// 项目标签 → 行过滤。标签名是字符串（el-tabs 的 name 只认字符串），
+// 与 row.project_id 比较前要转一次，别直接 ===。
+function filterByProject(rows, tab) {
+  if (tab === ALL) return rows
+  if (tab === NONE) return rows.filter((r) => !r.project_id)
+  const pid = Number(tab)
+  return rows.filter((r) => r.project_id === pid)
+}
+
+// 当前标签停在某个具体项目上时，新增的需求默认就归它——在「YLS3000」标签下新建，
+// 建出来一条没填项目的行才是意外。
+function currentProjectId() {
+  return projectTab.value === ALL || projectTab.value === NONE ? null : Number(projectTab.value)
 }
 
 // 特性角色列（FK 化）：fkField 是后端 FK 字段名
@@ -443,6 +544,8 @@ const list = ref([])
 const features = ref([])
 const userOptions = ref([])
 const filterUserId = ref(null)
+// 默认只置灰不隐藏：隐藏成默认的话，误标成已变更的行会连同「改回来」的入口一起消失。
+const hideChanged = ref(false)
 const loading = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(null)
@@ -452,15 +555,40 @@ const editingCell = ref(null)
 
 const featureDialog = reactive({ visible: false, saving: false, list: [] })
 
-const filteredList = computed(() => {
-  if (!filterUserId.value) return list.value
-  const uid = filterUserId.value
-  return list.value.filter((r) =>
-    r.feature_fo_user_id === uid ||
-    r.feature_se_user_id === uid ||
-    r.feature_tfo_user_id === uid
-  )
+// 标签上的条数按「除项目外的其它筛选都已生效」的结果算，见 baseList。
+const projectTabs = computed(() => {
+  const counts = new Map()
+  let none = 0
+  for (const r of baseList.value) {
+    if (r.project_id) counts.set(r.project_id, (counts.get(r.project_id) || 0) + 1)
+    else none += 1
+  }
+  const tabs = [{ name: ALL, label: '全部', count: baseList.value.length }]
+  for (const p of props.projects) {
+    tabs.push({ name: String(p.id), label: p.name, count: counts.get(p.id) || 0 })
+  }
+  tabs.push({ name: NONE, label: '未指定项目', count: none })
+  return tabs
 })
+
+const changedCount = computed(() => list.value.filter(isChangedRow).length)
+
+// baseList＝除「项目标签」外的所有筛选都生效后的结果。分两步是为了让标签上的
+// 条数与点进去看到的行数永远一致（标签算的就是 baseList 按项目的分布）。
+const baseList = computed(() => {
+  const uid = filterUserId.value
+  return list.value.filter((r) => {
+    if (hideChanged.value && isChangedRow(r)) return false
+    if (uid && !(
+      r.feature_fo_user_id === uid ||
+      r.feature_se_user_id === uid ||
+      r.feature_tfo_user_id === uid
+    )) return false
+    return true
+  })
+})
+
+const filteredList = computed(() => filterByProject(baseList.value, projectTab.value))
 
 const importVisible = ref(false)
 const importing = ref(false)
@@ -470,6 +598,7 @@ const uploadRef = ref(null)
 
 function defaultForm() {
   return {
+    project_id: null,
     seq: 0,
     req_no: '',
     req_url: '',
@@ -528,6 +657,7 @@ async function loadUserOptions() {
 function openCreate() {
   editing.value = null
   Object.assign(form, defaultForm())
+  form.project_id = currentProjectId()
   form.seq = (list.value.length || 0) + 1
   formUserPicks.feature_fo = null
   formUserPicks.feature_se = null
@@ -622,6 +752,24 @@ async function onFieldChange(row, field, value) {
     row.version = data.version
   } catch (e) {
     row[field] = original
+    if (e.response?.status !== 409) ElMessage.error(e.response?.data?.detail || '保存失败')
+    else load()
+  }
+}
+
+async function onProjectChange(row, value) {
+  // el-select 的清空回的是空串而不是 null，直接发过去会被后端当成"没改"
+  const pid = value || null
+  if (pid === row.project_id) return
+  const original = { id: row.project_id, name: row.project_name }
+  try {
+    const { data } = await productRequirementApi.update(row.id, { project_id: pid, version: row.version })
+    row.project_id = data.project_id
+    row.project_name = data.project_name   // 名字由后端回填，别在前端拼
+    row.version = data.version
+  } catch (e) {
+    row.project_id = original.id
+    row.project_name = original.name
     if (e.response?.status !== 409) ElMessage.error(e.response?.data?.detail || '保存失败')
     else load()
   }
@@ -735,6 +883,26 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 已变更行整行置灰。必须 !important：Element Plus 的斑马纹直接给 td 上 background，
+   选择器权重比这里的 :deep 高，不加就只有非斑马行会变灰，看着像随机置灰 */
+:deep(.el-table__body tr.row-changed > td.el-table__cell) {
+  background: #f7f8fa !important;
+  color: #a8abb2;
+}
+:deep(.el-table__body tr.row-changed .el-link) { color: #a8abb2; }
+:deep(.el-table__body tr.row-changed .cell) { opacity: 0.78; }
+.changed-tag { margin-right: 4px; }
+
+.project-tabs {
+  margin-bottom: 4px;
+}
+/* 标签页只当选择器用，内容区是空的——不压掉高度会白白多出一段留白 */
+.project-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+.project-tabs :deep(.el-tabs__content) {
+  display: none;
+}
 .toolbar {
   margin-bottom: 12px;
   display: flex;

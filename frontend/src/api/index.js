@@ -171,9 +171,14 @@ export const mappingApi = {
 }
 
 export const metricsApi = {
-  version: (major_version_id) => http.get(`/metrics/version/${major_version_id}`),
-  iteration: (iteration_id) => http.get(`/metrics/iteration/${iteration_id}`),
-  iterationQuality: (year) => http.get(`/metrics/iteration-quality/${year}`),
+  // params 里可带 project_id：项目挂在需求行上，传了就只统计该项目的需求，
+  // 未填项目的老数据不计入任何项目（后端回一个 unassigned 让页面提示去补）。
+  version: (release_version_id, params = {}) =>
+    http.get(`/metrics/version/${release_version_id}`, { params }),
+  iteration: (iteration_id, params = {}) =>
+    http.get(`/metrics/iteration/${iteration_id}`, { params }),
+  iterationQuality: (year, params = {}) =>
+    http.get(`/metrics/iteration-quality/${year}`, { params }),
   group: (group_id, params = {}) => http.get(`/metrics/group/${group_id}`, { params }),
 }
 
@@ -363,6 +368,12 @@ export const majorVersionApi = {
   remove: (id) => http.delete(`/major-versions/${id}`),
   // 主干只能整体切换：后端会把同项目的原主干一并降为分支，别做成普通字段
   setMaster: (id) => http.post(`/major-versions/${id}/set-master`),
+  // 排序整体提交：{ parent_id, ids }。逐个 PUT sort_order 会留下「排到一半」的顺序，
+  // 而顺序错了不报错，只是看着不对
+  reorderMajors: (parent_id, ids) => http.post('/major-versions/reorder', { parent_id, ids }),
+  reorderReleases: (parent_id, ids) => http.post('/release-versions/reorder', { parent_id, ids }),
+  reorderIterVersions: (parent_id, ids) =>
+    http.post('/iteration-versions/reorder', { parent_id, ids }),
   allReleaseVersions: () => http.get('/release-versions/all'),
   createRelease: (data) => http.post('/release-versions', data),
   updateRelease: (id, data) => http.put(`/release-versions/${id}`, data),
@@ -382,7 +393,8 @@ export const annualIterationApi = {
 }
 
 export const iterationRequirementApi = {
-  list: (iteration_id) => http.get('/iteration-requirements', { params: { iteration_id } }),
+  list: (iteration_id, params = {}) =>
+    http.get('/iteration-requirements', { params: { iteration_id, ...params } }),
   byVersion: (version_id) => http.get('/iteration-requirements/by-version', { params: { version_id } }),
   create: (data) => http.post('/iteration-requirements', data),
   update: (id, data) => http.put(`/iteration-requirements/${id}`, data),
@@ -399,7 +411,8 @@ export const iterationRequirementApi = {
 }
 
 export const domainApi = {
-  // params: { year, month, include_hidden, project }（不传＝进行中迭代 + 第一个有快照的项目）
+  // params: { year, month, release_version_id, include_hidden, project }
+  //（不传＝进行中迭代 + 第一个有快照的项目；给了 release_version_id 就按版本、忽略 year/month）
   list: (params) => http.get('/domains', { params }),
   requirements: (groupId, params) => http.get(`/domains/${groupId}/requirements`, { params }),
   issues: (groupId, params) => http.get(`/domains/${groupId}/issues`, { params }),
@@ -453,7 +466,8 @@ export const businessTripApi = {
 }
 
 export const productRequirementApi = {
-  list: (iteration_id) => http.get('/iteration-product-requirements', { params: { iteration_id } }),
+  list: (iteration_id, params = {}) =>
+    http.get('/iteration-product-requirements', { params: { iteration_id, ...params } }),
   byVersion: (version_id) => http.get('/iteration-product-requirements/by-version', { params: { version_id } }),
   create: (data) => http.post('/iteration-product-requirements', data),
   update: (id, data) => http.put(`/iteration-product-requirements/${id}`, data),

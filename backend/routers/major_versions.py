@@ -37,6 +37,37 @@ def _get_release(db: Session, rv_id: int) -> models.ReleaseVersion:
     return rv
 
 
+def _reorder(db: Session, model, parent_col, parent_id: Optional[int],
+             ids: List[int]) -> int:
+    """按 ids 的先后重写同一父级下的 sort_order。
+
+    整体重排而不是逐个 PUT：后者在中途被打断就留下「排到一半」的顺序，而顺序错了
+    没有任何报错，只是看着不对。ids 里混进别的父级的行直接 400——那多半是前端把
+    两个分组的列表拼错了，静默忽略只会让人以为排序功能时灵时不灵。
+    列表里没提到的兄弟节点排在后面，这样别人刚新增的行不会因为你的列表是旧的而被挤乱。
+    """
+    q = db.query(model).filter(parent_col.is_(None) if parent_id is None
+                               else parent_col == parent_id)
+    rows = {r.id: r for r in q.all()}
+    unknown = [i for i in ids if i not in rows]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"这些 id 不属于该父级：{unknown}")
+    order = list(dict.fromkeys(ids))                       # 去重，保留首次出现的位置
+    order += [i for i in sorted(rows, key=lambda k: (rows[k].sort_order or 0, k))
+              if i not in set(order)]
+    for idx, rid in enumerate(order):
+        rows[rid].sort_order = idx
+    db.commit()
+    return len(order)
+
+
+def _tail_sort_order(db: Session, model, parent_col, parent_id: Optional[int]) -> int:
+    """新父级下的末位序号。改挂父级时用它，否则那一行会带着旧序号插进中间。"""
+    q = db.query(model).filter(parent_col.is_(None) if parent_id is None
+                               else parent_col == parent_id)
+    return max([r.sort_order or 0 for r in q.all()] or [-1]) + 1
+
+
 def _sync_major_id(db: Session, iv: models.IterationVersion) -> None:
     """迭代版本的 major_version_id 是冗余列，永远从父版本推导，不收客户端的值。"""
     rv = _get_release(db, iv.release_version_id)
@@ -55,6 +86,22 @@ def list_major_versions(project_id: Optional[int] = None, db: Session = Depends(
     else:
         q = q.filter(models.MajorVersion.project_id.is_(None))
     return q.order_by(models.MajorVersion.sort_order).all()
+
+
+@router.post("/major-versions/reorder")
+def reorder_major_versions(
+    payload: schemas.VersionReorderIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+):
+    """重排某个里程碑项目下的大版本。parent_id＝project_id（空＝未挂项目的那批）。"""
+    n = _reorder(db, models.MajorVersion, models.MajorVersion.project_id,
+                 payload.parent_id, payload.ids)
+    log_op(db, action="修改", target="大版本", target_id=payload.parent_id or 0,
+           detail=f"reorder project_id={payload.parent_id} count={n}",
+           user=current_admin, request=request)
+    return {"ok": True, "count": n}
 
 
 @router.post("/major-versions", response_model=schemas.MajorVersionDetailOut)
@@ -207,6 +254,22 @@ def create_release_version(
     return item
 
 
+@router.post("/release-versions/reorder")
+def reorder_release_versions(
+    payload: schemas.VersionReorderIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+):
+    """重排某个大版本下的版本。parent_id＝major_version_id。"""
+    n = _reorder(db, models.ReleaseVersion, models.ReleaseVersion.major_version_id,
+                 payload.parent_id, payload.ids)
+    log_op(db, action="修改", target="版本", target_id=payload.parent_id or 0,
+           detail=f"reorder major_id={payload.parent_id} count={n}",
+           user=current_admin, request=request)
+    return {"ok": True, "count": n}
+
+
 @router.put("/release-versions/{item_id}", response_model=schemas.ReleaseVersionDetailOut)
 def update_release_version(
     item_id: int,
@@ -217,8 +280,18 @@ def update_release_version(
 ):
     item = _get_release(db, item_id)
     changes = payload.model_dump(exclude_unset=True)
+    moved = ("major_version_id" in changes
+             and changes["major_version_id"] != item.major_version_id)
+    if moved and not db.query(models.MajorVersion).filter(
+            models.MajorVersion.id == changes["major_version_id"]).first():
+        raise HTTPException(status_code=404, detail="目标大版本不存在")
     for k, v in changes.items():
         setattr(item, k, v)
+    if moved and "sort_order" not in changes:
+        # 搬到新父级下就排到末尾：留着旧序号会插进中间某个位置，看着像随机落点
+        item.sort_order = _tail_sort_order(db, models.ReleaseVersion,
+                                           models.ReleaseVersion.major_version_id,
+                                           item.major_version_id)
     db.flush()
     if "major_version_id" in changes:
         # 改挂父级时把下面所有构建的冗余列一起搬走，否则指标会按旧大版本聚合
@@ -303,6 +376,22 @@ def create_iteration_version(
     return item
 
 
+@router.post("/iteration-versions/reorder")
+def reorder_iteration_versions(
+    payload: schemas.VersionReorderIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+):
+    """重排某个版本下的迭代版本。parent_id＝release_version_id。"""
+    n = _reorder(db, models.IterationVersion, models.IterationVersion.release_version_id,
+                 payload.parent_id, payload.ids)
+    log_op(db, action="修改", target="迭代版本", target_id=payload.parent_id or 0,
+           detail=f"reorder release_id={payload.parent_id} count={n}",
+           user=current_admin, request=request)
+    return {"ok": True, "count": n}
+
+
 @router.put("/iteration-versions/{item_id}", response_model=schemas.IterationVersionOut)
 def update_iteration_version(
     item_id: int,
@@ -315,10 +404,16 @@ def update_iteration_version(
     if not item:
         raise HTTPException(status_code=404, detail="Not found")
     changes = payload.model_dump(exclude_unset=True)
+    moved = ("release_version_id" in changes
+             and changes["release_version_id"] != item.release_version_id)
     for k, v in changes.items():
         setattr(item, k, v)
     if "release_version_id" in changes:
-        _sync_major_id(db, item)
+        _sync_major_id(db, item)      # 顺带校验目标版本存在，不存在会 404
+    if moved and "sort_order" not in changes:
+        item.sort_order = _tail_sort_order(db, models.IterationVersion,
+                                           models.IterationVersion.release_version_id,
+                                           item.release_version_id)
     db.commit()
     db.refresh(item)
     log_op(db, action="修改", target="迭代版本", target_id=item.id,

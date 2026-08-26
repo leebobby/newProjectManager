@@ -383,7 +383,12 @@ class Iteration(Base):
 
 
 class AnnualIteration(Base):
-    """按年度规划的迭代：每年 12 个，每月一个。"""
+    """按年度规划的迭代：每年 12 个，每月一个。
+
+    迭代**不属于任何项目**——同一个月的迭代里同时排着多个项目的需求。
+    项目维度挂在需求行上（`IterationRequirement.project_id` /
+    `IterationProductRequirement.project_id`），度量看板按它切分。
+    """
     __tablename__ = "annual_iterations"
     __table_args__ = (UniqueConstraint("year", "month", name="uq_year_month"),)
 
@@ -422,6 +427,9 @@ class IterationProductRequirement(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     iteration_id = Column(Integer, ForeignKey("annual_iterations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("roadmap_projects.id", ondelete="SET NULL"),
+                        nullable=True, index=True,
+                        comment="所属项目 FK（roadmap_projects）。迭代本身跨项目，项目挂在需求行上")
     seq = Column(Integer, default=0, comment="序号（排序用）")
     req_no = Column(String(64), default="", comment="需求编号")
     req_url = Column(String(512), default="", comment="需求超链接")
@@ -470,6 +478,9 @@ class IterationRequirement(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     iteration_id = Column(Integer, ForeignKey("annual_iterations.id", ondelete="CASCADE"), nullable=False, index=True)
+    project_id = Column(Integer, ForeignKey("roadmap_projects.id", ondelete="SET NULL"),
+                        nullable=True, index=True,
+                        comment="所属项目 FK（roadmap_projects）。迭代本身跨项目，项目挂在需求行上")
     seq = Column(Integer, default=0, comment="序号（排序用）")
     req_no = Column(String(64), default="", comment="需求编号")
     req_url = Column(String(512), default="", comment="需求超链接")
