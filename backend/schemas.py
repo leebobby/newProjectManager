@@ -1437,11 +1437,12 @@ class DomainRiskItem(BaseModel):
 
 
 class DomainReqSummary(BaseModel):
-    total: int = 0
+    total: int = 0                # 已剔除「已变更」后的条数，下面几档都基于它
     done: int = 0
     in_progress: int = 0
     not_started: int = 0
     delayed: int = 0
+    changed: int = 0              # 因标了「已变更」而整行排除的条数
     by_priority: dict = {}        # {"P0": n, "P1": n, ...}
 
 

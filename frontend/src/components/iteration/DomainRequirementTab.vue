@@ -46,10 +46,21 @@
           :label="`${u.full_name || u.username}${u.emp_no ? ' (' + u.emp_no + ')' : ''}`"
         />
       </el-select>
-      <span class="tip">共 {{ filteredList.length }}/{{ list.length }} 条；基础列双击编辑，进展/责任人/PL组直接下拉</span>
+      <el-checkbox v-model="hideChanged" size="small">隐藏已变更</el-checkbox>
+      <span class="tip">
+        共 {{ filteredList.length }}/{{ list.length }} 条<template v-if="changedCount">，
+        其中 <b>{{ changedCount }}</b> 条已变更（置灰，不计入任何统计看板）</template>；基础列双击编辑，进展/责任人/PL组直接下拉
+      </span>
     </div>
 
-    <el-table :data="filteredList" v-loading="loading" border stripe style="width: 100%">
+    <el-table
+      :data="filteredList"
+      v-loading="loading"
+      :row-class-name="rowClass"
+      border
+      stripe
+      style="width: 100%"
+    >
       <el-table-column prop="seq" label="序号" width="70" align="center" />
       <el-table-column label="需求编号" width="160">
         <template #default="{ row }">
@@ -82,6 +93,13 @@
             @keyup.esc="cancel(row, 'title')"
           />
           <div v-else class="editable-cell" @dblclick="startEdit(row, 'title')">
+            <el-tag
+              v-if="isChangedRow(row)"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="changed-tag"
+            >已变更</el-tag>
             {{ row.title || '—' }}
           </div>
         </template>
@@ -496,11 +514,25 @@ const PROGRESS_COLS = [
 const PROGRESS_STATUSES = ['未开始', '进行中', '已完成', '已延期', '已变更', '不涉及']
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3']
 
-// 进展着色：已完成→绿、已延期→红，其余默认（仅着色单元格本身）
+// 进展着色：已完成→绿、已延期→红、已变更→橙，其余默认（仅着色单元格本身）
 function progressTone(v) {
   if (v === '已完成') return 'success'
   if (v === '已延期') return 'danger'
+  if (v === CHANGED) return 'warning'
   return ''
+}
+
+// 「已变更」＝这条需求本轮不做了。整行置灰，且**后端所有统计口径都不计入它**
+// （见 backend/enums.py 的 is_changed_row）。判定必须与后端同款：任一进展子项标了就算，
+// 两边分叉的表现是「页面上灰着的行还在看板的数里」，看着都正常，没人会当 bug 报。
+const CHANGED = '已变更'
+
+function isChangedRow(row) {
+  return PROGRESS_COLS.some((c) => row[c.field] === CHANGED)
+}
+
+function rowClass({ row }) {
+  return isChangedRow(row) ? 'row-changed' : ''
 }
 
 const list = ref([])
@@ -509,6 +541,8 @@ const plGroups = ref([])
 const filterOwnerId = ref(null)
 const filterGroupId = ref(null)
 const filterProjectId = ref(null)
+// 默认只置灰不隐藏：隐藏成默认的话，误标成已变更的行会连同「改回来」的入口一起消失。
+const hideChanged = ref(false)
 const loading = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(null)
@@ -517,8 +551,11 @@ const formOwnerPick = ref(null)   // 完整编辑里的责任人 select 值
 const formGroupPick = ref(null)
 const editingCell = ref(null)
 
+const changedCount = computed(() => list.value.filter(isChangedRow).length)
+
 const filteredList = computed(() => {
   return list.value.filter((r) => {
+    if (hideChanged.value && isChangedRow(r)) return false
     if (filterOwnerId.value && r.owner_user_id !== filterOwnerId.value) return false
     if (filterGroupId.value && r.group_id !== filterGroupId.value) return false
     if (filterProjectId.value === UNASSIGNED) {
@@ -863,6 +900,16 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 已变更行整行置灰。必须 !important：Element Plus 的斑马纹直接给 td 上 background，
+   选择器权重比这里的 :deep 高，不加就只有非斑马行会变灰，看着像随机置灰 */
+:deep(.el-table__body tr.row-changed > td.el-table__cell) {
+  background: #f7f8fa !important;
+  color: #a8abb2;
+}
+:deep(.el-table__body tr.row-changed .el-link) { color: #a8abb2; }
+:deep(.el-table__body tr.row-changed .cell) { opacity: 0.78; }
+.changed-tag { margin-right: 4px; }
+
 .toolbar {
   margin-bottom: 12px;
   display: flex;

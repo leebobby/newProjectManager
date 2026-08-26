@@ -40,7 +40,11 @@
             <el-button :icon="Refresh" :disabled="!selectedVersionId" @click="loadVersion">刷新</el-button>
           </div>
 
-          <UnassignedTip :n="versionMetric?.unassigned || 0" scope="该版本下" />
+          <ExclusionNote
+            :unassigned="versionMetric?.unassigned || 0"
+            :changed="versionMetric?.changed || 0"
+            scope="该版本下"
+          />
 
           <div v-if="versionMetric" class="metric-summary">
             <div class="stat">
@@ -125,7 +129,11 @@
             <el-button :icon="Refresh" :disabled="!selectedIterationId" @click="loadIteration">刷新</el-button>
           </div>
 
-          <UnassignedTip :n="iterMetric?.unassigned || 0" scope="该迭代里" />
+          <ExclusionNote
+            :unassigned="iterMetric?.unassigned || 0"
+            :changed="iterMetric?.changed || 0"
+            scope="该迭代里"
+          />
 
           <div v-if="iterMetric" class="metric-summary">
             <div class="stat"><div class="label">领域需求</div><div class="value">{{ iterMetric.total_domain }}</div></div>
@@ -176,9 +184,15 @@
                   </span>
                 </template>
               </el-table-column>
+              <el-table-column label="已变更" width="90" align="right">
+                <template #default="{ row }">
+                  <span :class="row.changed ? '' : 'muted'">{{ row.changed || '—' }}</span>
+                </template>
+              </el-table-column>
             </el-table>
             <div class="quality-tip">
               密度 = 数量 ÷ (代码量 / 1000)；代码量为空的迭代不计算密度。数据来源于领域需求页填报的版本质量统计。
+              标了「已变更」的需求整行不计入（分子分母一起剔），「已变更」列是本年度各迭代被剔掉的条数。
             </div>
           </el-card>
         </el-tab-pane>
@@ -206,7 +220,11 @@
             <el-button :icon="Refresh" :disabled="!selectedGroupId" @click="loadGroup">刷新</el-button>
           </div>
 
-          <UnassignedTip :n="groupMetric?.unassigned || 0" scope="该组名下" />
+          <ExclusionNote
+            :unassigned="groupMetric?.unassigned || 0"
+            :changed="groupMetric?.changed || 0"
+            scope="该组名下"
+          />
 
           <div v-if="groupMetric" class="metric-summary">
             <div class="stat"><div class="label">未完成数</div><div class="value primary">{{ groupMetric.total_open }}</div></div>
@@ -285,22 +303,37 @@ const active = ref('version')
 
 const pct = (v) => `${Math.round((v || 0) * 100)}%`
 
-// 按项目筛时，没填项目的行不算进任何一个项目（后端 _split_by_project）。
-// 这条提示是那个口径的配套：数字偏小是有原因的，让人看得见、知道去哪补，
-// 而不是对着一个说不清的数发愣。n=0 时整条不渲染。
-const UnassignedTip = defineComponent({
-  props: { n: { type: Number, default: 0 }, scope: { type: String, default: '' } },
+// 有两种行会被排除在统计之外：标了「已变更」的（本轮不做了，后端 _split_changed）、
+// 按项目筛时没填项目的（后端 _split_by_project）。这条提示是那两个口径的配套：
+// 数字偏小是有原因的，让人看得见、知道去哪补，而不是对着一个说不清的数发愣。
+// 两个数都为 0 时整条不渲染。
+const ExclusionNote = defineComponent({
+  props: {
+    unassigned: { type: Number, default: 0 },
+    changed: { type: Number, default: 0 },
+    scope: { type: String, default: '' },
+  },
   setup(props) {
-    return () => (props.n
-      ? h(ElAlert, {
-          type: 'warning',
-          showIcon: true,
-          closable: false,
-          style: 'margin-bottom: 12px',
-          title: `${props.scope}还有 ${props.n} 条需求没填项目，未计入本次统计`,
-          description: '去「迭代管理 → 对应迭代」的需求列表里补选项目后，数字才会完整。',
-        })
-      : null)
+    return () => {
+      const lines = []
+      if (props.changed) {
+        lines.push(`${props.scope}有 ${props.changed} 条需求标了「已变更」，已整行排除`)
+      }
+      if (props.unassigned) {
+        lines.push(`${props.scope}还有 ${props.unassigned} 条需求没填项目，未计入本次统计`)
+      }
+      if (!lines.length) return null
+      return h(ElAlert, {
+        type: 'warning',
+        showIcon: true,
+        closable: false,
+        style: 'margin-bottom: 12px',
+        title: lines.join('；'),
+        description: props.unassigned
+          ? '去「迭代管理 → 对应迭代」的需求列表里补选项目后，数字才会完整。'
+          : '已变更的需求在迭代管理里是置灰的，本就不参与度量。',
+      })
+    }
   },
 })
 

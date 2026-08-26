@@ -55,13 +55,26 @@
 
           <el-table-column label="需求情况" min-width="200">
             <template #default="{ row }">
-              <div v-if="row.req_summary.total" class="cell-clickable" @click="openReq(row)">
+              <!-- total 是「已剔除已变更之后」的条数：整组需求都变更掉时 total=0，
+                   这时也要把格子渲染出来，否则看着像这个组一条需求都没有 -->
+              <div
+                v-if="row.req_summary.total || row.req_summary.changed"
+                class="cell-clickable"
+                @click="openReq(row)"
+              >
                 <div class="sum-line">
                   <b>{{ row.req_summary.total }}</b> 项
                   <el-tag size="small" type="success" effect="plain">完成 {{ row.req_summary.done }}</el-tag>
                   <el-tag size="small" type="warning" effect="plain">进行 {{ row.req_summary.in_progress }}</el-tag>
                   <el-tag size="small" type="info" effect="plain">未开始 {{ row.req_summary.not_started }}</el-tag>
                   <el-tag v-if="row.req_summary.delayed" size="small" type="danger">延期 {{ row.req_summary.delayed }}</el-tag>
+                  <el-tag
+                    v-if="row.req_summary.changed"
+                    size="small"
+                    type="info"
+                    effect="plain"
+                    title="标了「已变更」的需求整行不计入上面的数字"
+                  >已变更 {{ row.req_summary.changed }}</el-tag>
                 </div>
                 <div class="prio-line">
                   <span v-for="(n, p) in row.req_summary.by_priority" :key="p" class="prio">{{ p }}:{{ n }}</span>

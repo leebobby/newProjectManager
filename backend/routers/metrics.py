@@ -5,6 +5,10 @@
 - 优先用 owner_user_id / group_id / target_version_id FK；FK 为空时回退到字符串
 - 所有接口对登录用户可读（PM 周报场景）
 
+**「已变更」整行排除**：任一进展子项标了「已变更」＝这条需求本轮不做了，
+四个接口一律**不统计它**（判定见 `enums.is_changed_row`）。和 `unassigned` 一样，
+响应里带一个 `changed` 报出被排除的条数，否则「数字怎么少了一截」没人说得清。
+
 **按项目度量**：四个接口都接受可选的 `project_id`。项目挂在需求行上
 （迭代本身跨项目，见 models.AnnualIteration），传了就**只统计该项目的行**，
 不把 project_id 为空的老数据算进任何一个项目——数字看着都合理，混进去了没人看得出来。
@@ -18,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+import enums
 import models
 from database import get_db
 
@@ -39,9 +44,10 @@ _WEIGHT = {
     "已完成": 1.0,
     "进行中": 0.5,
     "已延期": 0.0,
-    "已变更": 0.5,    # 变更后仍在做，按一半算
     "未开始": 0.0,
     # "不涉及" 不计入分母
+    # "已变更" 不在表里是有意的：带它的行在 _split_changed() 就整行被剔掉了，
+    # 到不了这里。别再给它加权重——那等于把一条已经不做的需求重新算进平均完成度。
 }
 
 
@@ -78,6 +84,16 @@ def _is_delayed(row, progress_fields: list[str]) -> bool:
     return any(getattr(row, f, None) == "已延期" for f in progress_fields)
 
 
+def _split_changed(rows: list, progress_fields: list[str]) -> tuple[list, int]:
+    """剔掉「已变更」的行，返回 (计入统计的行, 被剔掉的条数)。
+
+    先剔已变更、再按项目切（见各接口）：反过来的话 `unassigned` 里会混进
+    本来就不该统计的已变更行，页面提示「有 N 条没填项目」，去补了却发现数字纹丝不动。
+    """
+    kept = [r for r in rows if not enums.is_changed_row(r, progress_fields)]
+    return kept, len(rows) - len(kept)
+
+
 def _split_by_project(rows: list, project_id: Optional[int]) -> tuple[list, int]:
     """按项目切一刀，返回 (计入统计的行, 未指定项目而被排除的条数)。
 
@@ -112,6 +128,7 @@ class VersionMetric(BaseModel):
     total_self_test_cases: int
     total_post_test_issues: int
     unassigned: int          # 命中该版本但没填项目、因而没被计入的条数（未按项目筛时恒为 0）
+    changed: int             # 因标了「已变更」而整行排除的条数
     items: List[VersionItem]
 
 
@@ -156,8 +173,10 @@ def version_metric(
     self_test_cases = 0
     post_test_issues = 0
 
-    domain_rows, blank_d = _split_by_project(domain_q.all(), project_id)
-    product_rows, blank_p = _split_by_project(product_q.all(), project_id)
+    domain_rows, chg_d = _split_changed(domain_q.all(), _DOMAIN_PROGRESS_FIELDS)
+    product_rows, chg_p = _split_changed(product_q.all(), _PRODUCT_PROGRESS_FIELDS)
+    domain_rows, blank_d = _split_by_project(domain_rows, project_id)
+    product_rows, blank_p = _split_by_project(product_rows, project_id)
 
     for r in domain_rows:
         c = _row_completion(r, _DOMAIN_PROGRESS_FIELDS)
@@ -196,6 +215,7 @@ def version_metric(
         total_self_test_cases=self_test_cases,
         total_post_test_issues=post_test_issues,
         unassigned=blank_d + blank_p,
+        changed=chg_d + chg_p,
         items=items,
     )
 
@@ -213,6 +233,7 @@ class IterationMetric(BaseModel):
     avg_completion: float
     by_priority: dict[str, int]   # {"P0": 3, "P1": 5, ...}
     unassigned: int               # 该迭代里没填项目、因而没被计入的条数（未按项目筛时恒为 0）
+    changed: int                  # 因标了「已变更」而整行排除的条数
 
 
 @router.get("/iteration/{iteration_id}", response_model=IterationMetric)
@@ -233,6 +254,8 @@ def iteration_metric(
         db.query(models.IterationProductRequirement)
         .filter(models.IterationProductRequirement.iteration_id == iteration_id).all()
     )
+    domain_rows, chg_d = _split_changed(domain_rows, _DOMAIN_PROGRESS_FIELDS)
+    product_rows, chg_p = _split_changed(product_rows, _PRODUCT_PROGRESS_FIELDS)
     domain_rows, blank_d = _split_by_project(domain_rows, project_id)
     product_rows, blank_p = _split_by_project(product_rows, project_id)
 
@@ -270,6 +293,7 @@ def iteration_metric(
         avg_completion=round(avg, 3),
         by_priority=by_priority,
         unassigned=blank_d + blank_p,
+        changed=chg_d + chg_p,
     )
 
 
@@ -284,6 +308,7 @@ class IterationQualityRow(BaseModel):
     post_test_issues: int            # 转测后问题单数
     self_test_case_density: float    # 自验证用例密度（个/kloc）
     post_test_issue_density: float   # 转测后问题单密度（个/kloc）
+    changed: int = 0                 # 因标了「已变更」而整行排除的条数
 
 
 def _per_kloc(count: int, code_volume: int) -> float:
@@ -313,6 +338,7 @@ def iteration_quality_by_year(
             .filter(models.IterationRequirement.iteration_id == it.id)
             .all()
         )
+        domain_rows, chg = _split_changed(domain_rows, _DOMAIN_PROGRESS_FIELDS)
         domain_rows, _ = _split_by_project(domain_rows, project_id)
         cv = sum(r.code_volume or 0 for r in domain_rows)
         cases = sum(r.self_test_case_count or 0 for r in domain_rows)
@@ -322,6 +348,7 @@ def iteration_quality_by_year(
             code_volume=cv, self_test_cases=cases, post_test_issues=issues,
             self_test_case_density=_per_kloc(cases, cv),
             post_test_issue_density=_per_kloc(issues, cv),
+            changed=chg,
         ))
     return rows
 
@@ -342,6 +369,7 @@ class GroupLoad(BaseModel):
     delayed: int
     avg_completion: float
     unassigned: int          # 该组名下没填项目、因而没被计入的条数（未按项目筛时恒为 0）
+    changed: int             # 因标了「已变更」而整行排除的条数
     by_member: List[GroupMemberLoad]
 
 
@@ -360,7 +388,7 @@ def group_load(
     member_ids = [u.id for u in members]
     if not member_ids:
         return GroupLoad(group_id=g.id, group_name=g.name, total_open=0, delayed=0,
-                         avg_completion=0.0, unassigned=0, by_member=[])
+                         avg_completion=0.0, unassigned=0, changed=0, by_member=[])
 
     q = db.query(models.IterationRequirement).filter(
         models.IterationRequirement.owner_user_id.in_(member_ids)
@@ -371,7 +399,8 @@ def group_load(
             models.AnnualIteration.year == year
         ).all()]
         q = q.filter(models.IterationRequirement.iteration_id.in_(ann_ids or [0]))
-    rows, blank = _split_by_project(q.all(), project_id)
+    rows, chg = _split_changed(q.all(), _DOMAIN_PROGRESS_FIELDS)
+    rows, blank = _split_by_project(rows, project_id)
 
     by_user: dict[int, list] = {}
     for r in rows:
@@ -409,5 +438,6 @@ def group_load(
         avg_completion=round(sum(total_completion) / len(total_completion), 3)
         if total_completion else 0.0,
         unassigned=blank,
+        changed=chg,
         by_member=out_members,
     )

@@ -14,6 +14,21 @@ from typing import Optional
 PROGRESS_STATUSES = ("未开始", "进行中", "已完成", "已延期", "已变更", "不涉及")
 PROGRESS_DEFAULT = "未开始"
 
+# 「已变更」＝这条需求本轮不做了（范围变更 / 挪出迭代），是行级语义而不只是某个子项的状态。
+# 统计口径：整行**排除**在度量之外，不按「变更后仍在做，算一半」加权——
+# 后者会让一条已经不做的需求继续把平均完成度往下拽，看着像团队没干活。
+PROGRESS_CHANGED = "已变更"
+
+
+def is_changed_row(row, progress_fields) -> bool:
+    """任一进展子项标了「已变更」就算整行已变更。
+
+    判定放这里是因为 metrics（度量看板）与 domains（领域总览）两处统计都要用，
+    各写一份迟早分叉——一个看板把它算进去、另一个不算，两边对不上却都不报错。
+    取「任一」而不是「全部」：改口径只需动这一行。
+    """
+    return any(getattr(row, f, None) == PROGRESS_CHANGED for f in progress_fields)
+
 # ── 需求优先级（统一口径：P0-P3）──────────────────────────────────────────────
 PRIORITIES = ("P0", "P1", "P2", "P3")
 PRIORITY_DEFAULT = "P2"

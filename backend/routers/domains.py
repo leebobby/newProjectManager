@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+import enums
 import models
 import schemas
 from auth import get_current_user, require_admin
@@ -97,6 +98,11 @@ def _req_summary(db: Session, group_id: int, iteration_ids: List[int]) -> schema
         .all()
     )
     for r in rows:
+        # 「已变更」＝本轮不做了，整行不进统计，与度量看板同口径
+        # （判定收口在 enums.is_changed_row；两处各写一份迟早分叉）。
+        if enums.is_changed_row(r, _PROG_FIELDS):
+            s.changed += 1
+            continue
         s.total += 1
         vals = [getattr(r, f) or "未开始" for f in _PROG_FIELDS]
         delayed = any(v == "已延期" for v in vals)

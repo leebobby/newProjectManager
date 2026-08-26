@@ -39,7 +39,8 @@ const props = defineProps({
   filterable: { type: Boolean, default: false },
   allowCreate: { type: Boolean, default: false },
   placeholder: { type: String, default: '选择' },
-  // 空闲态着色：'success'（绿，如已完成）/ 'danger'（红，如已延期）/ ''（默认）
+  // 空闲态着色：'success'（绿，如已完成）/ 'danger'（红，如已延期）/
+  // 'warning'（橙，如已变更）/ ''（默认）
   tone: { type: String, default: '' },
 })
 const emit = defineEmits(['change'])
@@ -77,6 +78,7 @@ function onVisible(visible) {
 /* 状态着色（仅着色当前单元格，不影响整行）；放在 :hover 之前，hover 时蓝色编辑提示优先 */
 .edit-select-cell.tone-success { background: #f0f9eb; color: #529b2e; font-weight: 600; }
 .edit-select-cell.tone-danger { background: #fef0f0; color: #c45656; font-weight: 600; }
+.edit-select-cell.tone-warning { background: #fdf6ec; color: #b88230; font-weight: 600; }
 .edit-select-cell:hover {
   background: #f0f7ff;
   outline: 1px dashed #c6e2ff;
@@ -95,5 +97,6 @@ function onVisible(visible) {
 }
 .edit-select-cell.tone-success .esc-caret { color: #95d475; }
 .edit-select-cell.tone-danger .esc-caret { color: #f89898; }
+.edit-select-cell.tone-warning .esc-caret { color: #eebe77; }
 .edit-select-cell:hover .esc-caret { color: #909399; }
 </style>
