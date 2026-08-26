@@ -3,10 +3,29 @@
     <el-tabs v-model="activeTab" class="domain-tabs">
       <!-- ===== 领域总览 ===== -->
       <el-tab-pane label="领域总览" name="overview">
+        <!-- 需求口径分标签：按迭代（月）或按版本，**二选一**。版本是跨迭代的，
+             两者叠加会得到一个既不是这个版本、也不是这个迭代的数（见后端 _ReqScope）。
+             版本标签只列当前挂着需求的版本，条数就是挂着多少条。 -->
+        <el-tabs v-model="scopeTab" type="card" class="scope-tabs" @tab-change="onScopeChange">
+          <el-tab-pane name="iteration" label="按迭代" />
+          <el-tab-pane
+            v-for="v in data.versions"
+            :key="v.id"
+            :name="String(v.id)"
+            :label="`${v.version_no || '未命名'} (${v.req_count})`"
+          />
+        </el-tabs>
+
         <div class="page-head">
           <div class="head-left">
             <span class="muted">需求口径：</span>
-            <el-select v-model="monthKey" size="small" style="width: 210px" @change="load">
+            <el-select
+              v-if="scopeTab === 'iteration'"
+              v-model="monthKey"
+              size="small"
+              style="width: 210px"
+              @change="load"
+            >
               <el-option label="进行中迭代（默认）" value="" />
               <el-option
                 v-for="it in data.iterations"
@@ -15,6 +34,7 @@
                 :label="it.label + statusSuffix(it)"
               />
             </el-select>
+            <span v-else class="muted">按版本统计，不限迭代月份</span>
             <el-tag type="primary" effect="plain" style="margin-left: 8px">{{ data.iteration_label || '—' }}</el-tag>
 
             <span class="muted" style="margin-left: 16px">问题单项目：</span>
@@ -470,12 +490,24 @@ const STATUSES = ['OPEN', 'CLOSED', '挂起']
 const LEGACY_STATUSES = ['OPEN', 'CLOSED', 'pending']
 
 const activeTab = ref('overview')
-const data = reactive({ iteration_label: '', rows: [], iterations: [], projects: [] })
+const data = reactive({ iteration_label: '', rows: [], iterations: [], versions: [], projects: [] })
 const issueMeta = reactive({ available: false, file_mtime: null, note: '', source: '' })
 const loading = ref(false)
 const showHidden = ref(false)
 // 需求口径：'' = 当前进行中迭代；'2026-6' = 指定年度迭代月份
 const monthKey = ref('')
+// 需求口径的另一档：'iteration' = 按上面的月份；其余是 release_versions.id（字符串，el-tabs 的 name 只认字符串）
+const scopeTab = ref('iteration')
+
+// 总览与下钻共用这一份口径参数——两边各拼一次的表现是「格子里写 8 条、点进去 5 条」。
+function scopeParams() {
+  if (scopeTab.value !== 'iteration') return { release_version_id: Number(scopeTab.value) }
+  return parseKey(monthKey.value)
+}
+
+function onScopeChange() {
+  load()
+}
 // 问题单口径：项目/版本；'' = 让后端挑第一个有快照的项目（首次进页面时）
 const project = ref('')
 
@@ -531,13 +563,14 @@ async function load() {
   loading.value = true
   try {
     const { data: d } = await domainApi.list({
-      ...parseKey(monthKey.value),
+      ...scopeParams(),
       include_hidden: showHidden.value,
       project: project.value || undefined,
     })
     data.iteration_label = d.iteration_label
     data.rows = d.rows
     data.iterations = d.iterations || []
+    data.versions = d.versions || []
     data.projects = d.projects || []
     // 首次进页面没选项目，用后端挑中的那个回填选择器，免得下拉空着但表格有数
     project.value = d.selected_project || project.value || ''
@@ -792,7 +825,7 @@ async function openReq(row) {
   reqLoading.value = true
   reqRows.value = []
   try {
-    const { data: rows } = await domainApi.requirements(row.group_id, parseKey(monthKey.value))
+    const { data: rows } = await domainApi.requirements(row.group_id, scopeParams())
     reqRows.value = rows
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
@@ -820,6 +853,13 @@ onMounted(() => { load(); loadRisks(); loadDomainOptions(); loadLegacy(); loadUs
 
 <style scoped>
 .domain-page { padding: 4px; }
+/* 口径标签只当选择器用，内容区是空的——不压掉高度会白白多出一段留白 */
+.scope-tabs :deep(.el-tabs__header) {
+  margin-bottom: 10px;
+}
+.scope-tabs :deep(.el-tabs__content) {
+  display: none;
+}
 .page-head {
   display: flex;
   align-items: center;

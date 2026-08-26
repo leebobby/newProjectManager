@@ -411,7 +411,8 @@ export const iterationRequirementApi = {
 }
 
 export const domainApi = {
-  // params: { year, month, include_hidden, project }（不传＝进行中迭代 + 第一个有快照的项目）
+  // params: { year, month, release_version_id, include_hidden, project }
+  //（不传＝进行中迭代 + 第一个有快照的项目；给了 release_version_id 就按版本、忽略 year/month）
   list: (params) => http.get('/domains', { params }),
   requirements: (groupId, params) => http.get(`/domains/${groupId}/requirements`, { params }),
   issues: (groupId, params) => http.get(`/domains/${groupId}/issues`, { params }),

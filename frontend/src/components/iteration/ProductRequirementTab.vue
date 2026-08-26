@@ -1,22 +1,22 @@
 <template>
   <div>
+    <!-- 项目分标签：项目挂在需求行上（迭代本身跨项目），这里只是**前端切片**，
+         数据一次拉全、切标签不重新请求。标签上的条数按当前其它筛选后的结果算，
+         点进去看到多少条就写多少条，否则「标签写 12、点进去 3 条」没人说得清。 -->
+    <el-tabs v-model="projectTab" type="card" class="project-tabs">
+      <el-tab-pane
+        v-for="t in projectTabs"
+        :key="t.name"
+        :name="t.name"
+        :label="`${t.label} (${t.count})`"
+      />
+    </el-tabs>
+
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openCreate">新增产品需求</el-button>
       <el-button :icon="Upload" type="warning" @click="openImport">批量导入</el-button>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button v-if="isAdmin" :icon="Setting" @click="openFeatureDialog">管理所属特性</el-button>
-      <el-select
-        v-model="filterProjectId"
-        placeholder="按项目筛选"
-        clearable
-        filterable
-        size="small"
-        style="width: 170px"
-        :persistent="false"
-      >
-        <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
-        <el-option :value="UNASSIGNED" label="未指定项目" />
-      </el-select>
       <el-select
         v-model="filterUserId"
         placeholder="按特性角色筛选"
@@ -447,15 +447,25 @@ import { configApi, downloadBlob, productRequirementApi, userApi } from '../../a
 import { auth } from '../../store/auth'
 import EditSelectCell from '../EditSelectCell.vue'
 
+// 项目标签的两个特殊页签。「未指定」必须是一个**显式**页签：
+// 没填项目的行正是最该被找出来补录的那批，混在「全部」里就永远没人去补。
+const ALL = 'all'
+const NONE = 'none'
+
 const props = defineProps({
   iterationId: { type: Number, required: true },
   versionGroups: { type: Array, default: () => [] },
   projects: { type: Array, default: () => [] },
+  // 当前项目标签，由 IterationDetail 持有：产品需求 / 领域需求两个 Tab 共用一个选择，
+  // 来回切的时候不会各自记一份，看着像"切回来筛选自己变了"。
+  projectScope: { type: String, default: 'all' },   // 值同 ALL，defineProps 里只能写字面量
 })
+const emit = defineEmits(['update:projectScope'])
 
-// 「未指定项目」在筛选下拉里得有个自己的值——用 null 会被 clearable 当成"没筛"，
-// 于是那批最该被找出来补录的行反而永远筛不出来。
-const UNASSIGNED = -1
+const projectTab = computed({
+  get: () => props.projectScope,
+  set: (v) => emit('update:projectScope', v),
+})
 
 const isAdmin = auth.isAdmin
 
@@ -482,6 +492,21 @@ function isChangedRow(row) {
 
 function rowClass({ row }) {
   return isChangedRow(row) ? 'row-changed' : ''
+}
+
+// 项目标签 → 行过滤。标签名是字符串（el-tabs 的 name 只认字符串），
+// 与 row.project_id 比较前要转一次，别直接 ===。
+function filterByProject(rows, tab) {
+  if (tab === ALL) return rows
+  if (tab === NONE) return rows.filter((r) => !r.project_id)
+  const pid = Number(tab)
+  return rows.filter((r) => r.project_id === pid)
+}
+
+// 当前标签停在某个具体项目上时，新增的需求默认就归它——在「YLS3000」标签下新建，
+// 建出来一条没填项目的行才是意外。
+function currentProjectId() {
+  return projectTab.value === ALL || projectTab.value === NONE ? null : Number(projectTab.value)
 }
 
 // 特性角色列（FK 化）：fkField 是后端 FK 字段名
@@ -519,7 +544,6 @@ const list = ref([])
 const features = ref([])
 const userOptions = ref([])
 const filterUserId = ref(null)
-const filterProjectId = ref(null)
 // 默认只置灰不隐藏：隐藏成默认的话，误标成已变更的行会连同「改回来」的入口一起消失。
 const hideChanged = ref(false)
 const loading = ref(false)
@@ -531,18 +555,30 @@ const editingCell = ref(null)
 
 const featureDialog = reactive({ visible: false, saving: false, list: [] })
 
+// 标签上的条数按「除项目外的其它筛选都已生效」的结果算，见 baseList。
+const projectTabs = computed(() => {
+  const counts = new Map()
+  let none = 0
+  for (const r of baseList.value) {
+    if (r.project_id) counts.set(r.project_id, (counts.get(r.project_id) || 0) + 1)
+    else none += 1
+  }
+  const tabs = [{ name: ALL, label: '全部', count: baseList.value.length }]
+  for (const p of props.projects) {
+    tabs.push({ name: String(p.id), label: p.name, count: counts.get(p.id) || 0 })
+  }
+  tabs.push({ name: NONE, label: '未指定项目', count: none })
+  return tabs
+})
+
 const changedCount = computed(() => list.value.filter(isChangedRow).length)
 
-const filteredList = computed(() => {
+// baseList＝除「项目标签」外的所有筛选都生效后的结果。分两步是为了让标签上的
+// 条数与点进去看到的行数永远一致（标签算的就是 baseList 按项目的分布）。
+const baseList = computed(() => {
   const uid = filterUserId.value
-  const pid = filterProjectId.value
   return list.value.filter((r) => {
     if (hideChanged.value && isChangedRow(r)) return false
-    if (pid === UNASSIGNED) {
-      if (r.project_id) return false
-    } else if (pid && r.project_id !== pid) {
-      return false
-    }
     if (uid && !(
       r.feature_fo_user_id === uid ||
       r.feature_se_user_id === uid ||
@@ -551,6 +587,8 @@ const filteredList = computed(() => {
     return true
   })
 })
+
+const filteredList = computed(() => filterByProject(baseList.value, projectTab.value))
 
 const importVisible = ref(false)
 const importing = ref(false)
@@ -619,6 +657,7 @@ async function loadUserOptions() {
 function openCreate() {
   editing.value = null
   Object.assign(form, defaultForm())
+  form.project_id = currentProjectId()
   form.seq = (list.value.length || 0) + 1
   formUserPicks.feature_fo = null
   formUserPicks.feature_se = null
@@ -854,6 +893,16 @@ onMounted(() => {
 :deep(.el-table__body tr.row-changed .cell) { opacity: 0.78; }
 .changed-tag { margin-right: 4px; }
 
+.project-tabs {
+  margin-bottom: 4px;
+}
+/* 标签页只当选择器用，内容区是空的——不压掉高度会白白多出一段留白 */
+.project-tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+.project-tabs :deep(.el-tabs__content) {
+  display: none;
+}
 .toolbar {
   margin-bottom: 12px;
   display: flex;

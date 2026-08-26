@@ -20,6 +20,7 @@
             :iteration-id="iterationId"
             :version-groups="versionGroups"
             :projects="projects"
+            v-model:project-scope="projectScope"
             @vue:mounted="productMounted = true"
           />
         </el-tab-pane>
@@ -29,6 +30,7 @@
             :iteration-id="iterationId"
             :version-groups="versionGroups"
             :projects="projects"
+            v-model:project-scope="projectScope"
             @vue:mounted="domainMounted = true"
           />
         </el-tab-pane>
@@ -56,6 +58,9 @@ const iteration = ref(null)
 const versionGroups = ref([])
 const projects = ref([])
 const activeTab = ref('product')
+// 项目标签放在这里而不是各自的 Tab 里：产品/领域两张表共用一个项目选择，
+// 来回切标签页时筛选跟着走，否则会以为"切回来筛选自己变了"。
+const projectScope = ref('all')
 const productMounted = ref(false)
 const domainMounted = ref(false)
 

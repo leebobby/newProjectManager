@@ -1477,6 +1477,18 @@ class DomainIterationOpt(BaseModel):
     in_progress: bool = False
 
 
+class DomainVersionOpt(BaseModel):
+    """领域总览顶部「按版本」标签的一个可选项（= 一个版本，C10SPC101 这一层）。
+
+    只列出**当前挂着领域需求**的版本，req_count 就是挂着多少条；
+    全量列版本的话一排标签里大半点进去是空的。
+    """
+    id: int                        # release_versions.id
+    version_no: str = ""
+    major_version_no: str = ""
+    req_count: int = 0
+
+
 class DomainContentUpdate(BaseModel):
     recent_work: Optional[str] = None
     risks: Optional[List[DomainRiskItem]] = None
@@ -1503,6 +1515,8 @@ class DomainListOut(BaseModel):
     selected_year: Optional[int] = None     # 选中的月份（未选时为空＝进行中口径）
     selected_month: Optional[int] = None
     iterations: List[DomainIterationOpt] = []   # 可选月份列表（年度迭代）
+    versions: List[DomainVersionOpt] = []       # 可选版本列表（只含挂着需求的版本）
+    selected_release_version_id: Optional[int] = None   # 非空＝当前是「按版本」口径，此时 year/month 不生效
     projects: List[DomainProjectOpt] = []       # 可选问题单项目（来自问题单管理的快照）
     selected_project: Optional[str] = None      # 当前生效的问题单项目
     rows: List[DomainRowOut] = []

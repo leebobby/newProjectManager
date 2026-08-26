@@ -19,12 +19,12 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 import enums
 import models
 from database import get_db
+from routers import _req_scope
 
 router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
@@ -149,22 +149,12 @@ def version_metric(
         raise HTTPException(404, "Not found")
     mv = rv.major_version
 
-    # 该版本下所有迭代版本 id
-    iv_ids = [iv.id for iv in rv.iteration_versions]
-    iv_no_set = {iv.version_no for iv in rv.iteration_versions if iv.version_no}
-    iv_no_set.add(rv.version_no)
-
-    # 取领域 / 产品需求，FK 命中 或 字符串命中
-    domain_q = db.query(models.IterationRequirement).filter(or_(
-        models.IterationRequirement.target_version_id.in_(iv_ids) if iv_ids else False,
-        (models.IterationRequirement.target_version_id.is_(None)) &
-        (models.IterationRequirement.planned_version.in_(iv_no_set) if iv_no_set else False),
-    ))
-    product_q = db.query(models.IterationProductRequirement).filter(or_(
-        models.IterationProductRequirement.target_version_id.in_(iv_ids) if iv_ids else False,
-        (models.IterationProductRequirement.target_version_id.is_(None)) &
-        (models.IterationProductRequirement.planned_version.in_(iv_no_set) if iv_no_set else False),
-    ))
+    # 取领域 / 产品需求：FK 命中 或 字符串命中。匹配规则收口在 _req_scope，
+    # 领域总览的「按版本」口径走的是同一份，否则同一个版本两个页面给出不同条数。
+    domain_q = db.query(models.IterationRequirement).filter(
+        _req_scope.version_clause(models.IterationRequirement, rv))
+    product_q = db.query(models.IterationProductRequirement).filter(
+        _req_scope.version_clause(models.IterationProductRequirement, rv))
 
     items: list[VersionItem] = []
     completions: list[float] = []
