@@ -46,6 +46,12 @@ DOMAIN_LEGACY_STATUS_DEFAULT = "OPEN"
 # 这两张表沿用「高/中/低」而非 P0-P3：它们是跟踪事项不是需求，与需求优先级不同口径
 DOMAIN_TASK_PRIORITIES = ("高", "中", "低")
 DOMAIN_TASK_PRIORITY_DEFAULT = "中"
+# 事务与风险跟踪的「风险等级」：与优先级同词表但**不是同一个口径**——
+# 优先级答的是"先处理哪个"，等级答的是"真砸下来有多疼"。一条低优先级的高等级风险
+# （短期不动、但爆了很惨）是常态，合成一列就再也表达不出来。
+# 没有默认值：这张表里事务行和风险行混着，事务本来就没有风险等级，
+# 默认成「中」会让半屏事务行挂上一个凭空捏的等级，而没人会当 bug 报。
+DOMAIN_RISK_LEVELS = ("高", "中", "低")
 
 # ── 年度迭代状态 ─────────────────────────────────────────────────────────────
 ITERATION_STATUSES = ("planning", "in_progress", "done")
@@ -157,6 +163,21 @@ def norm_domain_priority(v, *, partial: bool = False) -> Optional[str]:
     """领域跟踪事项优先级：高/中/低（与需求的 P0-P3 是两套口径，不互转）。"""
     return _norm_choice(v, DOMAIN_TASK_PRIORITIES, DOMAIN_TASK_PRIORITY_DEFAULT,
                         "优先级", partial=partial)
+
+
+def norm_domain_risk_level(v, *, partial: bool = False) -> str:
+    """风险等级：高/中/低，**空是合法取值**（事务行没有等级）。
+
+    不走 _norm_choice：那一套把空值当"不修改"（partial）或"落默认值"，
+    而这里空既不是不修改也不该有默认——留空就是留空，一律归一成空串，
+    这样"清掉等级"和"没填过等级"在库里是同一个值，统计时不用分两种情况判。
+    """
+    if _is_blank(v):
+        return ""
+    s = str(v).strip()
+    if s in DOMAIN_RISK_LEVELS:
+        return s
+    raise ValueError(f"风险等级「{v}」非法，应为 {'/'.join(DOMAIN_RISK_LEVELS)} 之一或留空")
 
 # ── 关键特性交付状态（key_features）───────────────────────────────────────────
 # 从"最成熟"到"最早期"排序；前端点灯颜色须与本顺序一致。

@@ -335,6 +335,14 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
 - 校验用 `norm_*` 系列函数（`norm_priority` / `norm_progress` / `norm_issue_status` …）。
 - **`norm_*` 只挂在 `Create` / `Update` schema 上，绝不挂 `Base` / `Out`**：`Out` 继承 `Base`
   并走 `from_attributes` 读库，老库里的历史脏值会让读取直接 422。
+- **同词表不等于同一列**：领域事务/风险的「优先级」与「风险等级」都是高/中/低，
+  但答的是两个问题——先处理哪个 vs 爆了有多疼。合成一列就再也表达不出"低优先级的
+  高风险"（短期不动、但爆了很惨），而合并之后没人能从数据里看出丢了什么。
+  风险等级（`DOMAIN_RISK_LEVELS`）**没有默认值、空是合法取值**：那张表里事务行和
+  风险行混着，事务本来就没有等级，默认成「中」会让半屏事务挂上一个凭空捏的等级。
+  所以它的 `norm_domain_risk_level()` 不走 `_norm_choice`——后者把空当作"不修改"
+  或"落默认值"，这里空既不是不修改也不该有默认，一律归一成空串，
+  「清掉等级」与「没填过」在库里是同一个值，统计时不用分两种情况判。
 - 状态词表里**大小写不统一的字面量要在入口归一**：领域遗留问题的三档是
   `OPEN / CLOSED / pending`（业务方指定的写法，别顺手统一成大写），
   `norm_domain_legacy_status()` 把任意大小写折回这三个字面量——否则
@@ -353,10 +361,15 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
 
 ## 富文本：入口清洗，出口也清洗
 
-详情页多处用 `v-html` 渲染用户填的 HTML（目标 / 整体进展 / 求助 / 事务 / 风险 / 文本框分段）。
+多处用 `v-html` 渲染用户填的 HTML（专项的目标 / 整体进展 / 求助 / 事务 / 风险 / 文本框分段，
+领域的最近主要工作 / 遗留问题当前进展）。
 **写库前必须过 `_sanitize_rich()`**（`routers/specials.py` 的 `_sanitize_rich_fields()` /
 `_sanitize_blocks_json()`），只在导出周报时清洗等于只保护了收件人，页面本身仍是任何
 登录用户都能往别人的专项里存一段脚本。出口的清洗保留着——老数据还没洗过。
+**领域侧没有 `_sanitize_rich_fields()` 这种批量入口**，是逐个字段调 `_sanitize_rich()`
+（`domains.py` 的 `update_domain_content` / `create_legacy_issue` / `update_legacy_issue`）：
+**新加一个 `v-html` 字段就得在自己那条写路径上补一次调用**，漏了不会报错，
+只是那一列从此可以存脚本。
 
 - 白名单 `_ALLOWED_TAGS` / `_ALLOWED_STYLE_PROPS` 决定编辑器能提供什么格式：
   **加了工具条按钮就要同步加白名单**，否则那个格式每次保存被静默抹掉

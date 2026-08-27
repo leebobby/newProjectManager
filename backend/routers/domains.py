@@ -530,9 +530,11 @@ def _domain_name_map(db: Session) -> dict:
     return {r.id: r.name for r in rows}
 
 
-def _task_out(obj: models.DomainRisk, name_map: dict) -> schemas.DomainTaskOut:
+def _task_out(obj: models.DomainRisk, name_map: dict,
+              users: Optional[Dict[int, str]] = None) -> schemas.DomainTaskOut:
     out = schemas.DomainTaskOut.model_validate(obj)
     out.domain_name = name_map.get(obj.domain_id)
+    out.owner_name = (users or {}).get(obj.owner_id)
     return out
 
 
@@ -549,8 +551,8 @@ def list_domain_risks(
         models.DomainRisk.seq.asc(),
         models.DomainRisk.id.asc(),
     ).all()
-    name_map = _domain_name_map(db)
-    return [_task_out(r, name_map) for r in rows]
+    name_map, users = _domain_name_map(db), _user_name_map(db)
+    return [_task_out(r, name_map, users) for r in rows]
 
 
 @router.post("/risks", response_model=schemas.DomainTaskOut)
@@ -569,7 +571,7 @@ def create_domain_risk(
     db.refresh(obj)
     log_op(db, action="新增", target="领域事务/风险", target_id=obj.id,
            detail=(obj.content or "")[:40], user=current_user, request=request)
-    return _task_out(obj, _domain_name_map(db))
+    return _task_out(obj, _domain_name_map(db), _user_name_map(db))
 
 
 @router.put("/risks/{rid}", response_model=schemas.DomainTaskOut)
@@ -594,7 +596,7 @@ def update_domain_risk(
     db.refresh(obj)
     log_op(db, action="修改", target="领域事务/风险", target_id=obj.id,
            detail=(obj.content or "")[:40], user=current_user, request=request)
-    return _task_out(obj, _domain_name_map(db))
+    return _task_out(obj, _domain_name_map(db), _user_name_map(db))
 
 
 @router.delete("/risks/{rid}")
@@ -747,8 +749,13 @@ def create_legacy_issue(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    from routers.specials import _sanitize_rich
+
     data = payload.model_dump()
     participants = data.pop("participants", None) or []
+    # 当前进展是富文本且详情表里用 v-html 渲染：入口不清洗＝任何登录用户都能往
+    # 别人的遗留问题里存一段脚本（见 CLAUDE.md「富文本：入口清洗，出口也清洗」）
+    data["progress"] = _sanitize_rich(data.get("progress") or "")
     if not data.get("seq"):
         data["seq"] = (db.query(func.coalesce(func.max(models.DomainLegacyIssue.seq), 0))
                        .scalar() or 0) + 1
@@ -776,8 +783,12 @@ def update_legacy_issue(
         raise HTTPException(404, "Not found")
     if obj.version != payload.version:
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    from routers.specials import _sanitize_rich
+
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    if changes.get("progress") is not None:
+        changes["progress"] = _sanitize_rich(changes["progress"])
     if "participants" in changes:
         ids = changes.pop("participants") or []
         obj.participants_json = json.dumps([int(x) for x in ids])

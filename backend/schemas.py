@@ -1531,15 +1531,20 @@ class DomainTaskBase(BaseModel):
     seq: Optional[int] = 0
     content: Optional[str] = ""
     priority: Optional[str] = "中"          # 高 / 中 / 低
+    risk_level: Optional[str] = ""          # 高 / 中 / 低，空＝事务行（与优先级不同口径）
     progress: Optional[str] = ""
     domain_id: Optional[int] = None         # 责任领域（PL 组）
+    owner_id: Optional[int] = None          # 责任人（具体的人，领域只到组）
     planned_close_date: Optional[datetime] = None
     status: Optional[str] = "OPEN"          # OPEN / CLOSED / 挂起
     sort_order: Optional[int] = 0
 
 
 class DomainTaskCreate(DomainTaskBase):
-    pass
+    @field_validator("risk_level")
+    @classmethod
+    def _v_risk_level(cls, v):
+        return enums.norm_domain_risk_level(v)
 
 
 class DomainTaskUpdate(BaseModel):
@@ -1547,16 +1552,25 @@ class DomainTaskUpdate(BaseModel):
     seq: Optional[int] = None
     content: Optional[str] = None
     priority: Optional[str] = None
+    risk_level: Optional[str] = None
     progress: Optional[str] = None
     domain_id: Optional[int] = None
+    owner_id: Optional[int] = None
     planned_close_date: Optional[datetime] = None
     status: Optional[str] = None
     sort_order: Optional[int] = None
+
+    @field_validator("risk_level")
+    @classmethod
+    def _v_risk_level(cls, v):
+        # partial 对等级没有意义：空就是"清掉"，不是"不修改"
+        return enums.norm_domain_risk_level(v)
 
 
 class DomainTaskOut(DomainTaskBase):
     id: int
     domain_name: Optional[str] = None       # 由后端解析回填
+    owner_name: Optional[str] = None
     version: int
 
     model_config = ConfigDict(from_attributes=True)
@@ -1574,6 +1588,7 @@ class DomainLegacyIssueBase(BaseModel):
     domain_id: Optional[int] = None         # 所属领域（PL 组）
     planned_date: Optional[datetime] = None  # 用户填写的日期，不标 LocalDT
     priority: Optional[str] = "中"          # 高 / 中 / 低
+    progress: Optional[str] = ""            # 当前进展（富文本 HTML，入库前清洗）
     remark: Optional[str] = ""
     sort_order: Optional[int] = 0
 
@@ -1602,6 +1617,7 @@ class DomainLegacyIssueUpdate(BaseModel):
     domain_id: Optional[int] = None
     planned_date: Optional[datetime] = None
     priority: Optional[str] = None
+    progress: Optional[str] = None
     remark: Optional[str] = None
     sort_order: Optional[int] = None
 

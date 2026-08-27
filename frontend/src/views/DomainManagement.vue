@@ -212,12 +212,24 @@
               <el-tag size="small" :type="prioType(row.priority)">{{ row.priority || '—' }}</el-tag>
             </template>
           </el-table-column>
+          <!-- 等级用 dark、优先级用 light：两列同是高/中/低，不做视觉区分会被读串 -->
+          <el-table-column label="风险等级" width="84" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.risk_level" size="small" effect="dark" :type="levelType(row.risk_level)">
+                {{ row.risk_level }}
+              </el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="progress" label="当前进展" min-width="180" show-overflow-tooltip />
           <el-table-column label="责任领域" width="150">
             <template #default="{ row }">
               <el-tag v-if="row.domain_name" size="small" effect="plain">{{ row.domain_name }}</el-tag>
               <span v-else class="muted">—</span>
             </template>
+          </el-table-column>
+          <el-table-column label="责任人" width="96">
+            <template #default="{ row }">{{ row.owner_name || '—' }}</template>
           </el-table-column>
           <el-table-column label="计划闭环时间" width="130">
             <template #default="{ row }">{{ fmtDate(row.planned_close_date) || '—' }}</template>
@@ -258,6 +270,12 @@
           <el-table-column label="状态" width="94" align="center">
             <template #default="{ row }">
               <el-tag size="small" :type="legacyStatusType(row.status)" effect="dark">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前进展" min-width="220">
+            <template #default="{ row }">
+              <div v-if="row.progress" class="cell-multiline rich-cell" v-html="row.progress" />
+              <span v-else class="muted">—</span>
             </template>
           </el-table-column>
           <el-table-column label="当前责任人" width="100">
@@ -347,6 +365,10 @@
             <el-option v-for="p in PRIORITIES" :key="p" :label="p" :value="p" />
           </el-select>
         </el-form-item>
+        <el-form-item label="当前进展">
+          <RichTextEditor v-model="legacyForm.progress" min-height="110px"
+            placeholder="支持加粗 / 字号 / 颜色，可多行" />
+        </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="legacyForm.remark" type="textarea" :rows="2" />
         </el-form-item>
@@ -423,10 +445,22 @@
           <el-select v-model="riskForm.priority" style="width: 160px">
             <el-option v-for="p in PRIORITIES" :key="p" :label="p" :value="p" />
           </el-select>
+          <span class="muted" style="margin-left: 10px">先处理哪个</span>
+        </el-form-item>
+        <el-form-item label="风险等级">
+          <el-select v-model="riskForm.risk_level" clearable placeholder="事务可不填" style="width: 160px">
+            <el-option v-for="p in RISK_LEVELS" :key="p" :label="p" :value="p" />
+          </el-select>
+          <span class="muted" style="margin-left: 10px">爆了有多疼；事务行留空</span>
         </el-form-item>
         <el-form-item label="责任领域">
           <el-select v-model="riskForm.domain_id" clearable filterable placeholder="选择领域（PL组）" style="width: 100%">
             <el-option v-for="d in domainOptions" :key="d.id" :value="d.id" :label="d.name" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="责任人">
+          <el-select v-model="riskForm.owner_id" clearable filterable placeholder="选择人员" style="width: 100%">
+            <el-option v-for="u in userOptions" :key="u.id" :value="u.id" :label="userLabel(u)" />
           </el-select>
         </el-form-item>
         <el-form-item label="当前进展">
@@ -502,6 +536,9 @@ const PROG_COLS = [
   { key: 'progress_clarify', label: '转测澄清' },
 ]
 const PRIORITIES = ['高', '中', '低']
+// 与后端 enums.DOMAIN_RISK_LEVELS 一一对应。词表与优先级同款但**不是同一列**：
+// 优先级＝先处理哪个，等级＝爆了有多疼，合成一列就再也表达不出"低优先级的高风险"
+const RISK_LEVELS = ['高', '中', '低']
 const STATUSES = ['OPEN', 'CLOSED', '挂起']
 // 与后端 enums.DOMAIN_LEGACY_STATUSES 一一对应；pending 是小写，别"顺手"统一成大写
 const LEGACY_STATUSES = ['OPEN', 'CLOSED', 'pending']
@@ -561,6 +598,9 @@ function progType(v) {
 }
 function prioType(p) {
   return { '高': 'danger', '中': 'warning', '低': 'info' }[p] || 'info'
+}
+function levelType(v) {
+  return { '高': 'danger', '中': 'warning', '低': 'success' }[v] || 'info'
 }
 function statusType(s) {
   // OPEN 橙、CLOSED 绿、挂起 灰
@@ -684,8 +724,8 @@ const riskForm = reactive(blankRisk())
 
 function blankRisk() {
   return {
-    id: null, version: 0, content: '', priority: '中', progress: '',
-    domain_id: null, planned_close_date: null, status: 'OPEN',
+    id: null, version: 0, content: '', priority: '中', risk_level: '', progress: '',
+    domain_id: null, owner_id: null, planned_close_date: null, status: 'OPEN',
   }
 }
 async function loadRisks() {
@@ -748,7 +788,7 @@ function blankLegacy() {
   return {
     id: null, version: 0, seq: 0, title: '', status: 'OPEN',
     owner_id: null, reporter_id: null, confirmer_id: null, participants: [],
-    domain_id: null, planned_date: null, priority: '中', remark: '',
+    domain_id: null, planned_date: null, priority: '中', progress: '', remark: '',
   }
 }
 function legacyRowClass(row) {
@@ -912,12 +952,21 @@ onMounted(() => { load(); loadRisks(); loadDomainOptions(); loadLegacy(); loadUs
 .hdr-help { font-size: 13px; color: #909399; vertical-align: -1px; cursor: help; }
 .prio-line { margin-top: 4px; }
 .prio { color: #909399; font-size: 12px; margin-right: 8px; }
+/* 富文本单元格：限高 + 内部滚动。不限高的话一条写满的进展会把整行撑到半屏，
+   同屏的其它行全被挤出视野 */
 .rich-cell {
   max-height: 96px;
   overflow: auto;
   font-size: 13px;
   line-height: 1.5;
 }
+.cell-multiline {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 编辑器产出的 <p> / <div> 自带块级间距，落到表格里就是行与行之间莫名的空档 */
+.rich-cell :deep(p) { margin: 0; }
+.rich-cell :deep(div) { display: inline; }
 .risk-list { display: flex; flex-direction: column; gap: 4px; }
 .risk-item { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
 .risk-content { flex: 1; }
