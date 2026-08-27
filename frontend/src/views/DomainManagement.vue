@@ -3,17 +3,13 @@
     <el-tabs v-model="activeTab" class="domain-tabs">
       <!-- ===== 领域总览 ===== -->
       <el-tab-pane label="领域总览" name="overview">
-        <!-- 需求口径分标签：按迭代（月）或按版本，**二选一**。版本是跨迭代的，
+        <!-- 需求口径分标签：只有「按迭代」「按版本」两档，**二选一**。版本是跨迭代的，
              两者叠加会得到一个既不是这个版本、也不是这个迭代的数（见后端 _ReqScope）。
-             版本标签只列当前挂着需求的版本，条数就是挂着多少条。 -->
+             具体是哪个月、哪个版本由右边的下拉选——版本不铺成标签：三层版本里光构建
+             就上百个，挂着需求的版本也可能十几个，铺开一排标签比下拉更难找。 -->
         <el-tabs v-model="scopeTab" type="card" class="scope-tabs" @tab-change="onScopeChange">
           <el-tab-pane name="iteration" label="按迭代" />
-          <el-tab-pane
-            v-for="v in data.versions"
-            :key="v.id"
-            :name="String(v.id)"
-            :label="`${v.version_no || '未命名'} (${v.req_count})`"
-          />
+          <el-tab-pane name="version" label="按版本" />
         </el-tabs>
 
         <div class="page-head">
@@ -34,7 +30,28 @@
                 :label="it.label + statusSuffix(it)"
               />
             </el-select>
-            <span v-else class="muted">按版本统计，不限迭代月份</span>
+            <template v-else>
+              <el-select
+                v-model="versionId"
+                size="small"
+                filterable
+                style="width: 260px"
+                placeholder="选择版本"
+                :disabled="!data.versions.length"
+                @change="load"
+              >
+                <el-option
+                  v-for="v in data.versions"
+                  :key="v.id"
+                  :value="v.id"
+                  :label="`${v.major_version_no ? v.major_version_no + ' / ' : ''}${v.version_no || '未命名'}（${v.req_count} 条）`"
+                />
+              </el-select>
+              <span v-if="!data.versions.length" class="muted" style="margin-left: 8px">
+                还没有需求填了「计划交付版本」，按版本统计暂时无可选项
+              </span>
+              <span v-else class="muted" style="margin-left: 8px">跨迭代，不限月份</span>
+            </template>
             <el-tag type="primary" effect="plain" style="margin-left: 8px">{{ data.iteration_label || '—' }}</el-tag>
 
             <span class="muted" style="margin-left: 16px">问题单项目：</span>
@@ -496,16 +513,24 @@ const loading = ref(false)
 const showHidden = ref(false)
 // 需求口径：'' = 当前进行中迭代；'2026-6' = 指定年度迭代月份
 const monthKey = ref('')
-// 需求口径的另一档：'iteration' = 按上面的月份；其余是 release_versions.id（字符串，el-tabs 的 name 只认字符串）
+// 需求口径的另一档：'iteration' = 按上面的月份；'version' = 按 versionId 指的版本
 const scopeTab = ref('iteration')
+// 按版本口径选中的 release_versions.id（版本这一层 C10SPC101，不是构建）
+const versionId = ref(null)
 
 // 总览与下钻共用这一份口径参数——两边各拼一次的表现是「格子里写 8 条、点进去 5 条」。
 function scopeParams() {
-  if (scopeTab.value !== 'iteration') return { release_version_id: Number(scopeTab.value) }
+  if (scopeTab.value === 'version') return { release_version_id: versionId.value }
   return parseKey(monthKey.value)
 }
 
 function onScopeChange() {
+  if (scopeTab.value === 'version' && !versionId.value) {
+    // 切过来还没选过版本：落到列表最后一个。版本按 sort_order 排，最后一个通常是最新的那个；
+    // 一个挂着需求的版本都没有时不发请求，否则后端会退回迭代口径，页面写着「按版本」显示的却是本月。
+    if (!data.versions.length) return
+    versionId.value = data.versions[data.versions.length - 1].id
+  }
   load()
 }
 // 问题单口径：项目/版本；'' = 让后端挑第一个有快照的项目（首次进页面时）
@@ -560,6 +585,13 @@ function riskRowClass(row) {
 }
 
 async function load() {
+  if (scopeTab.value === 'version' && !versionId.value) {
+    // 按版本但一个可选版本都没有：清空表格，别退回迭代口径——页头写着「按版本」、
+    // 底下显示的却是本月的数字，是最难被发现的那种错。
+    data.rows = []
+    data.iteration_label = '按版本（暂无可选版本）'
+    return
+  }
   loading.value = true
   try {
     const { data: d } = await domainApi.list({
