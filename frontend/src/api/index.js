@@ -179,6 +179,10 @@ export const metricsApi = {
     http.get(`/metrics/iteration/${iteration_id}`, { params }),
   iterationQuality: (year, params = {}) =>
     http.get(`/metrics/iteration-quality/${year}`, { params }),
+  // 领域质量按**迭代**切、版本质量按**整个版本**切：领域是按月排活的，
+  // 版本是跨月的，按月截一刀会得到一个既不是这个版本也不是这个月的数。
+  domainQuality: (iteration_id, params = {}) =>
+    http.get(`/metrics/domain-quality/${iteration_id}`, { params }),
   group: (group_id, params = {}) => http.get(`/metrics/group/${group_id}`, { params }),
 }
 
