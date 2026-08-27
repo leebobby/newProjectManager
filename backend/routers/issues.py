@@ -295,134 +295,94 @@ def _list_report_files(path_str: str) -> List[tuple]:
 # ─── PPT builder ────────────────────────────────────────────────────────────
 
 def _build_pptx(data: dict) -> io.BytesIO:
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
+    """缺陷统计报表 PPT：封面 + 三张矩阵表。
+
+    表格排版全部走 pptx_utils 的统一入口（分页 / 列宽归一化 / 合计行加粗）——
+    原来这里自己算行高与列宽：行一多表格顺着页面往下长到幻灯片外面，
+    列一多每列被压到 0.4"，导出来没法直接用。
+    """
     from pptx.dml.color import RGBColor
-    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches
 
-    # 复用专项 PPT 的排版基元：中文字体补齐 / 清默认表样式 / 细边框 / 单元格边距
-    from pptx_utils import _apply_run_font, _clear_table_style, _set_cell_border, _set_cell_margins
+    import pptx_utils as PU
 
-    prs = Presentation()
-    prs.slide_width  = Inches(13.33)
-    prs.slide_height = Inches(7.5)
+    prs = PU._new_pres()
     blank = prs.slide_layouts[6]
 
-    C_BLUE   = RGBColor(0x40, 0x73, 0xBA)
-    C_RED    = RGBColor(0xF5, 0x6C, 0x6C)
-    C_ORANGE = RGBColor(0xE6, 0xA2, 0x3C)
-    C_GRAY   = RGBColor(0x90, 0x93, 0x99)
+    C_CRIT   = RGBColor(0x8E, 0x24, 0xAA)   # 致命
+    C_RED    = RGBColor(0xC6, 0x28, 0x28)   # 严重
+    C_ORANGE = RGBColor(0xE6, 0xA2, 0x3C)   # 一般
+    C_GRAY   = RGBColor(0x90, 0x93, 0x99)   # 提示
     C_WHITE  = RGBColor(0xFF, 0xFF, 0xFF)
-    C_DARK   = RGBColor(0x30, 0x31, 0x33)
-    C_LIGHT  = RGBColor(0xF5, 0xF7, 0xFA)
-    C_ZEBRA  = RGBColor(0xF3, 0xF7, 0xFC)
-    C_BORDER = RGBColor(0xD8, 0xDE, 0xE8)
 
     raw = data.get("raw", [])
+    stamp = f"{data.get('actual_file', '')}   {data.get('file_mtime', '')}".strip()
+    subtitle = f"数据源：{stamp}" if stamp else "缺陷统计报表"
 
-    def _txt(slide, text, x, y, w, h, size=12, bold=False, color=C_DARK, align=PP_ALIGN.LEFT):
+    def _txt(slide, text, x, y, w, h, size=12, bold=False, color=C_GRAY, align=PP_ALIGN.LEFT):
         tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
-        tf = tb.text_frame
-        p = tf.paragraphs[0]
+        p = tb.text_frame.paragraphs[0]
         p.alignment = align
         run = p.add_run()
         run.text = text
-        _apply_run_font(run, size, bold, color)
+        PU._apply_run_font(run, size, bold, color)
 
-    def _cell_run(cell, text: str, size: int, bold: bool, color: RGBColor,
-                  align=PP_ALIGN.LEFT, bg: RGBColor = None):
-        cell.fill.solid()
-        cell.fill.fore_color.rgb = bg if bg is not None else C_WHITE
-        cell.vertical_anchor = MSO_ANCHOR.MIDDLE
-        _set_cell_margins(cell)
-        p = cell.text_frame.paragraphs[0]
-        p.alignment = align
-        run = p.add_run()
-        run.text = text
-        _apply_run_font(run, size, bold, color)
-        _set_cell_border(cell, C_WHITE if bg == C_BLUE else C_BORDER)
+    # ── 封面 ────────────────────────────────────────────────────────
+    cover = prs.slides.add_slide(blank)
+    _txt(cover, "缺陷统计报表", 1, 1.7, 11.3, 1.4, size=44, bold=True,
+         color=PU._BRAND, align=PP_ALIGN.CENTER)
+    _txt(cover, stamp, 1, 3.2, 11.3, 0.5, size=13, color=C_GRAY, align=PP_ALIGN.CENTER)
 
-    def _table_slide(title: str, columns: List[str], rows_data: List[List[str]]):
-        slide = prs.slides.add_slide(blank)
-        _txt(slide, title, 0.4, 0.15, 12.5, 0.6, size=20, bold=True, color=C_BLUE)
+    def _sev(name):
+        return sum(1 for r in raw if (r.get("severity") or "").strip() == name)
 
-        n_rows = len(rows_data) + 1
-        n_cols = len(columns)
-        cell_h = min(0.38, 5.8 / n_rows)
-        total_h = cell_h * n_rows
-        tbl = slide.shapes.add_table(
-            n_rows, n_cols,
-            Inches(0.4), Inches(0.9), Inches(12.5), Inches(total_h)
-        ).table
-        _clear_table_style(tbl)   # 去掉默认蓝色条纹主题，让手动样式完全生效
+    cards = [("合计", len(raw), PU._BRAND)]
+    for name, color in (("致命", C_CRIT), ("严重", C_RED), ("一般", C_ORANGE), ("提示", C_GRAY)):
+        n = _sev(name)
+        # 致命一栏为 0 时不铺出来：多数项目没有致命单，占着一张卡片只会稀释其它数字
+        if n or name != "致命":
+            cards.append((name, n, color))
 
-        col_w = [2.0] + [10.5 / max(n_cols - 1, 1)] * (n_cols - 1)
-
-        for c, h in enumerate(columns):
-            _cell_run(tbl.cell(0, c), h, 10, True, C_WHITE,
-                      align=PP_ALIGN.CENTER, bg=C_BLUE)
-
-        for r, row_vals in enumerate(rows_data):
-            is_total = bool(row_vals) and row_vals[0] == "合计"
-            zebra = C_ZEBRA if (not is_total and r % 2 == 1) else None
-            for c, val in enumerate(row_vals):
-                _cell_run(tbl.cell(r + 1, c), str(val), 10, is_total, C_DARK,
-                          align=PP_ALIGN.CENTER if c > 0 else PP_ALIGN.LEFT,
-                          bg=C_LIGHT if is_total else zebra)
-
-        for c, w in enumerate(col_w):
-            tbl.columns[c].width = Inches(w)
-
-    # ── Slide 1: Title ────────────────────────────────────────────
-    slide1 = prs.slides.add_slide(blank)
-    _txt(slide1, "缺陷统计报表", 1, 1.8, 11, 1.4, size=48, bold=True, color=C_BLUE, align=PP_ALIGN.CENTER)
-    _txt(slide1, f"{data.get('actual_file', '')}   {data.get('file_mtime', '')}",
-         1, 3.4, 11, 0.5, size=13, color=C_GRAY, align=PP_ALIGN.CENTER)
-
-    total  = len(raw)
-    cnts   = {s: sum(1 for r in raw if r.get("severity") == s) for s in ["严重", "一般", "提示"]}
-    cards  = [("合计", total, C_BLUE), ("严重", cnts["严重"], C_RED),
-              ("一般", cnts["一般"], C_ORANGE), ("提示", cnts["提示"], C_GRAY)]
-    cx = 0.7
+    # 卡片整体居中：原来从 0.7" 起固定步长，卡片数一变就偏到一边
+    card_w, gap = 2.5, 0.28
+    total_w = len(cards) * card_w + (len(cards) - 1) * gap
+    cx = (13.333 - total_w) / 2
     for label, val, clr in cards:
-        shp = slide1.shapes.add_shape(1, Inches(cx), Inches(4.4), Inches(2.8), Inches(1.7))
+        shp = cover.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                     Inches(cx), Inches(4.3), Inches(card_w), Inches(1.6))
         shp.fill.solid()
         shp.fill.fore_color.rgb = clr
-        shp.line.color.rgb = clr
+        shp.line.fill.background()
+        shp.shadow.inherit = False
         tf = shp.text_frame
         tf.word_wrap = False
         p1 = tf.paragraphs[0]
         p1.alignment = PP_ALIGN.CENTER
         r1 = p1.add_run()
         r1.text = str(val)
-        _apply_run_font(r1, 40, True, C_WHITE)
+        PU._apply_run_font(r1, 36, True, C_WHITE)
         p2 = tf.add_paragraph()
         p2.alignment = PP_ALIGN.CENTER
         r2 = p2.add_run()
         r2.text = label
-        _apply_run_font(r2, 14, False, C_WHITE)
-        cx += 3.0
+        PU._apply_run_font(r2, 13, False, C_WHITE)
+        cx += card_w + gap
 
-    # ── Slide 2: Monthly by group ─────────────────────────────────
-    m = data.get("monthly_by_group", {})
-    if m.get("rows"):
-        cols  = ["小组"] + m["columns"]
-        rdata = [[r["label"]] + [str(r.get(c, 0)) for c in m["columns"]] for r in m["rows"]]
-        _table_slide("按小组月度统计", cols, rdata)
-
-    # ── Slide 3: By customer ─────────────────────────────────────
-    c = data.get("by_customer", {})
-    if c.get("rows"):
-        cols  = ["小组"] + c["columns"]
-        rdata = [[r["label"]] + [str(r.get(col, 0)) for col in c["columns"]] for r in c["rows"]]
-        _table_slide("按客户分布", cols, rdata)
-
-    # ── Slide 4: Feature by group ─────────────────────────────────
-    f = data.get("feature_by_group", {})
-    if f.get("rows"):
-        cols  = ["小组"] + f["columns"]
-        rdata = [[r["label"]] + [str(r.get(col, 0)) for col in f["columns"]] for r in f["rows"]]
-        _table_slide("特性 × 小组分布", cols, rdata)
+    # ── 三张矩阵表：列多了按列切页，行多了按行切页 ──────────────────
+    for key, title in (("monthly_by_group", "按小组月度统计"),
+                       ("by_customer", "按客户分布"),
+                       ("feature_by_group", "特性 × 小组分布")):
+        blk = data.get(key) or {}
+        cols = blk.get("columns") or []
+        rows = blk.get("rows") or []
+        if not rows:
+            continue
+        PU.add_matrix_slides(
+            prs, title, subtitle, "小组", cols,
+            [[r["label"]] + [str(r.get(c, 0)) for c in cols] for r in rows],
+        )
 
     buf = io.BytesIO()
     prs.save(buf)

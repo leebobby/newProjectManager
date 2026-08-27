@@ -427,8 +427,25 @@ DateTime 列有两类，**口径不同，别混**：
 - **Excel 清单类导出**：用 [xlsx_io.py](backend/xlsx_io.py) 的 `style_header()` + `beautify()`
   （品牌蓝 `#4073BA`、细边框、斑马纹、冻结表头、列宽自适应）。调用顺序是
   写表头 → 写数据行 → `beautify()` → 再追加提示行。
-- **专项图文混排导出**用 [xlsx_utils.py](backend/xlsx_utils.py)；**PPT** 用
-  [pptx_utils.py](backend/pptx_utils.py)。不要新起一套样式。
+- **专项图文混排导出**用 [xlsx_utils.py](backend/xlsx_utils.py)。
+- **PPT 表格一律走 [pptx_utils.py](backend/pptx_utils.py) 的 `add_table_slides()`**
+  （宽矩阵用 `add_matrix_slides()`），不要自己 `add_table` 排版：
+  - **一张 slide 装不下就分页**，页数由**估算行高**决定而不是固定条数——
+    客户面一行可能是 6 行文字、也可能是 1 行，按条数切的结果是有的页空半张、
+    有的页照样溢出。行高估算按 CJK 全角 1.0 em / 西文 0.52 em 算，**宁可估宽**：
+    估窄了会算出"装得下"，导出的表照样长到幻灯片外面去。
+  - **列宽传比例不传英寸**（`col_ratios`），内部归一化到正好铺满页宽。
+    手写英寸数的话，加一列、改个标题就再也对不上，表格要么越过右边界、
+    要么右边空一条——这是历史上四张表里三张都对不上的原因。
+  - **长文本列必须给 `clip_cols`**（{列下标: 最多行数}）。一格能吃掉一整页，
+    不截断的话分页也救不回来；截断后要写明"另 N 条"，别悄悄少几行。
+  - 行高**显式写入**每一行（`table.rows[i].height`）：不写的话 `add_table` 把总高
+    均分给每行，短行被撑得老高、长行还是溢出。PowerPoint 只会把行撑得更高、
+    不会压缩，所以显式高度是下界，测试就断言这个下界不越过页底。
+  - 合计行按首格文字（`_TOTAL_LABELS`）自动加粗加底色；URL 列用 `link_cols`
+    渲染成可点的「查看」，别把整条链接摊在格子里。
+  版面回归见 [tests/test_pptx_layout.py](backend/tests/test_pptx_layout.py)——
+  溢出是**看不出报错**的那类 bug：文件能生成、能打开，只是一半内容在页面外。
 - **上传文件**落 `backend/uploads/<模块>/`，**不放静态目录**；下载走鉴权 blob 端点
   （`FileResponse` / `StreamingResponse`），存储名用 `uuid4().hex + 后缀`，
   取用前用正则校验防路径穿越（见 `key_features.py` 的 `_STORED_RE`）。
