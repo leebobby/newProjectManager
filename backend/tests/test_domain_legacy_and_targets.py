@@ -333,3 +333,63 @@ def test_legacy_progress_sanitized_on_update_too(client, admin_headers, domain_e
     assert r.status_code == 200
     assert "<b>" in r.json()["progress"]
     assert "onerror" not in r.json()["progress"]
+
+
+def test_task_progress_keeps_formatting_but_drops_script(client, admin_headers, domain_env):
+    row = _make_task(
+        client, admin_headers, content="风险：带格式的进展",
+        progress='<p><b>已定位</b>到 <span style="color:#F56C6C">驱动层</span></p>'
+                 '<script>alert(1)</script>',
+    )
+    assert "<b>" in row["progress"] and "color" in row["progress"]
+    assert "script" not in row["progress"].lower()
+    assert "alert(1)" not in row["progress"]
+
+    r = client.put(f"/api/domains/risks/{row['id']}", headers=admin_headers,
+                   json={"version": row["version"],
+                         "progress": '<b>推进中</b><img src=x onerror="alert(1)">'})
+    assert r.status_code == 200 and "onerror" not in r.json()["progress"]
+
+
+def test_task_legacy_plaintext_progress_survives_switch_to_v_html(client, admin_headers,
+                                                                  domain_env):
+    """这一列改富文本前存了多年纯文本。直接丢给 v-html 会吃掉 < 、压平换行。
+
+    所以出口过 _rich_to_html()：老行显示成什么样，和改造前一模一样。
+    """
+    import models
+    from database import SessionLocal
+
+    db = SessionLocal()
+    obj = models.DomainRisk(content="风险：老库纯文本进展",
+                            progress="第一行\n第二行 a<b 的比较")
+    db.add(obj)
+    db.commit()
+    rid = obj.id
+    db.close()
+
+    rows = client.get("/api/domains/risks", headers=admin_headers).json()
+    hit = next(r for r in rows if r["id"] == rid)
+    assert "<br>" in hit["progress"]              # 换行还在
+    assert "a&lt;b" in hit["progress"]            # < 被转义，不会被当成标签吃掉
+    assert "第二行" in hit["progress"]
+
+
+def test_task_legacy_markup_in_plaintext_column_is_defanged(client, admin_headers, domain_env):
+    """入口清洗是这次才加的：之前存进来的值没洗过，出口得挡住。"""
+    import models
+    from database import SessionLocal
+
+    db = SessionLocal()
+    obj = models.DomainRisk(content="风险：老库脏值",
+                            progress='<p>进展</p><script>alert(1)</script>')
+    db.add(obj)
+    db.commit()
+    rid = obj.id
+    db.close()
+
+    rows = client.get("/api/domains/risks", headers=admin_headers).json()
+    hit = next(r for r in rows if r["id"] == rid)
+    assert "script" not in hit["progress"].lower()
+    assert "alert(1)" not in hit["progress"]
+    assert "进展" in hit["progress"]

@@ -532,9 +532,17 @@ def _domain_name_map(db: Session) -> dict:
 
 def _task_out(obj: models.DomainRisk, name_map: dict,
               users: Optional[Dict[int, str]] = None) -> schemas.DomainTaskOut:
+    from routers.specials import _rich_to_html
+
     out = schemas.DomainTaskOut.model_validate(obj)
     out.domain_name = name_map.get(obj.domain_id)
     out.owner_name = (users or {}).get(obj.owner_id)
+    # 「当前进展」改成富文本前，这一列存了多年的纯文本。改用 v-html 渲染之后，
+    # 那些老值里的 < 会被浏览器当标签吃掉、换行会被压平——所以出口过一道
+    # _rich_to_html()：看着像 HTML 的清洗，纯文本的转义并把 \n 换成 <br>，
+    # 老行显示成什么样和改造前一模一样。顺带也挡住老数据里可能存着的标记
+    # （入口清洗是这次才加的，之前存进来的没洗过）。
+    out.progress = _rich_to_html(obj.progress or "")
     return out
 
 
@@ -562,7 +570,11 @@ def create_domain_risk(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    from routers.specials import _sanitize_rich
+
     data = payload.model_dump()
+    # 进展在表格里用 v-html 渲染：入口不清洗＝任何登录用户都能往别人的条目里存脚本
+    data["progress"] = _sanitize_rich(data.get("progress") or "")
     if not data.get("seq"):
         data["seq"] = (db.query(func.coalesce(func.max(models.DomainRisk.seq), 0)).scalar() or 0) + 1
     obj = models.DomainRisk(**data)
@@ -587,8 +599,12 @@ def update_domain_risk(
         raise HTTPException(404, "Not found")
     if obj.version != payload.version:
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    from routers.specials import _sanitize_rich
+
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    if changes.get("progress") is not None:
+        changes["progress"] = _sanitize_rich(changes["progress"])
     for k, v in changes.items():
         setattr(obj, k, v)
     obj.version += 1

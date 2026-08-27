@@ -221,7 +221,12 @@
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column prop="progress" label="当前进展" min-width="180" show-overflow-tooltip />
+          <el-table-column label="当前进展" min-width="200">
+            <template #default="{ row }">
+              <div v-if="row.progress" class="cell-multiline rich-cell" v-html="row.progress" />
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="责任领域" width="150">
             <template #default="{ row }">
               <el-tag v-if="row.domain_name" size="small" effect="plain">{{ row.domain_name }}</el-tag>
@@ -318,7 +323,7 @@
     </el-tabs>
 
     <!-- 遗留问题 编辑弹窗 -->
-    <el-dialog v-model="legacyVisible" :title="legacyForm.id ? '编辑遗留问题' : '新增遗留问题'" width="640px" :close-on-click-modal="false">
+    <el-dialog v-model="legacyVisible" :title="legacyForm.id ? '编辑遗留问题' : '新增遗留问题'" width="700px" :close-on-click-modal="false">
       <el-form :model="legacyForm" label-width="110px">
         <el-form-item label="编号">
           <el-input-number v-model="legacyForm.seq" :min="0" :controls="false" style="width: 120px" />
@@ -436,7 +441,7 @@
     </el-dialog>
 
     <!-- 事务/风险 编辑弹窗 -->
-    <el-dialog v-model="riskVisible" :title="riskForm.id ? '编辑事务/风险' : '新增事务/风险'" width="600px" :close-on-click-modal="false">
+    <el-dialog v-model="riskVisible" :title="riskForm.id ? '编辑事务/风险' : '新增事务/风险'" width="700px" :close-on-click-modal="false">
       <el-form :model="riskForm" label-width="100px">
         <el-form-item label="风险和事务" required>
           <el-input v-model="riskForm.content" type="textarea" :rows="3" />
@@ -464,7 +469,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="当前进展">
-          <el-input v-model="riskForm.progress" type="textarea" :rows="2" />
+          <RichTextEditor v-model="riskForm.progress" min-height="100px"
+            placeholder="支持加粗 / 字号 / 颜色，可多行" />
         </el-form-item>
         <el-form-item label="计划闭环时间">
           <el-date-picker v-model="riskForm.planned_close_date" type="date" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />

@@ -1158,7 +1158,8 @@ class DomainRisk(Base):
     # 等级与优先级是两回事：优先级＝先处理哪个，等级＝爆了有多疼。事务行留空，
     # 所以没有默认值（见 enums.DOMAIN_RISK_LEVELS）
     risk_level = Column(String(16), default="", comment="风险等级 高/中/低，事务行留空")
-    progress = Column(Text, default="", comment="当前进展")
+    # 富文本（加粗/颜色/换行）。老库里这一列存的是纯文本，出口用 _rich_to_html() 兜底
+    progress = Column(Text, default="", comment="当前进展（富文本 HTML；老行是纯文本）")
     domain_id = Column(Integer, ForeignKey("resource_groups.id", ondelete="SET NULL"),
                        nullable=True, index=True, comment="责任领域（PL 组 FK）")
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),

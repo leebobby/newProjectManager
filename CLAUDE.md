@@ -362,7 +362,7 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
 ## 富文本：入口清洗，出口也清洗
 
 多处用 `v-html` 渲染用户填的 HTML（专项的目标 / 整体进展 / 求助 / 事务 / 风险 / 文本框分段，
-领域的最近主要工作 / 遗留问题当前进展）。
+领域的最近主要工作 / 事务风险当前进展 / 遗留问题当前进展）。
 **写库前必须过 `_sanitize_rich()`**（`routers/specials.py` 的 `_sanitize_rich_fields()` /
 `_sanitize_blocks_json()`），只在导出周报时清洗等于只保护了收件人，页面本身仍是任何
 登录用户都能往别人的专项里存一段脚本。出口的清洗保留着——老数据还没洗过。
@@ -370,6 +370,13 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
 （`domains.py` 的 `update_domain_content` / `create_legacy_issue` / `update_legacy_issue`）：
 **新加一个 `v-html` 字段就得在自己那条写路径上补一次调用**，漏了不会报错，
 只是那一列从此可以存脚本。
+
+- **把一个存量纯文本列改成富文本时，出口要过 `_rich_to_html()` 而不是直接丢给 `v-html`**
+  （`domains._task_out()` 对 `domain_risks.progress` 就是这么做的）。老值里的 `<`
+  会被浏览器当成标签吃掉、换行会被压平，改造后那些行看着像"内容丢了"；
+  `_rich_to_html()` 看着像 HTML 的走清洗、纯文本的转义并把 `\n` 换成 `<br>`，
+  两种都落到正确的显示。顺带也挡住老数据里可能存着的标记——入口清洗是加字段那天才有的，
+  之前存进来的没洗过。
 
 - 白名单 `_ALLOWED_TAGS` / `_ALLOWED_STYLE_PROPS` 决定编辑器能提供什么格式：
   **加了工具条按钮就要同步加白名单**，否则那个格式每次保存被静默抹掉
