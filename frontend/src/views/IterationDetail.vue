@@ -13,6 +13,11 @@
     </el-page-header>
 
     <el-card shadow="never" class="card">
+      <!-- 只滤不报的表现是"这个版本怎么选不到了"，而没人说得清少的是哪些 -->
+      <div v-if="releasedHidden" class="version-note">
+        「计划交付版本」下拉已隐去 <b>{{ releasedHidden }}</b> 个已发布的构建（构建自己填了
+        实际发布日期、或它所属的版本已发布）。需要挂到其中某个上时，直接把版本号敲进去即可。
+      </div>
       <el-tabs v-model="activeTab" class="req-tabs">
         <el-tab-pane label="产品需求" name="product">
           <ProductRequirementTab
@@ -56,6 +61,9 @@ const isAdmin = auth.isAdmin
 const iterationId = Number(route.params.id)
 const iteration = ref(null)
 const versionGroups = ref([])
+// 因「已发布」而没进下拉的构建数。只滤不报的表现是"这个版本怎么选不到了"，
+// 而没人说得清少的是哪些
+const releasedHidden = ref(0)
 const projects = ref([])
 const activeTab = ref('product')
 // 项目标签放在这里而不是各自的 Tab 里：产品/领域两张表共用一个项目选择，
@@ -79,8 +87,15 @@ async function loadVersionGroups() {
     // 需求的计划交付版本填的是**迭代版本**（构建号），分组按「大版本 · 版本」两层，
     // 否则同一个大版本下几十个构建挤在一组里根本挑不出来
     const { data } = await majorVersionApi.allIterationVersions()
+    // 已发布的不再列出来：可选项只增不减的话，一年下来几百个构建里绝大多数是历史。
+    // `released` 由服务端判（构建自己发了、或它挂的版本发了），前端不重算日期——
+    // 各页面自己比 new Date() 的话，跨零点时两个页面会给出不同答案，而两边看着都对。
+    // 已经填在需求行上的版本**不会因此显示不出来**：那一列存的是版本号字符串、
+    // 下拉又是 allow-create，选项里没有也照常显示原值。
+    const usable = data.filter((v) => !v.released)
+    releasedHidden.value = data.length - usable.length
     const map = new Map()
-    for (const v of data) {
+    for (const v of usable) {
       const head = v.project_name ? `${v.project_name} · ${v.major_version_no}` : v.major_version_no
       const groupLabel = v.release_version_no ? `${head} · ${v.release_version_no}` : head
       if (!map.has(groupLabel)) map.set(groupLabel, [])
@@ -130,5 +145,11 @@ onMounted(() => {
 }
 .req-tabs :deep(.el-tabs__header) {
   margin-bottom: 12px;
+}
+.version-note {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.6;
+  margin-bottom: 8px;
 }
 </style>

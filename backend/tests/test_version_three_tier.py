@@ -646,3 +646,98 @@ def test_0012_gives_empty_major_a_placeholder_release(tmp_path):
     with engine.connect() as c:
         assert c.execute(sa.text("SELECT version_no FROM release_versions")).fetchall() \
             == [("C10SPC900",)]
+
+
+# ─── 「已发布」的判定与下拉过滤 ──────────────────────────────────────────────
+def _iso(d):
+    return d.strftime("%Y-%m-%dT00:00:00")
+
+
+def test_released_flag_is_date_passed_not_merely_filled(client, admin_headers, project_id):
+    """发版计划一定，日期就先填上了。那之前这个版本还在收需求，不该从下拉里消失。"""
+    import datetime
+    today = datetime.date.today()
+
+    mv = _major(client, admin_headers, project_id, "T20SPC100")
+    past = _release(client, admin_headers, mv["id"], "T20SPC101",
+                    actual_release_date=_iso(today - datetime.timedelta(days=1)))
+    todayv = _release(client, admin_headers, mv["id"], "T20SPC102",
+                      actual_release_date=_iso(today))
+    future = _release(client, admin_headers, mv["id"], "T20SPC103",
+                      actual_release_date=_iso(today + datetime.timedelta(days=30)))
+    blank = _release(client, admin_headers, mv["id"], "T20SPC104")
+
+    rows = {r["id"]: r for r in
+            client.get("/api/release-versions/all", headers=admin_headers).json()}
+    assert rows[past["id"]]["released"] is True
+    assert rows[todayv["id"]]["released"] is True      # 当天算已发布
+    assert rows[future["id"]]["released"] is False
+    assert rows[blank["id"]]["released"] is False
+
+
+def test_release_versions_all_never_filters_server_side(client, admin_headers, project_id):
+    """客户面的「现场版本」多半就是已发布的那些，度量看板要的更是发布完的版本。
+
+    所以这个接口只标不滤——服务端滤掉的话，那两个页面的下拉会莫名其妙变空。
+    """
+    import datetime
+    mv = _major(client, admin_headers, project_id, "T21SPC100")
+    rv = _release(client, admin_headers, mv["id"], "T21SPC101",
+                  actual_release_date=_iso(datetime.date.today() - datetime.timedelta(days=5)))
+    ids = [r["id"] for r in
+           client.get("/api/release-versions/all", headers=admin_headers).json()]
+    assert rv["id"] in ids
+
+
+def test_build_is_released_when_its_release_version_is(client, admin_headers, project_id):
+    """版本一发，名下的构建就都是历史了，不可能再往里合需求。"""
+    import datetime
+    yesterday = _iso(datetime.date.today() - datetime.timedelta(days=1))
+
+    mv = _major(client, admin_headers, project_id, "T22SPC100")
+    shipped = _release(client, admin_headers, mv["id"], "T22SPC101",
+                       actual_release_date=yesterday)
+    open_rv = _release(client, admin_headers, mv["id"], "T22SPC102")
+
+    under_shipped = _iter(client, admin_headers, shipped["id"], "T22SPC101B001")
+    own_date = _iter(client, admin_headers, open_rv["id"], "T22SPC102B001",
+                     actual_release_date=yesterday)
+    still_open = _iter(client, admin_headers, open_rv["id"], "T22SPC102B002")
+
+    rows = {r["id"]: r for r in
+            client.get("/api/iteration-versions/all", headers=admin_headers).json()}
+    assert rows[under_shipped["id"]]["released"] is True    # 自己没填日期，父版本发了
+    assert rows[own_date["id"]]["released"] is True         # 父版本没发，自己发了
+    assert rows[still_open["id"]]["released"] is False
+    # 同样只标不滤：问题单管理要按构建号查历史数据
+    assert under_shipped["id"] in rows
+
+
+def test_build_release_date_round_trips_through_edit(client, admin_headers, project_id):
+    """能填才有意义——版本管理页的编辑框要能写、能读回、能清掉。"""
+    import datetime
+    day = _iso(datetime.date.today() - datetime.timedelta(days=2))
+    mv = _major(client, admin_headers, project_id, "T23SPC100")
+    rv = _release(client, admin_headers, mv["id"], "T23SPC101")
+    iv = _iter(client, admin_headers, rv["id"], "T23SPC101B001")
+    assert iv["actual_release_date"] is None
+
+    r = client.put(f"/api/iteration-versions/{iv['id']}", headers=admin_headers,
+                   json={"actual_release_date": day})
+    assert r.status_code == 200 and r.json()["actual_release_date"].startswith(day[:10])
+
+    # 三层树接口也要带上，否则版本管理页那一列永远是「未发布」
+    tree = client.get("/api/major-versions", headers=admin_headers,
+                      params={"project_id": project_id}).json()
+    got = next(m for m in tree if m["id"] == mv["id"])
+    build = got["release_versions"][0]["iteration_versions"][0]
+    assert build["actual_release_date"].startswith(day[:10])
+
+    # 显式传 None ＝清掉（exclude_unset 下"传了 null"和"没传"是两回事）。
+    # 发早了想撤回时要能撤，否则那个构建就永远从下拉里消失了
+    cleared = client.put(f"/api/iteration-versions/{iv['id']}", headers=admin_headers,
+                         json={"actual_release_date": None})
+    assert cleared.status_code == 200 and cleared.json()["actual_release_date"] is None
+    back = {r["id"]: r for r in
+            client.get("/api/iteration-versions/all", headers=admin_headers).json()}
+    assert back[iv["id"]]["released"] is False

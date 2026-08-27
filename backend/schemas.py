@@ -842,6 +842,7 @@ class IterationVersionBase(BaseModel):
     version_no: str
     title: Optional[str] = ""
     planned_date: Optional[datetime] = None
+    actual_release_date: Optional[datetime] = None   # 用户填写，不标 LocalDT
     sort_order: Optional[int] = 0
 
 
@@ -853,6 +854,7 @@ class IterationVersionUpdate(BaseModel):
     version_no: Optional[str] = None
     title: Optional[str] = None
     planned_date: Optional[datetime] = None
+    actual_release_date: Optional[datetime] = None
     sort_order: Optional[int] = None
     release_version_id: Optional[int] = None   # 挂到别的版本下（改错父级时用）
 

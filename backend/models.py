@@ -674,6 +674,8 @@ class IterationVersion(Base):
     version_no = Column(String(64), nullable=False, comment="迭代版本号，如 C10SPC101B001")
     title = Column(String(256), default="", comment="标题")
     planned_date = Column(DateTime, nullable=True, comment="预计发布日期")
+    # 用户填写的日期，不做时区转换。填了且日子过了＝已发布，「计划交付版本」下拉里不再列它
+    actual_release_date = Column(DateTime, nullable=True, comment="实际发布日期")
     sort_order = Column(Integer, default=0, comment="排序")
     created_at = Column(DateTime, default=datetime.utcnow)
 
