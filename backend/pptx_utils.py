@@ -60,6 +60,7 @@ def issues_to_text(machine, kind: str) -> str:
             lines.append(mark.get(i.status, "· ") + prefix + text)
     return "\n".join(lines)
 
+import brand
 from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -72,6 +73,11 @@ from pptx.util import Emu, Inches, Pt
 _SLIDE_W = Emu(12192000)  # 16:9 默认 13.333"
 _SLIDE_H = Emu(6858000)
 
+
+def _c(hex_str: str) -> RGBColor:
+    return RGBColor.from_string(hex_str)
+
+
 # ── 配色：对齐部门述职 PPT 模板 ────────────────────────────────────────────
 # 模板的取色逻辑是「红只用来定位、蓝只用来分层、饱和色只用来点灯」：
 #   红   —— 只出现在标题文字与标题下那条横线上，一页里就这两处
@@ -79,19 +85,21 @@ _SLIDE_H = Emu(6858000)
 #   红黄绿 —— 只给状态格上底色，是整页唯一的饱和色，所以一眼就能扫到
 # 原来的做法是整条深红横幅压顶 + 红底白字表头 + 浅红斑马，红铺满了半页，
 # 结果最抢眼的是那块红，而看的人要找的是表里的数。
-_BRAND = RGBColor(0xC7, 0x00, 0x0B)        # 华为红：标题文字 + 标题下横线
-_WHITE = RGBColor(0xFF, 0xFF, 0xFF)
-_TEXT = RGBColor(0x26, 0x26, 0x26)
-_MUTED = RGBColor(0x80, 0x80, 0x80)        # 副标题 / 页脚 / 页码
-_HEADER_BG = RGBColor(0xD9, 0xE2, 0xF3)    # 表头：浅蓝灰
-_HEADER_TEXT = RGBColor(0x1F, 0x24, 0x2E)  # 表头黑字（不是白字，底色浅）
-_SECTION_BG = RGBColor(0xD9, 0xD9, 0xD9)   # 分组行 / 合计行：中灰
-_BORDER = RGBColor(0xBF, 0xBF, 0xBF)       # 中性灰细边框
-_RULE_H_IN = 0.028                         # 标题下横线厚度
+# 色值全部来自 brand.py（PPT 与 Excel 共用），这里只做 hex → RGBColor 的转换。
+# **不要在这里另写颜色字面量**：那正是"同一批数据导出的 PPT 和 Excel 不像一套材料"的来源。
+_BRAND = _c(brand.BRAND)               # 华为红：标题文字 + 标题下横线
+_WHITE = _c(brand.WHITE)
+_TEXT = _c(brand.TEXT)
+_MUTED = _c(brand.MUTED)               # 副标题 / 页脚 / 页码
+_HEADER_BG = _c(brand.HEADER_BG)       # 表头：浅蓝灰
+_HEADER_TEXT = _c(brand.HEADER_TEXT)   # 表头黑字（不是白字，底色浅）
+_SECTION_BG = _c(brand.SECTION_BG)     # 分组行 / 合计行：中灰
+_BORDER = _c(brand.BORDER)             # 中性灰细边框
+_RULE_H_IN = 0.028                     # 标题下横线厚度
 # 斑马纹**保留但压到几乎看不见**，并且跟着表头挪到蓝灰一系。
 # 模板里的表都在 6 列以内，白底就够认行；我们的产品需求表有 13~14 列，
 # 全白的话眼睛横着扫一行会串到上下行去。压到这个亮度既不破坏版面、又够跟行。
-_ZEBRA = RGBColor(0xF4, 0xF7, 0xFC)
+_ZEBRA = _c(brand.ZEBRA)
 
 # 中文 / 西文字体（华为优先 HarmonyOS Sans，回退微软雅黑）
 _FONT_LATIN = "HarmonyOS Sans SC"
@@ -102,20 +110,9 @@ _FONT_EA = "微软雅黑"
 # 只染字色的话，6 个进展列全是同一个字号的小字，得逐格去读才分得出来。
 # 六档里只有四档给底色，「未开始 / 不涉及」故意留白底：
 # 它们表达的是"这里没有进展"，上了底色反而和真有状态的格子一样抢眼。
-_STATUS_FILLS = {
-    "已完成": RGBColor(0x92, 0xD0, 0x50),   # 绿
-    "进行中": RGBColor(0xFF, 0xD9, 0x66),   # 黄
-    "已延期": RGBColor(0xFF, 0x99, 0x99),   # 红
-    # 「已变更」＝这条需求本轮不做了。导出**不剔这些行**（那是交付记录），
-    # 但灰底把它和还在推进的行区分开，看的人不会把它算进进度里。
-    "已变更": RGBColor(0xD9, 0xD9, 0xD9),   # 灰
-}
-_STATUS_TEXT = {
-    "未开始": RGBColor(0x90, 0x93, 0x99),
-    "不涉及": RGBColor(0xB0, 0xB3, 0xB8),
-}
-# 点灯底色都是浅色，字一律用正文黑；白字在黄底上等于没有。
-_STATUS_ON_FILL_TEXT = RGBColor(0x1F, 0x24, 0x2E)
+_STATUS_FILLS = {k: _c(v) for k, v in brand.STATUS_FILLS.items()}
+_STATUS_TEXT = {k: _c(v) for k, v in brand.STATUS_TEXT.items()}
+_STATUS_ON_FILL_TEXT = _c(brand.STATUS_ON_FILL_TEXT)
 
 # 页脚：模板每页固定带的三件套（口号 / 密级 / 页码）。
 # 不想要就把这两个常量置空，页脚只剩分隔线与页码。

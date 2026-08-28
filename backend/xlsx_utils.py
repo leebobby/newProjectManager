@@ -1,4 +1,4 @@
-"""Excel 导出工具：专项/攻关导出为美观、整洁、可直接使用的单页表格（华为红风格）。
+"""Excel 导出工具：专项/攻关导出为美观、整洁、可直接使用的单页表格。
 
 依赖：openpyxl
 
@@ -7,6 +7,11 @@
 - 标题 / 章节 / 叙述段落统一横跨 A–F 合并，表格按"逻辑列→物理列合并"对齐；
 - 里程碑这种窄表通过合并映射到 6 列，避免落在过窄的列里串味；
 - 单元格统一自动换行 + 按内容估算行高，长文本不再溢出/挤压。
+
+配色取自 [brand.py](brand.py)，与 PPT / 清单类 Excel **同一套**：
+红只用在报告主标题上（底下压一条细红线），章节行走中灰，表头走浅蓝灰，
+状态格才上饱和色。原来是深红横幅压顶 + 红底白字表头 + 浅红斑马，
+一份周报里红铺满了小半页，最抢眼的成了那些红条，而看的人要找的是表里的进展。
 """
 import io
 import math
@@ -16,6 +21,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+import brand
 import enums
 import special_layout
 from openpyxl import Workbook
@@ -23,12 +29,12 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-# 华为红主题
-_BRAND = "C7000B"
-_BRAND_DARK = "9E0009"
-_SECTION = "FBEAEA"      # 章节标题底色（浅红）
-_ZEBRA = "FBF4F4"        # 斑马底色
-_BORDER_RGB = "E3C9CB"
+# 配色单一来源见 brand.py，**不要在这里另写颜色字面量**
+_BRAND = brand.BRAND          # 华为红：只给报告主标题的文字和它底下那条线
+_SECTION = brand.SECTION_BG   # 章节标题底色（中灰）
+_HEADER_BG = brand.HEADER_BG  # 表头底色（浅蓝灰）
+_ZEBRA = brand.ZEBRA          # 斑马底色
+_BORDER_RGB = brand.BORDER
 
 _FONT = "微软雅黑"
 
@@ -39,13 +45,11 @@ _NCOL = len(_COL_WIDTHS)
 _MS_STATUS_LABEL = {
     "planning": "未开始", "in_progress": "进行中", "done": "已完成", "delayed": "已延期",
 }
-_STATUS_FONT = {
-    "已完成": "2E7D32", "进行中": "1565C0", "已延期": "C62828",
-    "已变更": "B96A00", "未开始": "909399", "已闭环": "2E7D32",
-}
-_STATUS_FILL = {
-    "已闭环": "EAF6EA", "已完成": "EAF6EA",
-}
+# 状态点灯：**给格子上底色**（brand.STATUS_FILLS），不是只染字色。
+# 原来「已闭环/已完成」给整行铺浅绿、其余只染字色，两种表达混在一张表里：
+# 绿行看着像"这一行整体没问题"，而它其实只是某一列填了已完成。
+_STATUS_FONT = dict(brand.STATUS_TEXT)
+_STATUS_FILL = dict(brand.STATUS_FILLS)
 
 _thin = Side(style="thin", color=_BORDER_RGB)
 _BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
@@ -337,7 +341,7 @@ def build_special_xlsx(special) -> io.BytesIO:
         if not title:
             return
         state["pending"] = None
-        band(title, fill=_SECTION, font_color=_BRAND_DARK, bold=True, size=12, height=22)
+        band(title, fill=_SECTION, font_color=brand.HEADER_TEXT, bold=True, size=12, height=22)
 
     def narrative(text):
         _flush_section()
@@ -350,6 +354,13 @@ def build_special_xlsx(special) -> io.BytesIO:
         c.border = _BORDER
         cap = sum(_COL_WIDTHS) - 2
         ws.row_dimensions[r].height = max(20, min(260, _cell_lines(text, cap) * 16 + 4))
+        state["row"] += 1
+
+    def rule(color=_BRAND, height=3):
+        """标题下的通栏细线。用一行极矮的填充行画，Excel 里没有真正的"横线"。"""
+        r = state["row"]
+        _fill(r, 1, _NCOL, color)
+        ws.row_dimensions[r].height = height
         state["row"] += 1
 
     def gap():
@@ -371,8 +382,8 @@ def build_special_xlsx(special) -> io.BytesIO:
                 ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
             for cc in range(c1, c2 + 1):
                 cell = ws.cell(row=r, column=cc, value=headers[j] if cc == c1 else None)
-                cell.fill = PatternFill("solid", fgColor=_BRAND)
-                cell.font = Font(name=_FONT, bold=True, color="FFFFFF", size=10)
+                cell.fill = PatternFill("solid", fgColor=_HEADER_BG)
+                cell.font = Font(name=_FONT, bold=True, color=brand.HEADER_TEXT, size=10)
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
                 cell.border = _BORDER
         ws.row_dimensions[r].height = 20
@@ -385,7 +396,9 @@ def build_special_xlsx(special) -> io.BytesIO:
             if status_col is not None and status_col < len(dr):
                 status_txt = str(dr[status_col] or "").strip()
             zebra = (i % 2 == 1)
-            row_fill = _STATUS_FILL.get(status_txt) or (_ZEBRA if zebra else None)
+            # 底色只上在状态那一格上，不再整行铺色：整行绿看着像"这一行都没问题"，
+            # 而它表达的其实只是某一列填了「已完成」
+            row_fill = _ZEBRA if zebra else None
             max_lines = 1
             for j, (c1, c2) in enumerate(col_specs):
                 if c2 > c1:
@@ -393,23 +406,28 @@ def build_special_xlsx(special) -> io.BytesIO:
                 val = "" if j >= len(dr) or dr[j] is None else str(dr[j])
                 max_lines = max(max_lines, _cell_lines(val, caps[j]))
                 is_status = (status_col is not None and j == status_col)
-                fcolor = _STATUS_FONT.get(val.strip(), "262626") if is_status else "262626"
+                lit, lit_font, lit_bold = brand.status_style(val) if is_status else (None, None, False)
+                fcolor = lit_font or brand.TEXT
                 halign = "center" if (j in center or is_status) else "left"
+                cell_fill = lit or row_fill
                 for cc in range(c1, c2 + 1):
                     cell = ws.cell(row=r, column=cc, value=val if cc == c1 else None)
-                    cell.font = Font(name=_FONT, size=10, color=fcolor, bold=is_status)
+                    cell.font = Font(name=_FONT, size=10, color=fcolor, bold=lit_bold)
                     cell.alignment = Alignment(horizontal=halign, vertical="center", wrap_text=True)
                     cell.border = _BORDER
-                    if row_fill:
-                        cell.fill = PatternFill("solid", fgColor=row_fill)
+                    if cell_fill:
+                        cell.fill = PatternFill("solid", fgColor=cell_fill)
             ws.row_dimensions[r].height = max(18, min(160, max_lines * 15 + 3))
             state["row"] += 1
 
-    # ===== 标题条 =====
-    band(f"【{label}周报】{special.name or ''}", fill=_BRAND_DARK,
-         font_color="FFFFFF", bold=True, size=16, align="center", height=30)
+    # ===== 标题区：红字标题 + 灰副标题 + 一条细红线 =====
+    # 不再用深红横幅压顶。横幅一铺，整份周报里最抢眼的是那两条红，
+    # 而看的人要找的是下面表里的进展。红只留给标题文字和这条线。
+    band(f"【{label}周报】{special.name or ''}",
+         font_color=_BRAND, bold=True, size=16, align="left", height=26)
     band(f"责任人：{special.owner or '-'}      导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-         fill=_BRAND, font_color="FFFFFF", size=10, align="center", height=20)
+         font_color=brand.MUTED, size=10, align="left", height=16)
+    rule()
     gap()
 
     kept_images = []  # 持有 BytesIO 引用直到 wb.save，避免被 GC
@@ -700,14 +718,16 @@ def _render_extra_grid_sheet(wb, grid, sheet_name, title):
         ws.column_dimensions[get_column_letter(c)].width = max(6, round(_px(c - 1) / 7.0, 1))
 
     r = 1
-    # 标题条
+    # 标题：红字 + 底下一条细红线（同专项周报，不用横幅）
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=body_cols)
     tc = ws.cell(row=r, column=1, value=title)
-    tc.font = Font(name=_FONT, bold=True, size=13, color="FFFFFF")
+    tc.font = Font(name=_FONT, bold=True, size=13, color=_BRAND)
     tc.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[r].height = 22
+    r += 1
     for cc in range(1, body_cols + 1):
-        ws.cell(row=r, column=cc).fill = PatternFill("solid", fgColor=_BRAND_DARK)
-    ws.row_dimensions[r].height = 24
+        ws.cell(row=r, column=cc).fill = PatternFill("solid", fgColor=_BRAND)
+    ws.row_dimensions[r].height = 3
     r += 1
 
     # 表头（按 colspan 合并、加粗）
@@ -718,10 +738,10 @@ def _render_extra_grid_sheet(wb, grid, sheet_name, title):
             ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
         for cc in range(c1, c2 + 1):
             cell = ws.cell(row=r, column=cc, value=h["text"] if cc == c1 else None)
-            cell.fill = PatternFill("solid", fgColor=_BRAND)
-            # 表头恒为品牌红底白字粗体：只让它跟随字体与字号，字色/底色不跟
+            cell.fill = PatternFill("solid", fgColor=_HEADER_BG)
+            # 表头恒为浅蓝灰底黑字粗体：只让它跟随字体与字号，字色/底色不跟
             hf = _cell_font_spec(h)
-            cell.font = Font(name=hf["name"], bold=True, color="FFFFFF", size=hf["size"],
+            cell.font = Font(name=hf["name"], bold=True, color=brand.HEADER_TEXT, size=hf["size"],
                              italic=hf["italic"], underline=hf["underline"])
             cell.alignment = Alignment(horizontal=h["align"], vertical="center", wrap_text=True)
             cell.border = _BORDER

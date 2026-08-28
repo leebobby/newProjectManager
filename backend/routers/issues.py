@@ -1061,10 +1061,12 @@ def _fill_analysis_sheet(ws, raw: List[Dict]) -> None:
     客户面表只统计标题匹配到客户的单子；匹配不到的是研发问题，单独一张按小组的表
     （口径与前端 IssueApiPanel 一致，页面与导出必须同款）。
     """
+    import brand
     from openpyxl.styles import Alignment, Font, PatternFill
-    head_font = Font(bold=True, color="FFFFFF")
-    head_fill = PatternFill("solid", fgColor="4073BA")
-    title_font = Font(bold=True, size=12, color="4073BA")
+    # 配色走 brand.py，与清单类导出和 PPT 同一套；这里曾经自己写死品牌蓝
+    head_font = Font(bold=True, color=brand.HEADER_TEXT)
+    head_fill = PatternFill("solid", fgColor=brand.HEADER_BG)
+    title_font = Font(bold=True, size=12, color=brand.BRAND)
     total_font = Font(bold=True)
     center = Alignment(horizontal="center", vertical="center")
     ws.title = "统计分析"
