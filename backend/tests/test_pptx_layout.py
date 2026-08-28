@@ -177,3 +177,93 @@ def test_missing_url_still_renders_placeholder():
     m.issue_url = ""
     pres = Presentation(PU.build_customer_status_pptx([m]))
     assert _tables(pres)[0][1].table.cell(2, 9).text == "—"
+
+
+# ─── 配色：对齐部门述职模板 ─────────────────────────────────────────────────
+def _solid_rgb(shape):
+    """形状的纯色填充色（6 位十六进制）；没有填充或不是纯色返回 None。"""
+    try:
+        return str(shape.fill.fore_color.rgb)
+    except (TypeError, AttributeError, ValueError):
+        return None
+
+
+def test_status_is_a_cell_fill_not_just_coloured_text():
+    """进展状态**给格子上底色**。
+
+    只给字上色的话，6 个进展列全是同一个字号的小字，得逐格去读才分得出来
+    ——而这一屏最该一眼看出的就是哪几格是绿的。这个断言防的是
+    "有人觉得底色太花，改回染字色"：改完导出的 PPT 一样能打开、一样有内容。
+    """
+    it = NS(year=2026, month=3, name="三月迭代", owner="张三")
+    pres = Presentation(PU.build_iteration_pptx(it, [_dreq(1)]))
+    table = _tables(pres)[0][1].table
+    fills = {}
+    for col in range(7, 13):
+        cell = table.cell(2, col)
+        fills[cell.text] = str(cell.fill.fore_color.rgb)
+
+    assert fills["已完成"] == "92D050", "已完成＝绿"
+    assert fills["进行中"] == "FFD966", "进行中＝黄"
+    assert fills["已延期"] == "FF9999", "已延期＝红"
+    # 「已变更」＝本轮不做了。导出不剔这些行（那是交付记录），靠灰底把它和
+    # 还在推进的行区分开，否则它混在里面会被当成进度算进去。
+    assert fills["已变更"] == "D9D9D9", "已变更＝灰"
+    # 这两档表达的是"这里没有进展"，上了底色会跟真有状态的格子一样抢眼
+    assert fills["未开始"] in ("FFFFFF", str(PU._ZEBRA)), "未开始不点灯"
+    assert fills["不涉及"] in ("FFFFFF", str(PU._ZEBRA)), "不涉及不点灯"
+
+
+def test_header_is_light_blue_with_dark_text_not_red_on_white():
+    """一页里的红只留给标题。表头一红，整张表的重心就压在最上面一行。"""
+    pres = Presentation(PU.build_customer_status_pptx([_machine(0)]))
+    # 客户面表没有父表头，首列是 0/1 行纵向合并的，文字在 cell(0,0)
+    cell = _tables(pres)[0][1].table.cell(0, 0)
+    assert str(cell.fill.fore_color.rgb) == str(PU._HEADER_BG)
+    run = cell.text_frame.paragraphs[0].runs[0]
+    assert str(run.font.color.rgb) != str(PU._BRAND), "表头不该是红底/红字"
+
+
+def test_title_is_red_and_body_stays_white():
+    """标题红字 + 一条通栏红线，正文区不铺色块。
+
+    原来是整条深红横幅压顶，一眼看过去最抢眼的是那块红。
+    """
+    pres = Presentation(PU.build_customer_status_pptx([_machine(0)]))
+    slide = pres.slides[0]
+    title = next(sh for sh in slide.shapes
+                 if sh.has_text_frame and "客户面状态总览" in sh.text_frame.text)
+    assert str(title.text_frame.paragraphs[0].runs[0].font.color.rgb) == str(PU._BRAND)
+    # 红色**填充块**只有标题下那条线，且必须细——粗了就退化成横幅。
+    # （文本框不带填充，红色在字上，所以这里数到的只会是色带。）
+    red_bars = [sh for sh in slide.shapes if _solid_rgb(sh) == str(PU._BRAND)]
+    assert len(red_bars) == 1, "红色块只应有标题下那一条线"
+    assert red_bars[0].height / _EMU_IN <= 0.05
+
+
+def test_every_page_carries_a_footer_inside_the_slide():
+    """页脚每页都在，且不越过页底。
+
+    导出的表经常被截图贴进别的材料，一张落单的图没有页码就找不回出处；
+    而页脚一旦压出页底，PowerPoint 里是看不出报错的。
+    """
+    pres = Presentation(PU.build_customer_status_pptx([_machine(i, 3) for i in range(40)]))
+    assert len(pres.slides) > 1
+    for n, slide in enumerate(pres.slides, 1):
+        texts = [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame]
+        assert any(f"{n} /" in t for t in texts), f"第 {n} 页没有页码"
+        assert any(PU._FOOTER_MARK in t for t in texts), f"第 {n} 页没有密级标识"
+        for sh in slide.shapes:
+            assert (sh.top + sh.height) / _EMU_IN <= _SLIDE_H_IN, \
+                f"第 {n} 页有元素压出页底"
+
+
+def test_title_block_does_not_overlap_the_table():
+    """标题/副标题/红线都排在表格上方，一个都不许压到表头。"""
+    pres = Presentation(PU.build_customer_status_pptx([_machine(0)]))
+    slide = pres.slides[0]
+    table_top = next(sh for sh in slide.shapes if sh.has_table).top / _EMU_IN
+    for sh in slide.shapes:
+        if sh.has_table or sh.top / _EMU_IN > 5:
+            continue
+        assert (sh.top + sh.height) / _EMU_IN <= table_top, "页头元素压到表格上了"

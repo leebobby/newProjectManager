@@ -376,6 +376,10 @@ def _build_pptx(data: dict) -> io.BytesIO:
         PU._apply_run_font(r2, 13, False, C_WHITE)
         cx += card_w + gap
 
+    # 封面也带页脚：模板里页脚是每页固定件，只有封面没有的话，
+    # 一叠幻灯片翻过去第一页会显得像另一份材料
+    PU._add_footer(cover, 1, 1)
+
     # ── 三张矩阵表：列多了按列切页，行多了按行切页 ──────────────────
     for key, title in (("monthly_by_group", "按小组月度统计"),
                        ("by_customer", "按客户分布"),

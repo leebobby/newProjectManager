@@ -2,11 +2,13 @@
 
 依赖：python-pptx
 
-设计要点：
-- 表头采用品牌色 + 白字 + 居中加粗
-- 数据行斑马纹（浅灰底）+ 边框 + 左对齐 + 自动换行
+版式对齐部门述职 PPT 模板（见 CLAUDE.md「导出与上传」）：
+- 白底正文；**红只出现在两处**——标题文字与标题下那条通栏横线
+- 表头浅蓝灰底 + 黑字 + 居中加粗，分栏线用白色
+- 数据行边框 + 左对齐 + 自动换行；斑马纹压到几乎看不见（13 列以上的表要靠它跟行）
+- 状态点灯是整格底色（红黄绿灰），是一页里唯一的饱和色，所以一眼能扫到
+- 每页固定页脚：口号 + 密级 + 页码
 - 支持父子分组表头：通过将相邻列的父表头合并并设置同样的填充色实现
-- 标题区域含主标题 + 副标题（导出时间）
 """
 import io
 import json
@@ -70,28 +72,56 @@ from pptx.util import Emu, Inches, Pt
 _SLIDE_W = Emu(12192000)  # 16:9 默认 13.333"
 _SLIDE_H = Emu(6858000)
 
-# 华为风格：标志性红 #C7000B，深红压顶 + 浅红斑马
-_BRAND = RGBColor(0xC7, 0x00, 0x0B)        # 华为红
-_BRAND_DARK = RGBColor(0x9E, 0x00, 0x09)   # 深红（横幅）
-_ZEBRA = RGBColor(0xFB, 0xF2, 0xF2)        # 极浅红灰斑马
+# ── 配色：对齐部门述职 PPT 模板 ────────────────────────────────────────────
+# 模板的取色逻辑是「红只用来定位、蓝只用来分层、饱和色只用来点灯」：
+#   红   —— 只出现在标题文字与标题下那条横线上，一页里就这两处
+#   浅蓝 —— 表头，把表头和正文分层
+#   红黄绿 —— 只给状态格上底色，是整页唯一的饱和色，所以一眼就能扫到
+# 原来的做法是整条深红横幅压顶 + 红底白字表头 + 浅红斑马，红铺满了半页，
+# 结果最抢眼的是那块红，而看的人要找的是表里的数。
+_BRAND = RGBColor(0xC7, 0x00, 0x0B)        # 华为红：标题文字 + 标题下横线
 _WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 _TEXT = RGBColor(0x26, 0x26, 0x26)
-_BORDER = RGBColor(0xE3, 0xC9, 0xCB)       # 浅红灰边框
-_SUBTITLE = RGBColor(0xF2, 0xD0, 0xD2)     # 横幅副标题浅红
+_MUTED = RGBColor(0x80, 0x80, 0x80)        # 副标题 / 页脚 / 页码
+_HEADER_BG = RGBColor(0xD9, 0xE2, 0xF3)    # 表头：浅蓝灰
+_HEADER_TEXT = RGBColor(0x1F, 0x24, 0x2E)  # 表头黑字（不是白字，底色浅）
+_SECTION_BG = RGBColor(0xD9, 0xD9, 0xD9)   # 分组行 / 合计行：中灰
+_BORDER = RGBColor(0xBF, 0xBF, 0xBF)       # 中性灰细边框
+_RULE_H_IN = 0.028                         # 标题下横线厚度
+# 斑马纹**保留但压到几乎看不见**，并且跟着表头挪到蓝灰一系。
+# 模板里的表都在 6 列以内，白底就够认行；我们的产品需求表有 13~14 列，
+# 全白的话眼睛横着扫一行会串到上下行去。压到这个亮度既不破坏版面、又够跟行。
+_ZEBRA = RGBColor(0xF4, 0xF7, 0xFC)
 
 # 中文 / 西文字体（华为优先 HarmonyOS Sans，回退微软雅黑）
 _FONT_LATIN = "HarmonyOS Sans SC"
 _FONT_EA = "微软雅黑"
 
-# 进展状态着色（领域/产品需求 slide 自动染色，提升可读性）
-_STATUS_COLORS = {
-    "已完成": RGBColor(0x2E, 0x7D, 0x32),
-    "进行中": RGBColor(0x15, 0x65, 0xC0),
-    "已延期": RGBColor(0xC6, 0x28, 0x28),
-    "已变更": RGBColor(0xB9, 0x6A, 0x00),
+# 进展状态点灯：**给格子上底色，不是给字上色**。
+# 模板里的「状态点灯」「闭环状态」都是整格红黄绿，一屏扫过去哪几格是绿的一目了然；
+# 只染字色的话，6 个进展列全是同一个字号的小字，得逐格去读才分得出来。
+# 六档里只有四档给底色，「未开始 / 不涉及」故意留白底：
+# 它们表达的是"这里没有进展"，上了底色反而和真有状态的格子一样抢眼。
+_STATUS_FILLS = {
+    "已完成": RGBColor(0x92, 0xD0, 0x50),   # 绿
+    "进行中": RGBColor(0xFF, 0xD9, 0x66),   # 黄
+    "已延期": RGBColor(0xFF, 0x99, 0x99),   # 红
+    # 「已变更」＝这条需求本轮不做了。导出**不剔这些行**（那是交付记录），
+    # 但灰底把它和还在推进的行区分开，看的人不会把它算进进度里。
+    "已变更": RGBColor(0xD9, 0xD9, 0xD9),   # 灰
+}
+_STATUS_TEXT = {
     "未开始": RGBColor(0x90, 0x93, 0x99),
     "不涉及": RGBColor(0xB0, 0xB3, 0xB8),
 }
+# 点灯底色都是浅色，字一律用正文黑；白字在黄底上等于没有。
+_STATUS_ON_FILL_TEXT = RGBColor(0x1F, 0x24, 0x2E)
+
+# 页脚：模板每页固定带的三件套（口号 / 密级 / 页码）。
+# 不想要就把这两个常量置空，页脚只剩分隔线与页码。
+_FOOTER_BRAND = "HILIGHT"
+_FOOTER_SLOGAN = "求真务实 · 攻坚克难 · 开放协同 · 整体最优"
+_FOOTER_MARK = "Restricted Distribution"
 
 
 # ─── 版面常量：一张 16:9 幻灯片里表格能占多大 ───────────────────────────────
@@ -101,6 +131,7 @@ _TABLE_W_IN = 12.53          # 13.333 - 2×0.4
 _TABLE_TOP_IN = 1.0
 _TABLE_BOTTOM_IN = 7.02      # 再往下就压到页脚了
 _TABLE_H_IN = _TABLE_BOTTOM_IN - _TABLE_TOP_IN
+_FOOTER_TOP_IN = 7.10        # 页脚分隔线，表格底边再往下 0.08"
 
 _CELL_PAD_LR_PT = 5          # 与 _set_cell_margins 一致
 _CELL_PAD_TB_PT = 2
@@ -219,35 +250,45 @@ def _new_pres() -> Presentation:
     return pres
 
 
-def _add_banner(slide, title: str, subtitle: str):
-    """顶部品牌色横幅：主标题 + 副标题。"""
-    banner = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), _SLIDE_W, Inches(0.8))
-    banner.line.fill.background()
-    banner.fill.solid()
-    banner.fill.fore_color.rgb = _BRAND_DARK
-    banner.shadow.inherit = False
+def _add_bar(slide, top_in: float, height_in: float, color: RGBColor):
+    """一条通栏色带（标题下的红线、页脚上的灰线）。用矩形而不是直线：
+    直线在 PowerPoint 里会带上主题的线端/阴影，通栏时两头会翘。"""
+    bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(top_in),
+                                 _SLIDE_W, Inches(height_in))
+    bar.line.fill.background()
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = color
+    bar.shadow.inherit = False
+    return bar
 
-    # 主标题
-    title_box = slide.shapes.add_textbox(Inches(_MARGIN_IN), Inches(0.08),
-                                         Inches(_TABLE_W_IN), Inches(0.46))
+
+def _add_header(slide, title: str, subtitle: str):
+    """页头：红色标题 + 灰色副标题 + 一条通栏红线，正文区全白。
+
+    标题与副标题**分两行**排，不并排：副标题是「导出时间 · 共 N 条 · 第 X/Y 页」，
+    一长起来就会撞上左边的标题，而标题是不换行的（一折行就压到表格上）。
+    """
+    title_box = slide.shapes.add_textbox(Inches(_MARGIN_IN), Inches(0.14),
+                                         Inches(_TABLE_W_IN), Inches(0.42))
     tf = title_box.text_frame
-    tf.margin_left = tf.margin_right = 0
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
     # 不换行：标题一折行就压到表格上；宁可长标题右边留白，也不要两行标题顶掉表头
     tf.word_wrap = False
     tf.text = title
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.LEFT
-    _apply_run_font(p.runs[0], 22, True, _WHITE)
+    _apply_run_font(p.runs[0], 22, True, _BRAND)
 
-    # 副标题
-    sub_box = slide.shapes.add_textbox(Inches(_MARGIN_IN), Inches(0.5),
-                                       Inches(_TABLE_W_IN), Inches(0.3))
-    tf2 = sub_box.text_frame
-    tf2.margin_left = tf2.margin_right = 0
-    tf2.word_wrap = False
-    tf2.text = subtitle
-    p2 = tf2.paragraphs[0]
-    _apply_run_font(p2.runs[0], 11, False, _SUBTITLE)
+    if subtitle:
+        sub_box = slide.shapes.add_textbox(Inches(_MARGIN_IN), Inches(0.53),
+                                           Inches(_TABLE_W_IN), Inches(0.26))
+        tf2 = sub_box.text_frame
+        tf2.margin_left = tf2.margin_right = tf2.margin_top = tf2.margin_bottom = 0
+        tf2.word_wrap = False
+        tf2.text = subtitle
+        _apply_run_font(tf2.paragraphs[0].runs[0], 10, False, _MUTED)
+
+    _add_bar(slide, 0.82, _RULE_H_IN, _BRAND)
 
 
 def _rgb_to_hex(color: RGBColor) -> str:
@@ -312,20 +353,23 @@ def _set_cell_border(cell, color: RGBColor = _BORDER):
 
 
 def _style_header_cell(cell, text: str, font_size: int):
+    """表头：浅蓝灰底 + 黑字。**不是红底白字**——一页里的红要留给标题，
+    表头一红，整张表的重心就压在最上面一行，正文反而看不见。
+    分隔线用白色：在浅蓝底上白线是"分栏"，灰线会糊成一片。"""
     cell.text = text
     cell.fill.solid()
-    cell.fill.fore_color.rgb = _BRAND
+    cell.fill.fore_color.rgb = _HEADER_BG
     cell.vertical_anchor = MSO_ANCHOR.MIDDLE
     _set_cell_margins(cell)
     for para in cell.text_frame.paragraphs:
         para.alignment = PP_ALIGN.CENTER
         for r in para.runs:
-            _apply_run_font(r, font_size + 1, True, _WHITE)
+            _apply_run_font(r, font_size + 1, True, _HEADER_TEXT)
     _set_cell_border(cell, _WHITE)
 
 
 _TOTAL_LABELS = {"合计", "总计", "小计"}
-_TOTAL_BG = RGBColor(0xF4, 0xEA, 0xEA)
+_TOTAL_BG = _SECTION_BG      # 合计行＝中灰，与模板里的分组行同一档
 
 
 _LINK_COLOR = RGBColor(0x15, 0x65, 0xC0)
@@ -360,16 +404,20 @@ def _style_data_cell(cell, value, font_size: int, zebra: bool, center: bool = Fa
     cell.vertical_anchor = MSO_ANCHOR.MIDDLE
     _set_cell_margins(cell)
 
-    # 进展状态自动染色 + 居中加粗；短列居中
+    # 进展状态点灯：有底色的四档给格子上底色，另两档只压字色。
+    # 合计行不点灯——它的灰底是"这一行是汇总"，被状态色盖掉就认不出来了。
     stripped = text.strip()
-    status_color = _STATUS_COLORS.get(stripped)
-    is_status = status_color is not None
-    color = status_color if is_status else _TEXT
+    fill = None if total else _STATUS_FILLS.get(stripped)
+    if fill is not None:
+        cell.fill.fore_color.rgb = fill
+    muted = _STATUS_TEXT.get(stripped)
+    is_status = fill is not None or muted is not None
+    color = _STATUS_ON_FILL_TEXT if fill is not None else (muted or _TEXT)
 
     for para in cell.text_frame.paragraphs:
         para.alignment = PP_ALIGN.CENTER if (center or is_status) else PP_ALIGN.LEFT
         for r in para.runs:
-            _apply_run_font(r, font_size, is_status or total, color)
+            _apply_run_font(r, font_size, (fill is not None) or total, color)
     _set_cell_border(cell)
 
 
@@ -468,16 +516,47 @@ def _add_grouped_table(
                                  center=(j in center_cols), total=total)
 
 
-def _add_page_no(slide, idx: int, total: int):
-    """右下角页码。多页导出没有页码，打印出来一散就再也拼不回去。"""
-    box = slide.shapes.add_textbox(Inches(10.6), Inches(_TABLE_BOTTOM_IN + 0.04),
-                                   Inches(2.3), Inches(0.3))
+def _footer_text(slide, left_in: float, width_in: float, align, text: str,
+                 size: int = 8, color: RGBColor = _MUTED, bold: bool = False):
+    box = slide.shapes.add_textbox(Inches(left_in), Inches(_FOOTER_TOP_IN + 0.05),
+                                   Inches(width_in), Inches(0.26))
     tf = box.text_frame
-    tf.margin_left = tf.margin_right = 0
-    tf.text = f"{idx} / {total}"
-    p = tf.paragraphs[0]
-    p.alignment = PP_ALIGN.RIGHT
-    _apply_run_font(p.runs[0], 10, False, RGBColor(0x90, 0x93, 0x99))
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    tf.word_wrap = False
+    tf.text = text
+    para = tf.paragraphs[0]
+    para.alignment = align
+    # text 可能是空串（调用方随后自己 add_run 拼多段），空段落里没有 run
+    if para.runs:
+        _apply_run_font(para.runs[0], size, bold, color)
+    return para
+
+
+def _add_footer(slide, idx: int, total: int):
+    """页脚：细灰分隔线 + 左口号 + 中密级 + 右页码。
+
+    页码**每页都写**，不只在多页时写：导出的表经常被截图贴进别的材料，
+    一张落单的图没有页码就找不回它是第几页、更找不回是哪一次导出的。
+    """
+    _add_bar(slide, _FOOTER_TOP_IN, 0.012, _SECTION_BG)
+
+    if _FOOTER_BRAND or _FOOTER_SLOGAN:
+        para = _footer_text(slide, _MARGIN_IN, 7.0, PP_ALIGN.LEFT, "")
+        if _FOOTER_BRAND:
+            run = para.add_run()
+            run.text = _FOOTER_BRAND + "  "
+            _apply_run_font(run, 9, True, _BRAND)
+            run.font.italic = True
+        if _FOOTER_SLOGAN:
+            run = para.add_run()
+            run.text = _FOOTER_SLOGAN
+            _apply_run_font(run, 8, False, _MUTED)
+
+    if _FOOTER_MARK:
+        _footer_text(slide, _MARGIN_IN, _TABLE_W_IN, PP_ALIGN.CENTER, _FOOTER_MARK)
+
+    _footer_text(slide, 10.6, 2.33, PP_ALIGN.RIGHT,
+                 f"{idx} / {total}" if total > 1 else str(idx), size=9)
 
 
 def _add_empty_slide(pres, title: str, subtitle: str, note: str):
@@ -486,13 +565,14 @@ def _add_empty_slide(pres, title: str, subtitle: str, note: str):
     原来会生成一张只有表头的空表，看着像导出坏了——而它其实是对的。
     """
     slide = pres.slides.add_slide(pres.slide_layouts[6])
-    _add_banner(slide, title, subtitle)
+    _add_header(slide, title, subtitle)
     box = slide.shapes.add_textbox(Inches(_MARGIN_IN), Inches(3.0), Inches(_TABLE_W_IN), Inches(0.6))
     tf = box.text_frame
     tf.text = note
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.CENTER
-    _apply_run_font(p.runs[0], 16, False, RGBColor(0x90, 0x93, 0x99))
+    _apply_run_font(p.runs[0], 16, False, _MUTED)
+    _add_footer(slide, 1, 1)
     return slide
 
 
@@ -555,11 +635,10 @@ def add_table_slides(
         page_sub = subtitle
         if len(pages) > 1:
             page_sub += f"   ·   第 {idx}/{len(pages)} 页"
-        _add_banner(slide, title, page_sub)
+        _add_header(slide, title, page_sub)
         _add_grouped_table(slide, parent_headers, leaf_headers, page_rows,
                            widths, font_size, center_cols, link_cols)
-        if len(pages) > 1:
-            _add_page_no(slide, idx, len(pages))
+        _add_footer(slide, idx, len(pages))
 
 
 def build_customer_status_pptx(rows: Iterable) -> io.BytesIO:
