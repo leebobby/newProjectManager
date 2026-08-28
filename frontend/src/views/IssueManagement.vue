@@ -398,6 +398,34 @@
               <el-button :icon="Plus" @click="addGroup">新增小组</el-button>
               <el-button type="primary" @click="saveGroups">保存小组</el-button>
             </div>
+
+            <!-- 归不到小组的责任人：名单少人是配置问题，摆在小组配置底下当场能补 -->
+            <el-divider />
+            <div class="ung-head">
+              <span class="cfg-title">未归组责任人</span>
+              <el-select v-model="ungProject" size="small" style="width:150px" @change="loadUngrouped">
+                <el-option v-for="p in cfg.apiProjects" :key="p" :label="p" :value="p" />
+              </el-select>
+              <el-button size="small" :icon="Refresh" :loading="ungLoading" @click="loadUngrouped">刷新</el-button>
+              <span class="muted">{{ ungHint }}</span>
+            </div>
+            <el-table v-if="ung.rows.length" :data="ung.rows" border stripe size="small" max-height="320">
+              <el-table-column prop="owner" label="责任人" width="130" />
+              <el-table-column prop="dept" label="部门" min-width="200" show-overflow-tooltip />
+              <el-table-column prop="count" label="问题单" width="80" align="center" />
+              <el-table-column label="加入小组" width="220">
+                <template #default="{ row }">
+                  <el-select
+                    size="small" placeholder="选小组" style="width:200px"
+                    :model-value="undefined" :persistent="false"
+                    @change="(g) => assignToGroup(row, g)"
+                  >
+                    <el-option v-for="g in namedGroups" :key="g.name" :label="g.name" :value="g.name" />
+                  </el-select>
+                </template>
+              </el-table-column>
+            </el-table>
+            <div v-else class="proj-empty">{{ ungLoading ? '加载中…' : ungEmptyText }}</div>
           </el-card>
         </div>
       </el-tab-pane>
@@ -409,7 +437,7 @@
 <script setup>
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
-import { ArrowDown, ArrowUp, DataLine, Delete, Document, Download, Plus, Search, Setting, TrendCharts, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, DataLine, Delete, Document, Download, Plus, Refresh, Search, Setting, TrendCharts, VideoPlay } from '@element-plus/icons-vue'
 // VideoPlay kept for script mode template (mode still accessible but button removed)
 import * as echarts from 'echarts'
 import { configApi, downloadBlob, issueApi } from '../api'
@@ -627,6 +655,50 @@ async function saveGroups() {
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '保存失败')
   }
+}
+
+// ── 未归组责任人（小组名单的待办清单）────────────────
+// 归不到组的单**不会**被丢掉（后端归到「未归组」），否则它会在相邻快照差分里
+// 变成一笔假「解决」。这里把人列出来让管理员补名单，补完下次采集就归位了。
+const ung = ref({ date: '', rows: [], count: 0, issues: 0 })
+const ungProject = ref('')
+const ungLoading = ref(false)
+const namedGroups = computed(() => cfg.value.issueGroups.filter(g => (g.name || '').trim()))
+const ungHint = computed(() => {
+  if (!ung.value.date) return ''
+  return `${ung.value.date} 快照：${ung.value.count} 人 / ${ung.value.issues} 条问题单`
+})
+const ungEmptyText = computed(() => {
+  if (!namedGroups.value.length) return '还没有配置小组——不配小组时不做归组，也就没有未归组的人。'
+  if (!ung.value.date) return '该项目还没有快照，采集一次后这里才有数据。'
+  return '没有未归组的责任人，名单是全的。'
+})
+async function loadUngrouped() {
+  if (!ungProject.value) return
+  ungLoading.value = true
+  try {
+    const { data } = await issueApi.ungrouped(ungProject.value)
+    ung.value = { date: data.date || '', rows: data.rows || [], count: data.count || 0, issues: data.issues || 0 }
+  } catch {
+    ung.value = { date: '', rows: [], count: 0, issues: 0 }
+  } finally {
+    ungLoading.value = false
+  }
+}
+async function assignToGroup(row, groupName) {
+  const g = cfg.value.issueGroups.find(x => (x.name || '').trim() === groupName)
+  if (!g) return
+  const members = (g.members || '').split(/[;；\n]/).map(x => x.trim()).filter(Boolean)
+  if (members.some(m => m.toLowerCase() === row.owner.toLowerCase())) {
+    ElMessage.warning(`${row.owner} 已经在「${groupName}」名单里了`)
+    return
+  }
+  members.push(row.owner)
+  g.members = members.join(';')
+  // 直接落盘：点了「加入」却还要记得去点「保存小组」，一定会有人漏掉，
+  // 而漏掉的表现是下次采集这人还在未归组里，看着像功能没生效。
+  await saveGroups()
+  await loadUngrouped()
 }
 
 // ── 项目 Tab 编辑（管理员）────────────────────────────
@@ -1000,7 +1072,11 @@ onMounted(async () => {
   if (cfg.value.apiProjects.length) topTab.value = cfg.value.apiProjects[0]
   await loadDates()   // 先拿到日期列表，selectedDate 会自动设为最新
   await loadToday()
-  if (auth.isAdmin.value) loadSchedule()   // 只有管理员能看到「配置」tab
+  if (auth.isAdmin.value) {
+    loadSchedule()   // 只有管理员能看到「配置」tab
+    ungProject.value = cfg.value.apiProjects[0] || ''
+    loadUngrouped()
+  }
   window.addEventListener('resize', onResize)
 })
 
@@ -1020,6 +1096,7 @@ onUnmounted(() => {
 .cfg-title { font-size: 14px; font-weight: 600; color: #1f2329; }
 .cfg-sub { font-size: 12px; color: #909399; margin-left: 10px; }
 .cfg-row { display: flex; align-items: center; gap: 8px; width: 100%; }
+.ung-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .cfg-row .el-input { flex: 1 1 auto; }
 .cfg-hint { font-size: 12px; color: #909399; margin-top: 2px; }
 .config-pane :deep(.el-form-item) { margin-bottom: 16px; }
@@ -1035,6 +1112,7 @@ onUnmounted(() => {
 }
 .proj-name { flex: 1 1 auto; font-size: 14px; color: #1f2329; font-weight: 600; }
 .proj-empty { color: #909399; font-size: 13px; padding: 6px 0; }
+.muted { color: #909399; font-size: 12px; }
 .proj-add { display: flex; align-items: center; gap: 8px; }
 
 /* 统计部门 / 小组配置 */

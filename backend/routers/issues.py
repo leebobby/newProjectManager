@@ -5,6 +5,7 @@
 - GET  /api/issues/trend             —— 所有登录用户（扫描全目录按天聚合趋势）
 - GET  /api/issues/snapshot-flow     —— 所有登录用户（每日新增/解决，相邻快照差分）
 - GET  /api/issues/flow-detail       —— 所有登录用户（某天新增/解决的明细）
+- GET  /api/issues/ungrouped         —— 所有登录用户（最新快照里归不到小组的责任人）
 - GET  /api/issues/run-script/status —— 所有登录用户（查询脚本是否正在运行）
 - POST /api/issues/run-script        —— 仅管理员（执行外部刷新脚本）
 - GET  /api/issues/export.pptx       —— 所有登录用户（导出 PPT）
@@ -75,6 +76,11 @@ _DATE_PAT      = re.compile(r"_(\d{8})\.",           re.IGNORECASE)
 _DATE_DIR_PAT  = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 COLORS = ["#4073ba", "#67C23A", "#E6A23C", "#F56C6C", "#909399", "#8E7AD8", "#26C9C3"]
+
+# 责任人不在任何小组名单时的归属。**只有一个字面量**：Excel 交叉表、维度聚合、
+# 前端提示都用它。两处各写一个（曾经是「未分组」/「未归组」）的表现是同一批人
+# 在两张表里分成两档，加起来还对，看着都像对的。
+UNGROUPED_GROUP = "未归组"
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -651,6 +657,9 @@ def _enrich_rows(db: Session, rows: List[Dict]) -> List[Dict]:
       issue_stat_departments —— 只统计这些部门（子串匹配责任人部门全路径；留空＝全部）
       issue_groups           —— [{name, members}]，成员分号分隔，按责任人归组
     客户面来自客户主数据（客户面管理），用 code/全称/别名 在标题里做包含匹配。
+
+    **部门过滤会丢行，小组归组不会**：部门答的是"这单归不归我们管"，答否就该出统计；
+    小组答的是"归我们哪个组"，答不上来只说明名单没维护全，不是这单不该统计。
     """
     cfg = _load_config()
     exclude = _as_str_list(cfg.get("issue_exclude_statuses")) or ["关闭", "撤销"]
@@ -669,12 +678,14 @@ def _enrich_rows(db: Session, rows: List[Dict]) -> List[Dict]:
             dept = (r.get("dept_path") or "") or (r.get("department") or "")
             if not any(d in dept for d in depts):
                 continue
-        # ③ 按责任人归组（不在任何小组名单的不保留）
+        # ③ 按责任人归组。**不在名单里的人不丢**，归到「未归组」。
+        # 问题单从定位转到实施修改时换责任人是正常流转，新人/借调/换部门的人
+        # 不在名单里很常见；丢掉这一行的后果不是"少统计一条"，而是它在下一次
+        # 相邻快照差分里凭空变成一笔「解决」（见 _ensure_flows：解决＝上次有、
+        # 今天没有，从不读状态）。所以留下来，并由 _ungrouped_owners() 报出去，
+        # 让管理员去补名单——名单不全是配置问题，不该表现成数据问题。
         if groups:
-            g = _match_group(r.get("owner", ""), groups)
-            if not g:
-                continue
-            r["group"] = g
+            r["group"] = _match_group(r.get("owner", ""), groups) or UNGROUPED_GROUP
         # ④ 从标题提取客户面
         if matchers and not (r.get("customer") or "").strip():
             r["customer"] = _match_customer(r.get("title", ""), matchers)
@@ -682,8 +693,32 @@ def _enrich_rows(db: Session, rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def _take_snapshot(db: Session, project: str, source: str = "api") -> models.IssueSnapshot:
+def _ungrouped_owners(rows: List[Dict]) -> List[Dict]:
+    """本次采集里归不到小组的责任人：[{owner, dept, count}]，按条数降序。
+
+    这不是统计口径，是**待办清单**——每一条都对应「配置里的小组名单少了一个人」。
+    带上部门是为了让管理员一眼看出该往哪个组里加，而不用回 DTS 里查这人是谁。
+    """
+    acc: Dict[str, Dict] = {}
+    for r in rows:
+        if (r.get("group") or "") != UNGROUPED_GROUP:
+            continue
+        owner = str(r.get("owner") or "").strip() or "（无责任人）"
+        item = acc.get(owner)
+        if item is None:
+            item = acc[owner] = {"owner": owner, "dept": "", "count": 0}
+        item["count"] += 1
+        if not item["dept"]:
+            item["dept"] = (r.get("department") or r.get("dept_path") or "").strip()
+    return sorted(acc.values(), key=lambda x: (-x["count"], x["owner"]))
+
+
+def _take_snapshot(db: Session, project: str,
+                   source: str = "api") -> tuple[models.IssueSnapshot, List[Dict]]:
     """拉取该项目问题单 → 明细写文件、聚合数字写库（同项目同日覆盖）。
+
+    返回 (快照, 归不到小组的责任人清单)。后者是给管理员看的待办，不入库——
+    它完全由明细文件推得（`/ungrouped` 随时重算），存一份就得考虑何时失效。
 
     可能抛 HTTPException（脚本未配置 / 执行失败）——调用方按需捕获。
     """
@@ -734,7 +769,7 @@ def _take_snapshot(db: Session, project: str, source: str = "api") -> models.Iss
         _ensure_flows(db, project)
     except Exception:
         db.rollback()   # 差分是附加信息，算不出来不影响这次采集
-    return snap
+    return snap, _ungrouped_owners(raw)
 
 
 def collect_with_log(db: Session, project: str, source: str = "auto") -> Dict[str, Any]:
@@ -746,9 +781,12 @@ def collect_with_log(db: Session, project: str, source: str = "auto") -> Dict[st
     log = models.IssueCollectLog(project=project, source=source, started_at=started)
     result: Dict[str, Any]
     try:
-        snap = _take_snapshot(db, project, source=source)
+        snap, ungrouped = _take_snapshot(db, project, source=source)
         log.ok, log.total, log.error = True, snap.total, ""
-        result = {"project": project, "ok": True, "date": snap.snapshot_date, "total": snap.total}
+        # ungrouped 随采集结果一并回给页面：名单少人是配置问题，采集当场提示
+        # 比等人自己去翻配置页有用得多。
+        result = {"project": project, "ok": True, "date": snap.snapshot_date,
+                  "total": snap.total, "ungrouped": ungrouped}
     except HTTPException as exc:
         log.ok, log.error = False, str(exc.detail)[:2000]
         result = {"project": project, "ok": False, "error": log.error}
@@ -1055,11 +1093,11 @@ def _fill_analysis_sheet(ws, raw: List[Dict]) -> None:
     cus_rows = [r for r in raw if (r.get("customer") or "").strip()]
     dev_rows = [r for r in raw if not (r.get("customer") or "").strip()]
 
-    _write_cross("小组", "按小组 × 严重程度", _cross_table(raw, "group", "severity", SEV, "未分组"))
+    _write_cross("小组", "按小组 × 严重程度", _cross_table(raw, "group", "severity", SEV, UNGROUPED_GROUP))
     _write_cross("客户面", f"按客户面 × 严重程度（客户面问题 {len(cus_rows)} 条）",
                  _cross_table(cus_rows, "customer", "severity", SEV, "未标注"))
     _write_cross("小组", f"研发问题 × 严重程度（{len(dev_rows)} 条，标题未匹配到客户）",
-                 _cross_table(dev_rows, "group", "severity", SEV, "未分组"))
+                 _cross_table(dev_rows, "group", "severity", SEV, UNGROUPED_GROUP))
     _write_cross("年月", "按年月 × 严重程度", _cross_table(raw, "year_month", "severity", SEV, "未标注"))
 
 
@@ -1102,6 +1140,8 @@ def _export_snapshot_excel(project: str, raw: List[Dict], date_str: str) -> None
 # ─── 每日新增 / 解决：相邻快照差分 ──────────────────────────────────────────
 # 快照存的是"当天还开着的单"（关闭/撤销在 _enrich_rows 里已被剔除），所以：
 #   新增 = 今天有、上次没有；解决 = 上次有、今天没有。
+# 注意这里**从不读状态**：一单只要从快照里消失就算「解决」。所以任何"因为过滤规则
+# 而掉出快照"的行都会变成一笔假解决——责任人归组因此刻意不丢行（见 _enrich_rows ③）。
 # 差分要读明细文件，因此结果落 issue_snapshot_flows，采集后增量算一次，看图只读数字。
 _ISSUE_NO_DATE = re.compile(r"^[A-Za-z]*(\d{4})(\d{2})(\d{2})\d*$")
 
@@ -1285,6 +1325,33 @@ def flow_detail(project: str, date: str, kind: str = "created",
                 rows = []
     return {"project": project, "date": date, "kind": kind,
             "source_date": src_date, "count": len(rows), "rows": rows}
+
+
+@router.get("/ungrouped")
+def ungrouped_owners(project: str, date: Optional[str] = None,
+                     db: Session = Depends(get_db),
+                     _: models.User = Depends(get_current_user)):
+    """某次快照里归不到小组的责任人（默认最新一次），给「小组配置」补名单用。
+
+    从明细文件现算而不是查库：小组名单一改，这份清单就该跟着变，存下来的那份
+    会一直显示已经补过的人，比没有更糟。
+    """
+    q = db.query(models.IssueSnapshot).filter(models.IssueSnapshot.project == project)
+    snap = (q.filter(models.IssueSnapshot.snapshot_date == date).first() if date
+            else q.order_by(models.IssueSnapshot.snapshot_date.desc()).first())
+    if snap is None:
+        return {"project": project, "date": "", "rows": [], "count": 0, "issues": 0}
+    rows: List[Dict] = []
+    try:
+        fp = _snapshot_root() / (snap.data_file or "")
+        if snap.data_file and fp.exists():
+            raw = json.loads(fp.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                rows = _ungrouped_owners([r for r in raw if isinstance(r, dict)])
+    except Exception:
+        rows = []   # 明细文件丢了：报"没有"而不是整页 500，配置页照常能用
+    return {"project": project, "date": snap.snapshot_date, "rows": rows,
+            "count": len(rows), "issues": sum(r["count"] for r in rows)}
 
 
 @router.get("/snapshot-export")

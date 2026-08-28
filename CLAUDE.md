@@ -23,6 +23,13 @@ cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cd frontend && npm install && npm run dev
 ```
 
+**测试文件里不要在模块顶层 import 应用模块**（`routers.*` / `models` / `database`）。
+`conftest.py` 的 `client` 夹具靠 `os.chdir` 把 `sqlite:///./app.db` 指到临时目录，
+收集阶段的顶层 import 会赶在 chdir 之前把引擎连上仓库里的 `backend/app.db`，
+之后整个会话都跑在那个老库上。表现是**别的测试文件成片报「no such column」**，
+而单跑这个文件一切正常——看着完全不像是新加的文件干的。要用就在夹具里 import
+（夹具依赖 `client`，顺序才有保证）。
+
 `main.py` 的启动顺序是有意为之，改动前先读懂：
 `ensure_schema()`（老库补列）→ `Base.metadata.create_all()`（补缺失的表）→
 `automigrate.upgrade_to_head()`（追平 Alembic）→ `seed_initial_data()` → `scheduler.start()`。
@@ -273,6 +280,37 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
 
 **调试版本看板不在度量看板里**：它按客户 × 月统计，和版本 / 领域 / 组三个维度不是一回事，
 挂在「版本管理 → 现场调试版本」的录入页上（`DebugVersionPanel.vue`）。
+
+## 问题单采集：三道过滤，只有一道该丢行
+
+采集到的原始行在 [routers/issues.py](backend/routers/issues.py) 的 `_enrich_rows()` 里过三道，
+**改这里之前先想清楚「丢一行」的代价**：
+
+| 过滤 | 问的是 | 丢行？ |
+| --- | --- | --- |
+| ① 状态剔除（`issue_exclude_statuses`，默认 关闭/撤销） | 这单还开着吗 | **丢** |
+| ② 部门过滤（`issue_stat_departments`） | 这单归不归我们管 | **丢** |
+| ③ 责任人归组（`issue_groups`） | 归我们哪个组 | **不丢**，归 `UNGROUPED_GROUP` |
+
+代价不对称的原因在差分那一头：**「解决」＝这一单从快照里消失**
+（`_ensure_flows()`：`resolved = 上次的 id 集合 − 今天的`），**它从不读状态**。
+所以任何"因为过滤规则掉出快照"的行都会变成一笔**假解决**——数字自洽、图也自洽，
+没人会当 bug 报。③ 尤其致命：问题单从「定位」转到「实施修改」正是换责任人的时刻，
+新人/借调/换部门的人不在名单里很常见，丢掉的话每次转手都记一笔解决。
+
+- ③ 归不到组的人由 `_ungrouped_owners()` 汇总（按人聚合、带部门、按条数降序），
+  两个出口：采集完成的提示、`GET /api/issues/ungrouped`（配置页「未归组责任人」）。
+  **名单不全是配置问题，不该表现成数据问题**——所以是"留下 + 提醒"，不是"丢掉"。
+- 这份清单**从明细文件现算，不入库**：名单一改它就该跟着变，存一份下来会一直
+  显示已经补过的人，比没有更糟。
+- `UNGROUPED_GROUP`（"未归组"）**只有一个字面量**，Excel 交叉表、维度聚合、前端提示共用。
+  两处各写一个的表现是同一批人在两张表里分成两档，加起来还对，看着都像对的。
+- ① 是**子串**匹配 `progress`（DTS 的「进展」列），所以"待关闭""申请关闭"一并被剔掉。
+  这是已知的粗口径，改成精确匹配前要先确认 DTS 那边的取值全集。
+- `scripts/fetch_issues_api.py` 翻页时**没有校验拉回条数 == `data.total`**。
+  DTS 会话中途失效返回的是 HTTP 200 + `data: null`，`raise_for_status()` 拦不住，
+  被 `or []` 吞成空页——少拉一页（200 条）的快照看着完全合法，第二天差分给出
+  200 条假解决。`_snapshot_ids()` 只防住了"文件整个丢了"，防不住"少了一半"。
 
 ## 领域管理：需求口径（迭代 / 版本）与问题单口径
 

@@ -216,6 +216,8 @@ export const issueApi = {
   // 每日新增/解决：相邻快照差分（后端算好落库，这里只取数字）
   snapshotFlow:    (project)            => http.get('/issues/snapshot-flow', { params: { project } }),
   flowDetail:      (project, date, kind) => http.get('/issues/flow-detail', { params: { project, date, kind } }),
+  // 归不到小组的责任人：小组名单的待办清单，从最新快照现算（名单一改就跟着变）
+  ungrouped:       (project, date)      => http.get('/issues/ungrouped', { params: date ? { project, date } : { project } }),
   // 采集是长任务（几分钟），后端起线程立即返回，前端轮询 collectStatus 拿结果
   snapshotCollect: (project)            => http.post('/issues/snapshot-collect', null, { params: project ? { project } : {} }),
   collectStatus:   ()                   => http.get('/issues/collect-status'),
