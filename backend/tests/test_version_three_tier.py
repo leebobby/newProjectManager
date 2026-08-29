@@ -39,9 +39,9 @@ def normal_headers(client, admin_headers):
     return {"Authorization": f"Bearer {tok}"}
 
 
-def _major(client, headers, project_id, no):
+def _major(client, headers, project_id, no, **kw):
     r = client.post("/api/major-versions", headers=headers,
-                    json={"version_no": no, "project_id": project_id})
+                    json={"version_no": no, "project_id": project_id, **kw})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -741,3 +741,52 @@ def test_build_release_date_round_trips_through_edit(client, admin_headers, proj
     back = {r["id"]: r for r in
             client.get("/api/iteration-versions/all", headers=admin_headers).json()}
     assert back[iv["id"]]["released"] is False
+
+
+# ─── 大版本的顺序：开始时间倒序 ──────────────────────────────────────────────
+def test_majors_are_newest_first_by_range_start(client, admin_headers, project_id):
+    """新增顺序与时间顺序故意错开：只有真按 range_start 排了才会是这个结果。"""
+    _major(client, admin_headers, project_id, "C10SPCT-B", range_start="2026-03-01")
+    _major(client, admin_headers, project_id, "C10SPCT-C", range_start="2026-07-01")
+    _major(client, admin_headers, project_id, "C10SPCT-A", range_start="2025-11-01")
+
+    rows = client.get("/api/major-versions", headers=admin_headers,
+                      params={"project_id": project_id}).json()
+    got = [x["version_no"] for x in rows if x["version_no"].startswith("C10SPCT-")]
+    assert got == ["C10SPCT-C", "C10SPCT-B", "C10SPCT-A"]
+
+
+def test_majors_without_a_start_date_sink_to_the_bottom(client, admin_headers, project_id):
+    """没填开始时间的排最后，不是插在中间。
+
+    NULL 在 SQLite 里比任何值都小，倒序时本来就会掉到最后——但这条不能靠数据库的
+    默认行为，`range_start.is_(None)` 那一段是显式写的，删掉它换个库就变成「没填的
+    全顶到最上面」，而页面上看着只是顺序有点怪，没人会往迁移数据库上想。
+    """
+    _major(client, admin_headers, project_id, "C10SPCN-DATED", range_start="2026-05-01")
+    _major(client, admin_headers, project_id, "C10SPCN-BLANK1")
+    _major(client, admin_headers, project_id, "C10SPCN-BLANK2")
+
+    rows = client.get("/api/major-versions", headers=admin_headers,
+                      params={"project_id": project_id}).json()
+    got = [x["version_no"] for x in rows if x["version_no"].startswith("C10SPCN-")]
+    assert got[0] == "C10SPCN-DATED"
+    # 没填的那批内部仍按 sort_order（＝新增顺序），不是随机的
+    assert got[1:] == ["C10SPCN-BLANK1", "C10SPCN-BLANK2"]
+
+
+def test_editing_the_start_date_moves_the_major_up(client, admin_headers, project_id):
+    """改开始时间就是改顺序——页面上没有 ↑↓ 了，这是唯一的入口。"""
+    old = _major(client, admin_headers, project_id, "C10SPCE-OLD", range_start="2025-01-01")
+    new = _major(client, admin_headers, project_id, "C10SPCE-NEW", range_start="2026-01-01")
+
+    def order():
+        rows = client.get("/api/major-versions", headers=admin_headers,
+                          params={"project_id": project_id}).json()
+        return [x["version_no"] for x in rows if x["version_no"].startswith("C10SPCE-")]
+
+    assert order() == ["C10SPCE-NEW", "C10SPCE-OLD"]
+    r = client.put(f"/api/major-versions/{old['id']}", headers=admin_headers,
+                   json={"range_start": "2027-01-01"})
+    assert r.status_code == 200, r.text
+    assert order() == ["C10SPCE-OLD", "C10SPCE-NEW"]

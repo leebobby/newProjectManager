@@ -376,7 +376,6 @@ export const majorVersionApi = {
   setMaster: (id) => http.post(`/major-versions/${id}/set-master`),
   // 排序整体提交：{ parent_id, ids }。逐个 PUT sort_order 会留下「排到一半」的顺序，
   // 而顺序错了不报错，只是看着不对
-  reorderMajors: (parent_id, ids) => http.post('/major-versions/reorder', { parent_id, ids }),
   reorderReleases: (parent_id, ids) => http.post('/release-versions/reorder', { parent_id, ids }),
   reorderIterVersions: (parent_id, ids) =>
     http.post('/iteration-versions/reorder', { parent_id, ids }),
