@@ -32,6 +32,31 @@ http.interceptors.response.use(
   }
 )
 
+/**
+ * 把 axios 的异常折成一句「能照着查」的话。
+ *
+ * 页面上常见的写法是 `e.response?.data?.detail || '加载失败'`，问题是三种完全不同的
+ * 故障会写成同一句：后端 500（要去看服务端 traceback）、请求超时（后端还活着，只是这
+ * 一下慢了或卡住了）、以及压根没连上（后端没起来 / 代理挂了）。三种原因、三种处理，
+ * 用户报上来的却只有「加载失败」四个字，来回问一轮才知道要看哪儿。
+ *
+ * 所以这里一定把**状态码**带出来：500/502 与超时的处理完全不同，而这是唯一能一眼
+ * 分开它们的东西。FastAPI 未捕获异常返回的 detail 是 "Internal Server Error"，
+ * 本身没信息量，但配上 HTTP 500 就足以指向"去翻后端控制台"。
+ */
+export function apiError(e, fallback = '请求失败') {
+  if (e?.code === 'ECONNABORTED') {
+    return `${fallback}：请求超时（${(e.config?.timeout || 0) / 1000 || 10} 秒内没有响应），后端可能正卡在别的活上`
+  }
+  const status = e?.response?.status
+  if (!status) return `${fallback}：连不上后端（${e?.message || '网络错误'}）`
+  const detail = e?.response?.data?.detail
+  const tail = status >= 500 ? '，请看后端控制台的报错' : ''
+  return typeof detail === 'string' && detail
+    ? `${fallback}：${detail}（HTTP ${status}）${tail}`
+    : `${fallback}：HTTP ${status}${tail}`
+}
+
 export const authApi = {
   login: (data) => http.post('/auth/login', data),
   me: () => http.get('/auth/me'),

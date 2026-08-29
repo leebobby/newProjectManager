@@ -23,7 +23,14 @@ import models  # noqa: E402,F401  导入即把所有表注册到 Base.metadata
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False 是**必须的**，不是随手加的参数。
+    # fileConfig 默认会把「此刻已存在、但没写进这份 ini」的 logger 全部禁用，而
+    # automigrate 是在 uvicorn 装好自己的 logger 之后、于 main.py 导入期跑的——
+    # 用默认值等于每次启动都顺手把 uvicorn / uvicorn.error / uvicorn.access 关掉。
+    # 后果是整个进程从此**不打访问日志、500 也不打 traceback**：页面上只剩一句
+    # 「加载失败」，服务端一片安静，报上来的 bug 全都查不下去，而日志没了这件事
+    # 本身没有任何提示。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # 用应用里的 URL 覆盖 ini 中的空值
 config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)

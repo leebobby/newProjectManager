@@ -331,10 +331,10 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Bottom, Plus, Refresh, Top } from '@element-plus/icons-vue'
-import { majorVersionApi, roadmapApi } from '../api'
+import { apiError, majorVersionApi, roadmapApi } from '../api'
 import { fmtDate, naturalCompare } from '../utils/format'
 import { auth } from '../store/auth'
 import VersionTimeline from '../components/VersionTimeline.vue'
@@ -460,7 +460,9 @@ async function loadProjects() {
     }
     load()
   } catch (e) {
-    ElMessage.error('加载项目列表失败')
+    // 原样打一条到控制台：toast 只有一行，排查时要的是 status / URL / 响应体
+    console.error('[版本管理] 加载项目列表失败', e)
+    ElMessage.error(apiError(e, '加载项目列表失败'))
   }
 }
 
@@ -472,7 +474,8 @@ async function load() {
     const { data } = await majorVersionApi.list(Number(activeTab.value))
     majorVersions.value = data
   } catch (e) {
-    ElMessage.error('加载版本失败')
+    console.error('[版本管理] 加载版本失败', e)
+    ElMessage.error(apiError(e, '加载版本失败'))
   } finally {
     loading.value = false
   }
