@@ -147,7 +147,14 @@ major_versions        大版本    C10SPC100        号段，自己不发布
   （老数据里什么写法都有，强行只能选会逼着人把对不上的行改成一个错的版本）。
 - 字符串反查 `resolve_iteration_version_id()` 由细到粗试三层，落到该层下**序号最小**的构建；
   粗匹配落空返回 None 留给数据对账，不要瞎猜一个。
-- **页面顺序＝`sort_order`，不按版本号推**。三层各有一个 `POST /{tier}/reorder`
+- **大版本这一层按「开始时间」（`range_start`）倒序**，最新的在最上面；没填开始时间的
+  整批排到最后、内部仍按 `sort_order`。收口在 `list_major_versions()` 的 `order_by`——
+  `range_start.is_(None)` 那一段是**显式**写的，别当成冗余删掉：NULL 排最后只是 SQLite
+  的默认行为，换个库就变成"没填的全顶到最上面"，而页面上看着只是顺序有点怪。
+  因此**大版本没有 ↑↓ 手排**（另两层有）：顺序由日期这条数据决定，改顺序＝改开始时间。
+  留一个按了不动的按钮比没有更糟。别改成按版本号推：号段是人定的，`C10SPC100` 之后
+  完全可能再拉一个 `C09SPC200` 的老线分支。
+- **版本与迭代版本这两层的页面顺序＝`sort_order`，不按版本号推**。三层各有一个 `POST /{tier}/reorder`
   （`{parent_id, ids}`）整体重写顺序：逐个 PUT `sort_order` 在中途失败就留下「排到一半」
   的顺序，而顺序错了不报错、只是看着不对。ids 里混进别的父级的行返回 **400**（静默忽略
   会让人以为排序时灵时不灵）；列表里没提到的兄弟排到后面，别人刚新增的行不会被挤乱。
@@ -459,6 +466,11 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
   **整条升级链停在那一版，后续迁移全部静默不执行**——新库正常、老库缺列，只在生产暴露。
   （`0003` 就踩过这个坑：它加的列 `migrate.py` 里也有，导致 `0004`~`0007` 长期没跑过。）
 - 自动生成的迁移**务必人工检查** batch 段落：`alembic revision --autogenerate -m "..."`。
+- `alembic/env.py` 的 `fileConfig(..., **disable_existing_loggers=False**)` 不能去掉：
+  默认值会把此刻已存在、但没写进 `alembic.ini` 的 logger 全部禁用，而 `automigrate`
+  跑在 uvicorn 装好 logger 之后——等于每次启动都顺手关掉 `uvicorn.error` / `uvicorn.access`，
+  **进程从此不打访问日志、500 也不打 traceback**。回归见
+  [tests/test_startup_logging.py](backend/tests/test_startup_logging.py)。
 - 详细用法见 [alembic/README.md](backend/alembic/README.md)。
 
 ## 日志与通知是两条独立路径
@@ -572,6 +584,15 @@ DateTime 列有两类，**口径不同，别混**：
 - **新增页面**＝在 [router/index.js](frontend/src/router/index.js) 加一条，`meta` 填
   `title` / `icon` / `group`（决定侧栏 7 分组归属）/ 按需 `requireAdmin` / `hidden`。
   路由守卫只拦 `requireAdmin`，页面内的 admin 自查是额外一层，**不能替代服务端校验**。
+- **组件里抛出的异常会静默白屏**，所以 [main.js](frontend/src/main.js) 挂了
+  `app.config.errorHandler`：控制台留完整堆栈 + 页面弹一条提示。别把它摘掉——
+  setup/render 抛异常时 Vue 只在控制台写一行，页面一片空白，而且之后点别的菜单
+  也不再渲染，现象是「进了某个页面之后整个系统就没反应了，刷新一下又好」，
+  看着完全不像是那个页面的错。**少写一个 `import` 就够触发**（`VersionManagement.vue`
+  用了 `computed` 却没 import，正是这么坏的），而构建不会报错：Vite 不做 no-undef 检查。
+- **加载失败的提示要带上 HTTP 状态**，用 `api/index.js` 导出的 `apiError(e, '加载XX失败')`。
+  统一写成一句「加载失败」的话，500（去翻服务端 traceback）、超时（后端还活着但卡住了）、
+  连不上（后端没起来）三种完全不同的故障在页面上长得一模一样，来回问一轮才知道看哪儿。
 - **API 调用**统一加到 [api/index.js](frontend/src/api/index.js) 的对应 `*Api` 对象，
   不要在组件里直接 `axios`——token 注入与 401/409/423 拦截都在那一层。
 - 详情页组件用 `:key="route.fullPath"`（见 App.vue）：参数变化时重建实例，
@@ -592,6 +613,8 @@ DateTime 列有两类，**口径不同，别混**：
 ## 已知待处理
 
 - `GET /api/system/storage` 无前端消费方。
+- `POST /api/major-versions/reorder` 无前端消费方：大版本改成按开始时间倒序后页面撤了
+  ↑↓ 入口。接口留着（对没填开始时间的那批仍有效），删掉会让三层的重排不再对称。
 - `models.Version` / `models.Iteration` 是为兼容老库存量表保留的死模型，新代码勿用。
 - `major_versions.actual_release_date` 是两层版本体系的遗留列，0010 迁移后无人读写。
 - 单进程假设：APScheduler 与问题单采集锁都是进程内内存态，上多 worker 会重复执行。

@@ -22,7 +22,8 @@
         <el-button :icon="Refresh" @click="load">刷新</el-button>
         <span class="tip">
           大版本（C10SPC100）→ 版本（C10SPC101）→ 迭代版本（C10SPC101B001）
-          <template v-if="isAdmin">｜三层都可以用 ↑↓ 排成你要的顺序；放错父级的用「编辑」改所属</template>
+          ｜大版本按「开始时间」倒序，最新的在最上面，没填开始时间的排在最后
+          <template v-if="isAdmin">｜版本与迭代版本可以用 ↑↓ 排成你要的顺序；放错父级的用「编辑」改所属</template>
         </span>
       </div>
 
@@ -163,7 +164,7 @@
         </el-table-column>
         <el-table-column prop="title" label="标题" min-width="140" />
         <el-table-column prop="description" label="版本说明" min-width="160" show-overflow-tooltip />
-        <el-table-column label="版本范围" width="210">
+        <el-table-column label="版本范围（按开始时间倒序）" width="210">
           <template #default="{ row }">
             <span v-if="row.range_start || row.range_end">
               {{ fmtDate(row.range_start) }} ~ {{ fmtDate(row.range_end) }}
@@ -181,11 +182,9 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column v-if="isAdmin" label="操作" width="320" fixed="right">
-          <template #default="{ row, $index: i }">
-            <el-button size="small" title="上移" :icon="Top" :disabled="i === 0" @click="moveMajor(i, -1)" />
-            <el-button size="small" title="下移" :icon="Bottom" :disabled="i === majorVersions.length - 1"
-              @click="moveMajor(i, 1)" />
+        <!-- 大版本没有 ↑↓：这一层的顺序由「版本范围开始」决定（倒序），不手排 -->
+        <el-table-column v-if="isAdmin" label="操作" width="250" fixed="right">
+          <template #default="{ row }">
             <el-button size="small" @click="openEditMajor(row)">编辑</el-button>
             <el-button
               v-if="row.line !== 'master'"
@@ -332,10 +331,10 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Bottom, Plus, Refresh, Top } from '@element-plus/icons-vue'
-import { majorVersionApi, roadmapApi } from '../api'
+import { apiError, majorVersionApi, roadmapApi } from '../api'
 import { fmtDate, naturalCompare } from '../utils/format'
 import { auth } from '../store/auth'
 import VersionTimeline from '../components/VersionTimeline.vue'
@@ -406,10 +405,7 @@ async function applyOrder(fn, parentId, ids) {
   }
 }
 
-function moveMajor(index, delta) {
-  applyOrder(majorVersionApi.reorderMajors, Number(activeTab.value),
-             movedIds(majorVersions.value, index, delta))
-}
+// 大版本没有 moveMajor：那一层的顺序来自 range_start（服务端倒序），不是手排的
 function moveRelease(major, index, delta) {
   applyOrder(majorVersionApi.reorderReleases, major.id,
              movedIds(major.release_versions, index, delta))
@@ -464,7 +460,9 @@ async function loadProjects() {
     }
     load()
   } catch (e) {
-    ElMessage.error('加载项目列表失败')
+    // 原样打一条到控制台：toast 只有一行，排查时要的是 status / URL / 响应体
+    console.error('[版本管理] 加载项目列表失败', e)
+    ElMessage.error(apiError(e, '加载项目列表失败'))
   }
 }
 
@@ -476,7 +474,8 @@ async function load() {
     const { data } = await majorVersionApi.list(Number(activeTab.value))
     majorVersions.value = data
   } catch (e) {
-    ElMessage.error('加载版本失败')
+    console.error('[版本管理] 加载版本失败', e)
+    ElMessage.error(apiError(e, '加载版本失败'))
   } finally {
     loading.value = false
   }

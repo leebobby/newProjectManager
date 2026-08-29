@@ -218,7 +218,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Plus, Refresh, UserFilled } from '@element-plus/icons-vue'
-import { debugVersionApi, debugDemandApi, customerApi } from '../api'
+import { apiError, debugVersionApi, debugDemandApi, customerApi } from '../api'
 import { fmtDate } from '../utils/format'
 
 const loading = ref(false)
@@ -243,7 +243,8 @@ async function load() {
     versions.value = v.data
     demands.value = d.data
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '加载失败')
+    console.error('[现场调试版本] 加载失败', e)
+    ElMessage.error(apiError(e, '加载现场调试版本失败'))
   } finally {
     loading.value = false
   }
@@ -254,7 +255,8 @@ async function loadBoard() {
     const { data } = await debugVersionApi.dashboard()
     boardStat.value = data
   } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '加载调试版本看板失败')
+    console.error('[现场调试版本] 加载看板失败', e)
+    ElMessage.error(apiError(e, '加载调试版本看板失败'))
   } finally {
     boardLoading.value = false
   }

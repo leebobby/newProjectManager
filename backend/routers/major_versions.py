@@ -102,7 +102,20 @@ def list_major_versions(project_id: Optional[int] = None, db: Session = Depends(
         q = q.filter(models.MajorVersion.project_id == project_id)
     else:
         q = q.filter(models.MajorVersion.project_id.is_(None))
-    return q.order_by(models.MajorVersion.sort_order).all()
+    # 顺序＝**开始时间（版本范围开始）倒序**，最新的大版本排在最上面。
+    # 以前这里只按 sort_order，而 sort_order 是新增时追加到末位的，于是页面永远
+    # 「最老的在最上面」——当前在做的那个版本要滚到最底下才找得到。
+    # 没填开始时间的排到最后（而不是混在中间）：它们要么是刚建还没规划、要么是
+    # 老数据，摆在末尾比插在两个有日期的版本中间更好认，也提示人去把日期补上。
+    # 因此**大版本这一层不再提供 ↑↓ 手排**（另两层还有）：顺序由日期这条数据决定，
+    # 留着一个按了不动的按钮比没有更糟。sort_order 降为同日期/都没填时的稳定排序键，
+    # 不再由页面写入——见 CLAUDE.md「版本：三层与主干/分支」。
+    return q.order_by(
+        models.MajorVersion.range_start.is_(None).asc(),
+        models.MajorVersion.range_start.desc(),
+        models.MajorVersion.sort_order,
+        models.MajorVersion.id,
+    ).all()
 
 
 @router.post("/major-versions/reorder")
@@ -112,7 +125,12 @@ def reorder_major_versions(
     db: Session = Depends(get_db),
     current_admin: models.User = Depends(require_admin),
 ):
-    """重排某个里程碑项目下的大版本。parent_id＝project_id（空＝未挂项目的那批）。"""
+    """重排某个里程碑项目下的大版本。parent_id＝project_id（空＝未挂项目的那批）。
+
+    列表改成按开始时间倒序后，这个接口只对**没填开始时间**的那批还有可见效果
+    （它们并列排在最后，内部仍按 sort_order）。页面上已经没有入口，保留是因为
+    另两层的重排走的是同一套 `_reorder`，删掉这一个会让三层不再对称。
+    """
     n = _reorder(db, models.MajorVersion, models.MajorVersion.project_id,
                  payload.parent_id, payload.ids)
     log_op(db, action="修改", target="大版本", target_id=payload.parent_id or 0,
