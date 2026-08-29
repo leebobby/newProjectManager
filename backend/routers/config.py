@@ -12,13 +12,27 @@ from op_log import log_op
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 CONFIG_PATH = pathlib.Path(__file__).resolve().parent.parent / "config.json"
+EXAMPLE_PATH = CONFIG_PATH.with_name("config.example.json")
 
 
 def _load() -> dict:
-    if not CONFIG_PATH.exists():
-        return {"current_stages": []}
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        return json.load(f)
+    """读运行时配置；`config.json` 不存在时回落到仓库里的 `config.example.json`。
+
+    `config.json` **不入版本库**：里面是这台机器上的绝对路径、这个部署要采集的项目，
+    属于部署实例的状态而不是源码（同 `app.db` / `uploads/`）。它曾经是跟着代码走的，
+    后果是每次 `git pull` 都把线上配好的路径盖回某台开发机的 `D:\\...`，
+    而页面上一切正常——只是问题单采集从此指向一个不存在的目录。
+
+    回落到模板而不是回落到 `{}`：`hw_machine_cell_options` 这类**词表**默认值
+    也在这份配置里，空掉的话新装的实例里那几个下拉是空的，看着像功能坏了。
+    """
+    for path in (CONFIG_PATH, EXAMPLE_PATH):
+        if path.exists():
+            with open(path, encoding="utf-8") as f:
+                cfg = json.load(f)
+            # 模板里的说明键不该出现在接口响应里
+            return {k: v for k, v in cfg.items() if not k.startswith("_")}
+    return {"current_stages": []}
 
 
 @router.get("")

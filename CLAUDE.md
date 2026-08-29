@@ -20,8 +20,14 @@ cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn main:app --reload --port 8000      # 默认账号 admin / admin123
 .venv/bin/python -m pytest tests -q                  # 回归测试（用临时库，不碰 app.db）
 # 前端
-cd frontend && npm install && npm run dev
+cd frontend && npm ci && npm run dev
+npm run lint                                         # eslint，主要就为了 no-undef
 ```
+
+**提交前跑一遍 `pytest` + `npm run lint` + `npm run build`**，这三条就是
+[.github/workflows/ci.yml](.github/workflows/ci.yml) 里跑的全部内容。
+装依赖用 `npm ci` 不用 `npm install`：前者严格按 `package-lock.json` 装，
+后者会在锁文件与 `package.json` 不一致时顺手改锁文件，于是各人装出各人的依赖。
 
 **测试文件里不要在模块顶层 import 应用模块**（`routers.*` / `models` / `database`）。
 `conftest.py` 的 `client` 夹具靠 `os.chdir` 把 `sqlite:///./app.db` 指到临时目录，
@@ -575,7 +581,13 @@ DateTime 列有两类，**口径不同，别混**：
 
 ## 运行时数据不入库
 
-`backend/app.db`、`backend/uploads/`、`__pycache__/` 已在 [.gitignore](.gitignore) 中。
+`backend/app.db`、`backend/uploads/`、`backend/config.json`、`__pycache__/`
+已在 [.gitignore](.gitignore) 中。`config.json` 里是本机绝对路径与本部署要采集的项目，
+而且页面「配置」会改写它；跟着代码走的后果是每次 `git pull` 把线上配好的路径盖回
+某台开发机的 `D:\...`，页面上看不出来，只是问题单采集从此指向一个不存在的目录。
+模板是 `backend/config.example.json`，读不到 `config.json` 时回落到它
+（回落到 `{}` 会让 `hw_machine_cell_options` 这类**词表**默认值一起空掉，
+新装实例里那几个下拉是空的，看着像功能坏了）。
 数据库属于部署实例的状态而非源码——新库由 `create_all` + `seed_initial_data` 自动生成，
 备份按 [部署指南](doc/部署指南.md) 第 6 章的定时 `.backup` 走。
 
@@ -590,6 +602,10 @@ DateTime 列有两类，**口径不同，别混**：
   也不再渲染，现象是「进了某个页面之后整个系统就没反应了，刷新一下又好」，
   看着完全不像是那个页面的错。**少写一个 `import` 就够触发**（`VersionManagement.vue`
   用了 `computed` 却没 import，正是这么坏的），而构建不会报错：Vite 不做 no-undef 检查。
+  现在 `npm run lint` 的 `no-undef` 会在提交前拦住这一类，但 errorHandler 是兜底，
+  两者都要留着：lint 拦的是漏 import，运行时还有别的抛法。
+  [eslint.config.js](frontend/eslint.config.js) **只开能抓真 bug 的规则**，
+  刻意不加风格类规则——23k 行存量代码一次冒出几百条 warning，之后就没人看 lint 输出了。
 - **加载失败的提示要带上 HTTP 状态**，用 `api/index.js` 导出的 `apiError(e, '加载XX失败')`。
   统一写成一句「加载失败」的话，500（去翻服务端 traceback）、超时（后端还活着但卡住了）、
   连不上（后端没起来）三种完全不同的故障在页面上长得一模一样，来回问一轮才知道看哪儿。
