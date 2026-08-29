@@ -35,5 +35,10 @@ Thumbs.db
 
 # ── 测试 / 工具缓存 ──────────────────────────────────────────
 .pytest_cache/
+# Playwright 的产物。不写死 frontend/ 前缀：在别的目录下手滑跑一次
+# `npx playwright test` 就会在那儿留一份，带前缀的规则漏得掉
+test-results/
+playwright-report/
+blob-report/
 .coverage
 htmlcov/

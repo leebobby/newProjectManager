@@ -11,7 +11,7 @@ import pluginVue from 'eslint-plugin-vue'
 import globals from 'globals'
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'test-results/**', 'playwright-report/**'] },
   ...pluginVue.configs['flat/essential'],
   {
     files: ['**/*.{js,vue}'],
@@ -29,5 +29,11 @@ export default [
       // 红了几次之后这道闸门就没人看了。Login.vue 这种名字本身没问题。
       'vue/multi-word-component-names': 'off',
     },
+  },
+  {
+    // 配置文件与冒烟用例跑在 Node 里，不是浏览器：给它们 Node 的全局变量，
+    // 否则 process / __dirname 会被 no-undef 报成未定义
+    files: ['playwright.config.js', 'eslint.config.js', 'vite.config.js', 'tests/**/*.js'],
+    languageOptions: { globals: { ...globals.node } },
   },
 ]

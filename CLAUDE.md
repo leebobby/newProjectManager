@@ -22,10 +22,15 @@ cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt
 # 前端
 cd frontend && npm ci && npm run dev
 npm run lint                                         # eslint，主要就为了 no-undef
+npm run test:e2e                                     # 冒烟：真开浏览器把每页点一遍
 ```
 
-**提交前跑一遍 `pytest` + `npm run lint` + `npm run build`**，这三条就是
-[.github/workflows/ci.yml](.github/workflows/ci.yml) 里跑的全部内容。
+**提交前跑一遍 `pytest` + `npm run lint` + `npm run build` + `npm run test:e2e`**，
+这四条就是 [.github/workflows/ci.yml](.github/workflows/ci.yml) 里跑的全部内容。
+冒烟用例（[frontend/tests/smoke.spec.js](frontend/tests/smoke.spec.js)）不验业务口径，
+只回答「打出来的包点得开吗」——前三条全绿而页面白屏是真发生过的。
+它从**真实 DOM 里取侧栏菜单项**，新加的页面自动被覆盖，不必回来改测试；
+`playwright.config.js` 的 `webServer` 会自己把前后端拉起来（后端用全新的 `app.db`）。
 装依赖用 `npm ci` 不用 `npm install`：前者严格按 `package-lock.json` 装，
 后者会在锁文件与 `package.json` 不一致时顺手改锁文件，于是各人装出各人的依赖。
 
