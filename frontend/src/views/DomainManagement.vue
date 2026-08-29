@@ -3,17 +3,13 @@
     <el-tabs v-model="activeTab" class="domain-tabs">
       <!-- ===== 领域总览 ===== -->
       <el-tab-pane label="领域总览" name="overview">
-        <!-- 需求口径分标签：按迭代（月）或按版本，**二选一**。版本是跨迭代的，
+        <!-- 需求口径分标签：只有「按迭代」「按版本」两档，**二选一**。版本是跨迭代的，
              两者叠加会得到一个既不是这个版本、也不是这个迭代的数（见后端 _ReqScope）。
-             版本标签只列当前挂着需求的版本，条数就是挂着多少条。 -->
+             具体是哪个月、哪个版本由右边的下拉选——版本不铺成标签：三层版本里光构建
+             就上百个，挂着需求的版本也可能十几个，铺开一排标签比下拉更难找。 -->
         <el-tabs v-model="scopeTab" type="card" class="scope-tabs" @tab-change="onScopeChange">
           <el-tab-pane name="iteration" label="按迭代" />
-          <el-tab-pane
-            v-for="v in data.versions"
-            :key="v.id"
-            :name="String(v.id)"
-            :label="`${v.version_no || '未命名'} (${v.req_count})`"
-          />
+          <el-tab-pane name="version" label="按版本" />
         </el-tabs>
 
         <div class="page-head">
@@ -34,7 +30,28 @@
                 :label="it.label + statusSuffix(it)"
               />
             </el-select>
-            <span v-else class="muted">按版本统计，不限迭代月份</span>
+            <template v-else>
+              <el-select
+                v-model="versionId"
+                size="small"
+                filterable
+                style="width: 260px"
+                placeholder="选择版本"
+                :disabled="!data.versions.length"
+                @change="load"
+              >
+                <el-option
+                  v-for="v in data.versions"
+                  :key="v.id"
+                  :value="v.id"
+                  :label="`${v.major_version_no ? v.major_version_no + ' / ' : ''}${v.version_no || '未命名'}（${v.req_count} 条）`"
+                />
+              </el-select>
+              <span v-if="!data.versions.length" class="muted" style="margin-left: 8px">
+                还没有需求填了「计划交付版本」，按版本统计暂时无可选项
+              </span>
+              <span v-else class="muted" style="margin-left: 8px">跨迭代，不限月份</span>
+            </template>
             <el-tag type="primary" effect="plain" style="margin-left: 8px">{{ data.iteration_label || '—' }}</el-tag>
 
             <span class="muted" style="margin-left: 16px">问题单项目：</span>
@@ -195,12 +212,29 @@
               <el-tag size="small" :type="prioType(row.priority)">{{ row.priority || '—' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="progress" label="当前进展" min-width="180" show-overflow-tooltip />
+          <!-- 等级用 dark、优先级用 light：两列同是高/中/低，不做视觉区分会被读串 -->
+          <el-table-column label="风险等级" width="84" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="row.risk_level" size="small" effect="dark" :type="levelType(row.risk_level)">
+                {{ row.risk_level }}
+              </el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="当前进展" min-width="200">
+            <template #default="{ row }">
+              <div v-if="row.progress" class="cell-multiline rich-cell" v-html="row.progress" />
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="责任领域" width="150">
             <template #default="{ row }">
               <el-tag v-if="row.domain_name" size="small" effect="plain">{{ row.domain_name }}</el-tag>
               <span v-else class="muted">—</span>
             </template>
+          </el-table-column>
+          <el-table-column label="责任人" width="96">
+            <template #default="{ row }">{{ row.owner_name || '—' }}</template>
           </el-table-column>
           <el-table-column label="计划闭环时间" width="130">
             <template #default="{ row }">{{ fmtDate(row.planned_close_date) || '—' }}</template>
@@ -243,6 +277,12 @@
               <el-tag size="small" :type="legacyStatusType(row.status)" effect="dark">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
+          <el-table-column label="当前进展" min-width="220">
+            <template #default="{ row }">
+              <div v-if="row.progress" class="cell-multiline rich-cell" v-html="row.progress" />
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="当前责任人" width="100">
             <template #default="{ row }">{{ row.owner_name || '—' }}</template>
           </el-table-column>
@@ -283,7 +323,7 @@
     </el-tabs>
 
     <!-- 遗留问题 编辑弹窗 -->
-    <el-dialog v-model="legacyVisible" :title="legacyForm.id ? '编辑遗留问题' : '新增遗留问题'" width="640px" :close-on-click-modal="false">
+    <el-dialog v-model="legacyVisible" :title="legacyForm.id ? '编辑遗留问题' : '新增遗留问题'" width="700px" :close-on-click-modal="false">
       <el-form :model="legacyForm" label-width="110px">
         <el-form-item label="编号">
           <el-input-number v-model="legacyForm.seq" :min="0" :controls="false" style="width: 120px" />
@@ -329,6 +369,10 @@
           <el-select v-model="legacyForm.priority" style="width: 160px">
             <el-option v-for="p in PRIORITIES" :key="p" :label="p" :value="p" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="当前进展">
+          <RichTextEditor v-model="legacyForm.progress" min-height="110px"
+            placeholder="支持加粗 / 字号 / 颜色，可多行" />
         </el-form-item>
         <el-form-item label="备注">
           <el-input v-model="legacyForm.remark" type="textarea" :rows="2" />
@@ -397,7 +441,7 @@
     </el-dialog>
 
     <!-- 事务/风险 编辑弹窗 -->
-    <el-dialog v-model="riskVisible" :title="riskForm.id ? '编辑事务/风险' : '新增事务/风险'" width="600px" :close-on-click-modal="false">
+    <el-dialog v-model="riskVisible" :title="riskForm.id ? '编辑事务/风险' : '新增事务/风险'" width="700px" :close-on-click-modal="false">
       <el-form :model="riskForm" label-width="100px">
         <el-form-item label="风险和事务" required>
           <el-input v-model="riskForm.content" type="textarea" :rows="3" />
@@ -406,14 +450,27 @@
           <el-select v-model="riskForm.priority" style="width: 160px">
             <el-option v-for="p in PRIORITIES" :key="p" :label="p" :value="p" />
           </el-select>
+          <span class="muted" style="margin-left: 10px">先处理哪个</span>
+        </el-form-item>
+        <el-form-item label="风险等级">
+          <el-select v-model="riskForm.risk_level" clearable placeholder="事务可不填" style="width: 160px">
+            <el-option v-for="p in RISK_LEVELS" :key="p" :label="p" :value="p" />
+          </el-select>
+          <span class="muted" style="margin-left: 10px">爆了有多疼；事务行留空</span>
         </el-form-item>
         <el-form-item label="责任领域">
           <el-select v-model="riskForm.domain_id" clearable filterable placeholder="选择领域（PL组）" style="width: 100%">
             <el-option v-for="d in domainOptions" :key="d.id" :value="d.id" :label="d.name" />
           </el-select>
         </el-form-item>
+        <el-form-item label="责任人">
+          <el-select v-model="riskForm.owner_id" clearable filterable placeholder="选择人员" style="width: 100%">
+            <el-option v-for="u in userOptions" :key="u.id" :value="u.id" :label="userLabel(u)" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="当前进展">
-          <el-input v-model="riskForm.progress" type="textarea" :rows="2" />
+          <RichTextEditor v-model="riskForm.progress" min-height="100px"
+            placeholder="支持加粗 / 字号 / 颜色，可多行" />
         </el-form-item>
         <el-form-item label="计划闭环时间">
           <el-date-picker v-model="riskForm.planned_close_date" type="date" value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
@@ -485,6 +542,9 @@ const PROG_COLS = [
   { key: 'progress_clarify', label: '转测澄清' },
 ]
 const PRIORITIES = ['高', '中', '低']
+// 与后端 enums.DOMAIN_RISK_LEVELS 一一对应。词表与优先级同款但**不是同一列**：
+// 优先级＝先处理哪个，等级＝爆了有多疼，合成一列就再也表达不出"低优先级的高风险"
+const RISK_LEVELS = ['高', '中', '低']
 const STATUSES = ['OPEN', 'CLOSED', '挂起']
 // 与后端 enums.DOMAIN_LEGACY_STATUSES 一一对应；pending 是小写，别"顺手"统一成大写
 const LEGACY_STATUSES = ['OPEN', 'CLOSED', 'pending']
@@ -496,16 +556,24 @@ const loading = ref(false)
 const showHidden = ref(false)
 // 需求口径：'' = 当前进行中迭代；'2026-6' = 指定年度迭代月份
 const monthKey = ref('')
-// 需求口径的另一档：'iteration' = 按上面的月份；其余是 release_versions.id（字符串，el-tabs 的 name 只认字符串）
+// 需求口径的另一档：'iteration' = 按上面的月份；'version' = 按 versionId 指的版本
 const scopeTab = ref('iteration')
+// 按版本口径选中的 release_versions.id（版本这一层 C10SPC101，不是构建）
+const versionId = ref(null)
 
 // 总览与下钻共用这一份口径参数——两边各拼一次的表现是「格子里写 8 条、点进去 5 条」。
 function scopeParams() {
-  if (scopeTab.value !== 'iteration') return { release_version_id: Number(scopeTab.value) }
+  if (scopeTab.value === 'version') return { release_version_id: versionId.value }
   return parseKey(monthKey.value)
 }
 
 function onScopeChange() {
+  if (scopeTab.value === 'version' && !versionId.value) {
+    // 切过来还没选过版本：落到列表最后一个。版本按 sort_order 排，最后一个通常是最新的那个；
+    // 一个挂着需求的版本都没有时不发请求，否则后端会退回迭代口径，页面写着「按版本」显示的却是本月。
+    if (!data.versions.length) return
+    versionId.value = data.versions[data.versions.length - 1].id
+  }
   load()
 }
 // 问题单口径：项目/版本；'' = 让后端挑第一个有快照的项目（首次进页面时）
@@ -537,6 +605,9 @@ function progType(v) {
 function prioType(p) {
   return { '高': 'danger', '中': 'warning', '低': 'info' }[p] || 'info'
 }
+function levelType(v) {
+  return { '高': 'danger', '中': 'warning', '低': 'success' }[v] || 'info'
+}
 function statusType(s) {
   // OPEN 橙、CLOSED 绿、挂起 灰
   return { 'OPEN': 'warning', 'CLOSED': 'success', '挂起': 'info' }[s] || 'info'
@@ -560,6 +631,13 @@ function riskRowClass(row) {
 }
 
 async function load() {
+  if (scopeTab.value === 'version' && !versionId.value) {
+    // 按版本但一个可选版本都没有：清空表格，别退回迭代口径——页头写着「按版本」、
+    // 底下显示的却是本月的数字，是最难被发现的那种错。
+    data.rows = []
+    data.iteration_label = '按版本（暂无可选版本）'
+    return
+  }
   loading.value = true
   try {
     const { data: d } = await domainApi.list({
@@ -652,8 +730,8 @@ const riskForm = reactive(blankRisk())
 
 function blankRisk() {
   return {
-    id: null, version: 0, content: '', priority: '中', progress: '',
-    domain_id: null, planned_close_date: null, status: 'OPEN',
+    id: null, version: 0, content: '', priority: '中', risk_level: '', progress: '',
+    domain_id: null, owner_id: null, planned_close_date: null, status: 'OPEN',
   }
 }
 async function loadRisks() {
@@ -716,7 +794,7 @@ function blankLegacy() {
   return {
     id: null, version: 0, seq: 0, title: '', status: 'OPEN',
     owner_id: null, reporter_id: null, confirmer_id: null, participants: [],
-    domain_id: null, planned_date: null, priority: '中', remark: '',
+    domain_id: null, planned_date: null, priority: '中', progress: '', remark: '',
   }
 }
 function legacyRowClass(row) {
@@ -880,12 +958,21 @@ onMounted(() => { load(); loadRisks(); loadDomainOptions(); loadLegacy(); loadUs
 .hdr-help { font-size: 13px; color: #909399; vertical-align: -1px; cursor: help; }
 .prio-line { margin-top: 4px; }
 .prio { color: #909399; font-size: 12px; margin-right: 8px; }
+/* 富文本单元格：限高 + 内部滚动。不限高的话一条写满的进展会把整行撑到半屏，
+   同屏的其它行全被挤出视野 */
 .rich-cell {
   max-height: 96px;
   overflow: auto;
   font-size: 13px;
   line-height: 1.5;
 }
+.cell-multiline {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 编辑器产出的 <p> / <div> 自带块级间距，落到表格里就是行与行之间莫名的空档 */
+.rich-cell :deep(p) { margin: 0; }
+.rich-cell :deep(div) { display: inline; }
 .risk-list { display: flex; flex-direction: column; gap: 4px; }
 .risk-item { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
 .risk-content { flex: 1; }

@@ -346,7 +346,12 @@
       <section class="sec">
         <div class="sec-head">
           <span>客户定制化需求</span>
-          <span class="muted-hint">本客户的定制化需求清单</span>
+          <!-- 只滤不报的表现是"这个版本怎么选不到了"，而没人说得清少的是哪些 -->
+          <span class="muted-hint">
+            本客户的定制化需求清单<template v-if="versionReleasedHidden">；
+            「预计合入版本」下拉已隐去 {{ versionReleasedHidden }} 个已发布的版本，
+            确需填写时直接敲版本号</template>
+          </span>
           <div class="actions">
             <el-button v-if="canEdit" size="small" :icon="Plus" @click="addCustomReq">新增需求</el-button>
             <el-button size="small" :icon="Refresh" @click="loadCustomReqs">刷新</el-button>
@@ -395,9 +400,38 @@
                 </el-select>
               </template>
             </el-table-column>
-            <el-table-column label="预计合入版本" width="140">
+            <el-table-column label="预计合入版本" width="170">
               <template #default="{ row }">
-                <el-input v-model="row.planned_version" size="small" :disabled="!canEdit" placeholder="—" />
+                <!-- 存的是版本号字符串（不是 FK），所以 allow-create：老数据里什么写法都有，
+                     强行只能选会逼着人把对不上的行改成一个错的版本。
+                     :persistent="false" 是行内下拉的必需项，见 CLAUDE.md「前端约定」 -->
+                <el-select
+                  v-model="row.planned_version"
+                  size="small"
+                  clearable
+                  filterable
+                  allow-create
+                  :persistent="false"
+                  :disabled="!canEdit"
+                  placeholder="—"
+                  style="width: 100%"
+                >
+                  <el-option-group
+                    v-for="group in versionGroups"
+                    :key="group.label"
+                    :label="group.label"
+                  >
+                    <el-option
+                      v-for="v in group.options"
+                      :key="v.id"
+                      :label="v.version_no"
+                      :value="v.version_no"
+                    >
+                      <span>{{ v.version_no }}</span>
+                      <span v-if="v.title" style="color:#909399; margin-left:6px; font-size:12px">{{ v.title }}</span>
+                    </el-option>
+                  </el-option-group>
+                </el-select>
               </template>
             </el-table-column>
             <el-table-column label="备注" min-width="160">
@@ -556,7 +590,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit, Paperclip, Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  customerApi, customerCustomReqApi, customerExtraApi, customerIssueApi, customerStatusApi, downloadBlob, issueApi, licenseApi, sowApi,
+  customerApi, customerCustomReqApi, customerExtraApi, customerIssueApi, customerStatusApi, downloadBlob, issueApi, licenseApi, majorVersionApi, sowApi,
 } from '../api'
 import { auth } from '../store/auth'
 import CustomerIssueCell from './CustomerIssueCell.vue'
@@ -625,6 +659,10 @@ const milestoneDialog = reactive({ visible: false, saving: false, machineId: nul
 // 客户定制化需求
 const customReqs = ref([])
 const customReqLoading = ref(false)
+// 「预计合入版本」下拉：**版本**这一层（C10SPC101），不是构建——客户面看的是对外发布的那一级。
+// 已发布的不列出来：合入是往还没发的版本里合，已经发出去的版本合不进东西了。
+const versionGroups = ref([])
+const versionReleasedHidden = ref(0)
 const customReqOrig = reactive({}) // id -> JSON 快照，用于 dirty 判断
 
 // 问题单
@@ -817,11 +855,42 @@ async function loadLicenses(mid) {
 
 // ─── 客户定制化需求 ───────────────────────────────────────────
 const CUSTOM_REQ_KEYS = ['seq', 'description', 'customer_value', 'domain', 'designer', 'involves_other', 'planned_version', 'remark']
+// 这几列是自由文本，且其中两列挂着 clearable 的 el-select
+const CUSTOM_REQ_TEXT_KEYS = new Set(
+  ['description', 'customer_value', 'domain', 'designer', 'involves_other', 'planned_version', 'remark'],
+)
+
+// el-select 的清除按钮把值置成 **undefined**（Element Plus 的 valueOnClear 默认值），
+// 而 undefined 会被 JSON.stringify 从请求体里整个丢掉，后端按「没传＝不修改」处理——
+// 表现是"清空保存，一刷新又回来了"，页面还提示保存成功。所以文本列一律折成空串。
+function customReqValue(row, k) {
+  const v = row[k]
+  return CUSTOM_REQ_TEXT_KEYS.has(k) ? (v ?? '') : v
+}
 
 function customReqSnapshot(row) {
   const o = {}
-  for (const k of CUSTOM_REQ_KEYS) o[k] = row[k]
+  for (const k of CUSTOM_REQ_KEYS) o[k] = customReqValue(row, k)
   return JSON.stringify(o)
+}
+
+async function loadVersionOptions() {
+  try {
+    const { data } = await majorVersionApi.allReleaseVersions()
+    // `released` 由服务端判（填了实际发布日期且那天已过），前端不重算日期——
+    // 各页面自己比 new Date() 的话跨零点会给出不同答案，而两边看着都对。
+    const usable = data.filter((v) => !v.released)
+    versionReleasedHidden.value = data.length - usable.length
+    const map = new Map()
+    for (const v of usable) {
+      const label = v.project_name ? `${v.project_name} · ${v.major_version_no}` : v.major_version_no
+      if (!map.has(label)) map.set(label, [])
+      map.get(label).push(v)
+    }
+    versionGroups.value = Array.from(map.entries()).map(([label, options]) => ({ label, options }))
+  } catch (e) {
+    /* 下拉为空不阻塞：这一列仍可自由输入 */
+  }
 }
 
 async function loadCustomReqs() {
@@ -856,7 +925,7 @@ async function addCustomReq() {
 async function saveCustomReq(row) {
   try {
     const payload = { version: row.version }
-    for (const k of CUSTOM_REQ_KEYS) payload[k] = row[k]
+    for (const k of CUSTOM_REQ_KEYS) payload[k] = customReqValue(row, k)
     const { data } = await customerCustomReqApi.update(row.id, payload)
     Object.assign(row, data)
     customReqOrig[row.id] = customReqSnapshot(row)
@@ -927,7 +996,7 @@ watch(() => props.customerId, async () => {
   if (!props.customerId) return
   await Promise.all([loadCustomer(), loadSowFields(), loadExtraFields()])
   await loadMachines()
-  await Promise.all([loadIssues(), loadCustomReqs()])
+  await Promise.all([loadIssues(), loadCustomReqs(), loadVersionOptions()])
 }, { immediate: true })
 
 watch(activeMachine, async (mid) => {

@@ -14,7 +14,7 @@
 最近主要工作 / 风险求助 / 事务风险 / 遗留问题 登录用户均可写；问题单目标仅 admin。
 """
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import false as sa_false, func
@@ -26,7 +26,7 @@ import schemas
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
-from routers import _req_scope
+from routers import _issue_source, _req_scope
 from routers._lookups import project_name_map
 from routers.config import _load as _load_config
 
@@ -38,8 +38,8 @@ _PROG_FIELDS = [
 ]
 _SEVERITIES = ["严重", "一般", "提示"]
 _RISK_TYPES = {"风险", "求助"}
-# 问题单加权分值：致命10 严重3 一般1 提示0.1（未列出的级别记 0 分，仍计入数量）
-_SEVERITY_WEIGHTS = {"致命": 10.0, "严重": 3.0, "一般": 1.0, "提示": 0.1}
+# 问题单加权分值：致命10 严重3 一般1 提示0.1（实现在 _issue_source，度量看板共用）
+_SEVERITY_WEIGHTS = _issue_source.SEVERITY_WEIGHTS
 
 
 # ─── helpers：迭代口径 ─────────────────────────────────────────────────────────
@@ -218,120 +218,16 @@ def _req_summary(db: Session, group_id: int, scope: "_ReqScope") -> schemas.Doma
     return s
 
 
-# ─── helpers：问题单聚合（从 Excel 实时读取）─────────────────────────────────────
-def _load_issue_raw() -> Tuple[Optional[List[dict]], Optional[str], Optional[str]]:
-    """读取最新问题单 Excel 的原始行。
-
-    返回 (raw_rows, file_mtime, note)；不可用时 raw_rows 为 None、note 给出原因。
-    """
-    cfg = _load_config()
-    path_str = (cfg.get("issue_report_path") or "").strip()
-    if not path_str:
-        return None, None, "未配置问题单报表路径"
-    try:
-        from routers.issues import _parse_excel_cached, _resolve_for_date
-
-        target = _resolve_for_date(path_str)
-        # 复用问题单模块的 mtime 缓存解析：文件没变时不重读 Excel（领域总览每次打开都会调这里）
-        parsed = _parse_excel_cached(str(target))
-        raw = parsed.get("raw") or []
-        return raw, parsed.get("file_mtime"), None
-    except HTTPException as exc:
-        return None, None, str(exc.detail)
-    except Exception as exc:
-        return None, None, f"读取问题单失败：{exc}"
-
-
-def _issue_rows_for_group(raw: List[dict], g: models.ResourceGroup) -> List[dict]:
-    keys = {k for k in (g.name, g.code) if k}
-    return [r for r in raw if (r.get("group") or "").strip() in keys]
-
-
-# ─── helpers：问题单快照（问题单管理的采集结果，按项目）────────────────────────
-def _latest_snapshot(db: Session, project: str) -> Optional[models.IssueSnapshot]:
-    """某项目最新一次快照。领域页只看最新一份——趋势属于问题单管理，不在这里重造。"""
-    return (
-        db.query(models.IssueSnapshot)
-        .filter(models.IssueSnapshot.project == project)
-        .order_by(models.IssueSnapshot.snapshot_date.desc())
-        .first()
-    )
-
-
-def _snapshot_rows(snap: models.IssueSnapshot) -> List[dict]:
-    """读快照明细 JSON。文件缺失/损坏时返回空列表而不是报错——
-
-    快照元数据在库里、明细在文件，两者可能不同步（目录被清理、迁移漏拷）。
-    这时页面显示 0 条比整页 500 有用得多。
-    """
-    from routers.issues import _snapshot_root
-
-    try:
-        fp = _snapshot_root() / (snap.data_file or "")
-        if snap.data_file and fp.exists():
-            data = json.loads(fp.read_text(encoding="utf-8"))
-            return [r for r in data if isinstance(r, dict)]
-    except Exception:
-        pass
-    return []
-
-
-def _issue_projects(db: Session) -> List[schemas.DomainProjectOpt]:
-    """可选项目 = 配置的采集项目 ∪ 已有快照的项目；按配置顺序在前、其余字典序。"""
-    cfg = _load_config()
-    configured = [str(x).strip() for x in (cfg.get("issue_api_projects") or []) if str(x).strip()]
-    snap_projects = [
-        r[0] for r in db.query(models.IssueSnapshot.project).distinct().all() if r[0]
-    ]
-    ordered = configured + sorted(p for p in snap_projects if p not in configured)
-    out: List[schemas.DomainProjectOpt] = []
-    for proj in ordered:
-        snap = _latest_snapshot(db, proj)
-        out.append(schemas.DomainProjectOpt(
-            project=proj,
-            latest_date=snap.snapshot_date if snap else None,
-            total=snap.total if snap else 0,
-        ))
-    return out
-
-
-class _IssueSource:
-    """一次请求内的问题单数据源：明细行 + 出处标记，供各领域行复用。"""
-
-    def __init__(self, rows: Optional[List[dict]], stamp: Optional[str],
-                 note: Optional[str], source: str, project: Optional[str]):
-        self.rows = rows            # None＝不可用
-        self.stamp = stamp          # 快照日 / Excel 文件时间
-        self.note = note
-        self.source = source        # snapshot / excel
-        self.project = project
-
-
-def _resolve_issue_source(db: Session, project: Optional[str]) -> _IssueSource:
-    """选定问题单数据源：指定项目的最新快照 →（无任何快照时）回退老的 Excel 报表。
-
-    回退是为了不让还没接 API 采集的部署丢掉这一列；一旦有快照就以快照为准，
-    因为只有快照带项目维度，Excel 报表是"全部混在一起"的。
-    """
-    opts = _issue_projects(db)
-    with_snap = [o for o in opts if o.latest_date]
-    picked = None
-    if project:
-        picked = next((o for o in with_snap if o.project == project), None)
-        if picked is None:
-            # 指定了项目但它没有快照：如实说明，不要静默换成别的项目的数字
-            known = next((o for o in opts if o.project == project), None)
-            note = f"项目「{project}」还没有采集过快照" if known else f"未知项目「{project}」"
-            return _IssueSource(None, None, note, "snapshot", project)
-    elif with_snap:
-        picked = with_snap[0]
-    if picked is not None:
-        snap = _latest_snapshot(db, picked.project)
-        return _IssueSource(_snapshot_rows(snap) if snap else [],
-                            snap.snapshot_date if snap else None,
-                            None, "snapshot", picked.project)
-    raw, mtime, note = _load_issue_raw()
-    return _IssueSource(raw, mtime, note, "excel", None)
+# ─── helpers：问题单数据源 ────────────────────────────────────────────────────
+# 实现搬到 routers/_issue_source.py：度量看板的版本质量也要按领域切问题单，
+# 两处各写一份的表现是同一个领域在两个页面上问题单数不一样，而两边看着都像对的。
+_IssueSource = _issue_source.IssueSource
+_load_issue_raw = _issue_source.load_issue_raw
+_issue_rows_for_group = _issue_source.issue_rows_for_group
+_latest_snapshot = _issue_source.latest_snapshot
+_snapshot_rows = _issue_source.snapshot_rows
+_issue_projects = _issue_source.issue_projects
+_resolve_issue_source = _issue_source.resolve_issue_source
 
 
 # ─── helpers：问题单目标（仅 admin 维护）──────────────────────────────────────
@@ -634,9 +530,19 @@ def _domain_name_map(db: Session) -> dict:
     return {r.id: r.name for r in rows}
 
 
-def _task_out(obj: models.DomainRisk, name_map: dict) -> schemas.DomainTaskOut:
+def _task_out(obj: models.DomainRisk, name_map: dict,
+              users: Optional[Dict[int, str]] = None) -> schemas.DomainTaskOut:
+    from routers.specials import _rich_to_html
+
     out = schemas.DomainTaskOut.model_validate(obj)
     out.domain_name = name_map.get(obj.domain_id)
+    out.owner_name = (users or {}).get(obj.owner_id)
+    # 「当前进展」改成富文本前，这一列存了多年的纯文本。改用 v-html 渲染之后，
+    # 那些老值里的 < 会被浏览器当标签吃掉、换行会被压平——所以出口过一道
+    # _rich_to_html()：看着像 HTML 的清洗，纯文本的转义并把 \n 换成 <br>，
+    # 老行显示成什么样和改造前一模一样。顺带也挡住老数据里可能存着的标记
+    # （入口清洗是这次才加的，之前存进来的没洗过）。
+    out.progress = _rich_to_html(obj.progress or "")
     return out
 
 
@@ -653,8 +559,8 @@ def list_domain_risks(
         models.DomainRisk.seq.asc(),
         models.DomainRisk.id.asc(),
     ).all()
-    name_map = _domain_name_map(db)
-    return [_task_out(r, name_map) for r in rows]
+    name_map, users = _domain_name_map(db), _user_name_map(db)
+    return [_task_out(r, name_map, users) for r in rows]
 
 
 @router.post("/risks", response_model=schemas.DomainTaskOut)
@@ -664,7 +570,11 @@ def create_domain_risk(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    from routers.specials import _sanitize_rich
+
     data = payload.model_dump()
+    # 进展在表格里用 v-html 渲染：入口不清洗＝任何登录用户都能往别人的条目里存脚本
+    data["progress"] = _sanitize_rich(data.get("progress") or "")
     if not data.get("seq"):
         data["seq"] = (db.query(func.coalesce(func.max(models.DomainRisk.seq), 0)).scalar() or 0) + 1
     obj = models.DomainRisk(**data)
@@ -673,7 +583,7 @@ def create_domain_risk(
     db.refresh(obj)
     log_op(db, action="新增", target="领域事务/风险", target_id=obj.id,
            detail=(obj.content or "")[:40], user=current_user, request=request)
-    return _task_out(obj, _domain_name_map(db))
+    return _task_out(obj, _domain_name_map(db), _user_name_map(db))
 
 
 @router.put("/risks/{rid}", response_model=schemas.DomainTaskOut)
@@ -689,8 +599,12 @@ def update_domain_risk(
         raise HTTPException(404, "Not found")
     if obj.version != payload.version:
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    from routers.specials import _sanitize_rich
+
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    if changes.get("progress") is not None:
+        changes["progress"] = _sanitize_rich(changes["progress"])
     for k, v in changes.items():
         setattr(obj, k, v)
     obj.version += 1
@@ -698,7 +612,7 @@ def update_domain_risk(
     db.refresh(obj)
     log_op(db, action="修改", target="领域事务/风险", target_id=obj.id,
            detail=(obj.content or "")[:40], user=current_user, request=request)
-    return _task_out(obj, _domain_name_map(db))
+    return _task_out(obj, _domain_name_map(db), _user_name_map(db))
 
 
 @router.delete("/risks/{rid}")
@@ -851,8 +765,13 @@ def create_legacy_issue(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    from routers.specials import _sanitize_rich
+
     data = payload.model_dump()
     participants = data.pop("participants", None) or []
+    # 当前进展是富文本且详情表里用 v-html 渲染：入口不清洗＝任何登录用户都能往
+    # 别人的遗留问题里存一段脚本（见 CLAUDE.md「富文本：入口清洗，出口也清洗」）
+    data["progress"] = _sanitize_rich(data.get("progress") or "")
     if not data.get("seq"):
         data["seq"] = (db.query(func.coalesce(func.max(models.DomainLegacyIssue.seq), 0))
                        .scalar() or 0) + 1
@@ -880,8 +799,12 @@ def update_legacy_issue(
         raise HTTPException(404, "Not found")
     if obj.version != payload.version:
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    from routers.specials import _sanitize_rich
+
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    if changes.get("progress") is not None:
+        changes["progress"] = _sanitize_rich(changes["progress"])
     if "participants" in changes:
         ids = changes.pop("participants") or []
         obj.participants_json = json.dumps([int(x) for x in ids])

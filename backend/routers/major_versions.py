@@ -11,6 +11,7 @@
 
 写权限：三层都是主数据/配置类，一律 admin（见 CLAUDE.md「Write-permission principle」）。
 """
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -28,6 +29,22 @@ router = APIRouter(prefix="/api", tags=["versions"])
 # 触发「版本计划变更」广播的字段（计划相关；纯文字描述/排序不广播）
 _PLAN_FIELDS = {"version_no", "title", "range_start", "range_end", "actual_release_date",
                 "planned_date"}
+
+
+def _is_released(actual_release_date) -> bool:
+    """「已发布」＝填了实际发布日期**并且那天已经过了**。
+
+    判定放服务端而不是各页面自己比日期：`actual_release_date` 是用户填的本地日期
+    （不做时区转换，见 CLAUDE.md「时间」），前端各写一遍 `new Date()` 比较，
+    跨时区或跨零点时两个页面会给出不同答案，而两边看着都对。
+
+    取「日子过了」而不是「填了就算」：发版计划确定后就会先把日期填上，
+    那之前这个版本还在收需求，不该从「计划交付版本」下拉里消失。
+    """
+    if not actual_release_date:
+        return False
+    d = actual_release_date
+    return (d.date() if hasattr(d, "date") else d) <= date.today()
 
 
 def _get_release(db: Session, rv_id: int) -> models.ReleaseVersion:
@@ -331,7 +348,11 @@ def delete_release_version(
 
 @router.get("/release-versions/all")
 def list_all_release_versions(db: Session = Depends(get_db)):
-    """所有版本的扁平列表 —— 客户面（现场版本 / 预计合入版本）的下拉数据源。"""
+    """所有版本的扁平列表 —— 客户面（现场版本 / 预计合入版本）的下拉数据源。
+
+    **不在服务端过滤已发布的版本**：客户面的「现场版本」多数就是已发布的那些，
+    度量看板要的更是发布完的版本。谁该藏由调用页决定，这里只如实标一个 `released`。
+    """
     items = (
         db.query(models.ReleaseVersion)
         .options(joinedload(models.ReleaseVersion.major_version)
@@ -348,6 +369,7 @@ def list_all_release_versions(db: Session = Depends(get_db)):
             "title": rv.title,
             "planned_date": rv.planned_date,
             "actual_release_date": rv.actual_release_date,
+            "released": _is_released(rv.actual_release_date),
             "major_version_id": rv.major_version_id,
             "major_version_no": mv.version_no if mv else "",
             "major_line": mv.line if mv else "",
@@ -442,7 +464,12 @@ def delete_iteration_version(
 
 @router.get("/iteration-versions/all")
 def list_all_iteration_versions(db: Session = Depends(get_db)):
-    """所有迭代版本的扁平列表 —— 迭代管理「计划交付版本」下拉的数据源。"""
+    """所有迭代版本的扁平列表 —— 迭代管理「计划交付版本」下拉的数据源。
+
+    每行带一个 `released`：构建自己发布了、**或者它挂的那个版本已经发布**，都算已发布
+    （版本一发，名下的构建就都是历史了，不可能再往里合需求）。
+    与 `/release-versions/all` 一样只标不滤——问题单管理那边要按构建号查历史数据。
+    """
     items = (
         db.query(models.IterationVersion)
         .options(
@@ -470,5 +497,8 @@ def list_all_iteration_versions(db: Session = Depends(get_db)):
             "version_no": it.version_no,
             "title": it.title,
             "planned_date": it.planned_date,
+            "actual_release_date": it.actual_release_date,
+            "released": (_is_released(it.actual_release_date)
+                         or (rv is not None and _is_released(rv.actual_release_date))),
         })
     return result

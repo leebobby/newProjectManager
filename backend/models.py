@@ -674,6 +674,8 @@ class IterationVersion(Base):
     version_no = Column(String(64), nullable=False, comment="迭代版本号，如 C10SPC101B001")
     title = Column(String(256), default="", comment="标题")
     planned_date = Column(DateTime, nullable=True, comment="预计发布日期")
+    # 用户填写的日期，不做时区转换。填了且日子过了＝已发布，「计划交付版本」下拉里不再列它
+    actual_release_date = Column(DateTime, nullable=True, comment="实际发布日期")
     sort_order = Column(Integer, default=0, comment="排序")
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -1155,9 +1157,15 @@ class DomainRisk(Base):
     seq = Column(Integer, default=0, comment="序号")
     content = Column(Text, default="", comment="风险和事务")
     priority = Column(String(16), default="中", comment="优先级 高/中/低")
-    progress = Column(Text, default="", comment="当前进展")
+    # 等级与优先级是两回事：优先级＝先处理哪个，等级＝爆了有多疼。事务行留空，
+    # 所以没有默认值（见 enums.DOMAIN_RISK_LEVELS）
+    risk_level = Column(String(16), default="", comment="风险等级 高/中/低，事务行留空")
+    # 富文本（加粗/颜色/换行）。老库里这一列存的是纯文本，出口用 _rich_to_html() 兜底
+    progress = Column(Text, default="", comment="当前进展（富文本 HTML；老行是纯文本）")
     domain_id = Column(Integer, ForeignKey("resource_groups.id", ondelete="SET NULL"),
                        nullable=True, index=True, comment="责任领域（PL 组 FK）")
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                      nullable=True, index=True, comment="责任人 FK（领域是组，责任人是具体的人）")
     planned_close_date = Column(DateTime, nullable=True, comment="计划闭环时间")
     status = Column(String(16), default="OPEN", comment="OPEN / CLOSED / 挂起")
     sort_order = Column(Integer, default=0)
@@ -1193,6 +1201,8 @@ class DomainLegacyIssue(Base):
                        nullable=True, index=True, comment="所属领域（PL 组 FK）")
     planned_date = Column(DateTime, nullable=True, comment="计划完成时间（用户填写，不做时区转换）")
     priority = Column(String(16), default="中", comment="优先级 高/中/低")
+    # 富文本（加粗/颜色/换行）。同 domain_contents.recent_work，写库前过 _sanitize_rich()
+    progress = Column(Text, default="", comment="当前进展（富文本 HTML）")
     remark = Column(Text, default="", comment="备注")
     sort_order = Column(Integer, default=0)
     version = Column(Integer, nullable=False, default=0, comment="乐观锁")

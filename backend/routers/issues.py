@@ -5,6 +5,7 @@
 - GET  /api/issues/trend             —— 所有登录用户（扫描全目录按天聚合趋势）
 - GET  /api/issues/snapshot-flow     —— 所有登录用户（每日新增/解决，相邻快照差分）
 - GET  /api/issues/flow-detail       —— 所有登录用户（某天新增/解决的明细）
+- GET  /api/issues/ungrouped         —— 所有登录用户（最新快照里归不到小组的责任人）
 - GET  /api/issues/run-script/status —— 所有登录用户（查询脚本是否正在运行）
 - POST /api/issues/run-script        —— 仅管理员（执行外部刷新脚本）
 - GET  /api/issues/export.pptx       —— 所有登录用户（导出 PPT）
@@ -75,6 +76,11 @@ _DATE_PAT      = re.compile(r"_(\d{8})\.",           re.IGNORECASE)
 _DATE_DIR_PAT  = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 COLORS = ["#4073ba", "#67C23A", "#E6A23C", "#F56C6C", "#909399", "#8E7AD8", "#26C9C3"]
+
+# 责任人不在任何小组名单时的归属。**只有一个字面量**：Excel 交叉表、维度聚合、
+# 前端提示都用它。两处各写一个（曾经是「未分组」/「未归组」）的表现是同一批人
+# 在两张表里分成两档，加起来还对，看着都像对的。
+UNGROUPED_GROUP = "未归组"
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -295,134 +301,98 @@ def _list_report_files(path_str: str) -> List[tuple]:
 # ─── PPT builder ────────────────────────────────────────────────────────────
 
 def _build_pptx(data: dict) -> io.BytesIO:
-    from pptx import Presentation
-    from pptx.util import Inches, Pt
+    """缺陷统计报表 PPT：封面 + 三张矩阵表。
+
+    表格排版全部走 pptx_utils 的统一入口（分页 / 列宽归一化 / 合计行加粗）——
+    原来这里自己算行高与列宽：行一多表格顺着页面往下长到幻灯片外面，
+    列一多每列被压到 0.4"，导出来没法直接用。
+    """
     from pptx.dml.color import RGBColor
-    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches
 
-    # 复用专项 PPT 的排版基元：中文字体补齐 / 清默认表样式 / 细边框 / 单元格边距
-    from pptx_utils import _apply_run_font, _clear_table_style, _set_cell_border, _set_cell_margins
+    import pptx_utils as PU
 
-    prs = Presentation()
-    prs.slide_width  = Inches(13.33)
-    prs.slide_height = Inches(7.5)
+    prs = PU._new_pres()
     blank = prs.slide_layouts[6]
 
-    C_BLUE   = RGBColor(0x40, 0x73, 0xBA)
-    C_RED    = RGBColor(0xF5, 0x6C, 0x6C)
-    C_ORANGE = RGBColor(0xE6, 0xA2, 0x3C)
-    C_GRAY   = RGBColor(0x90, 0x93, 0x99)
+    C_CRIT   = RGBColor(0x8E, 0x24, 0xAA)   # 致命
+    C_RED    = RGBColor(0xC6, 0x28, 0x28)   # 严重
+    C_ORANGE = RGBColor(0xE6, 0xA2, 0x3C)   # 一般
+    C_GRAY   = RGBColor(0x90, 0x93, 0x99)   # 提示
     C_WHITE  = RGBColor(0xFF, 0xFF, 0xFF)
-    C_DARK   = RGBColor(0x30, 0x31, 0x33)
-    C_LIGHT  = RGBColor(0xF5, 0xF7, 0xFA)
-    C_ZEBRA  = RGBColor(0xF3, 0xF7, 0xFC)
-    C_BORDER = RGBColor(0xD8, 0xDE, 0xE8)
 
     raw = data.get("raw", [])
+    stamp = f"{data.get('actual_file', '')}   {data.get('file_mtime', '')}".strip()
+    subtitle = f"数据源：{stamp}" if stamp else "缺陷统计报表"
 
-    def _txt(slide, text, x, y, w, h, size=12, bold=False, color=C_DARK, align=PP_ALIGN.LEFT):
+    def _txt(slide, text, x, y, w, h, size=12, bold=False, color=C_GRAY, align=PP_ALIGN.LEFT):
         tb = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
-        tf = tb.text_frame
-        p = tf.paragraphs[0]
+        p = tb.text_frame.paragraphs[0]
         p.alignment = align
         run = p.add_run()
         run.text = text
-        _apply_run_font(run, size, bold, color)
+        PU._apply_run_font(run, size, bold, color)
 
-    def _cell_run(cell, text: str, size: int, bold: bool, color: RGBColor,
-                  align=PP_ALIGN.LEFT, bg: RGBColor = None):
-        cell.fill.solid()
-        cell.fill.fore_color.rgb = bg if bg is not None else C_WHITE
-        cell.vertical_anchor = MSO_ANCHOR.MIDDLE
-        _set_cell_margins(cell)
-        p = cell.text_frame.paragraphs[0]
-        p.alignment = align
-        run = p.add_run()
-        run.text = text
-        _apply_run_font(run, size, bold, color)
-        _set_cell_border(cell, C_WHITE if bg == C_BLUE else C_BORDER)
+    # ── 封面 ────────────────────────────────────────────────────────
+    cover = prs.slides.add_slide(blank)
+    _txt(cover, "缺陷统计报表", 1, 1.7, 11.3, 1.4, size=44, bold=True,
+         color=PU._BRAND, align=PP_ALIGN.CENTER)
+    _txt(cover, stamp, 1, 3.2, 11.3, 0.5, size=13, color=C_GRAY, align=PP_ALIGN.CENTER)
 
-    def _table_slide(title: str, columns: List[str], rows_data: List[List[str]]):
-        slide = prs.slides.add_slide(blank)
-        _txt(slide, title, 0.4, 0.15, 12.5, 0.6, size=20, bold=True, color=C_BLUE)
+    def _sev(name):
+        return sum(1 for r in raw if (r.get("severity") or "").strip() == name)
 
-        n_rows = len(rows_data) + 1
-        n_cols = len(columns)
-        cell_h = min(0.38, 5.8 / n_rows)
-        total_h = cell_h * n_rows
-        tbl = slide.shapes.add_table(
-            n_rows, n_cols,
-            Inches(0.4), Inches(0.9), Inches(12.5), Inches(total_h)
-        ).table
-        _clear_table_style(tbl)   # 去掉默认蓝色条纹主题，让手动样式完全生效
+    cards = [("合计", len(raw), PU._BRAND)]
+    for name, color in (("致命", C_CRIT), ("严重", C_RED), ("一般", C_ORANGE), ("提示", C_GRAY)):
+        n = _sev(name)
+        # 致命一栏为 0 时不铺出来：多数项目没有致命单，占着一张卡片只会稀释其它数字
+        if n or name != "致命":
+            cards.append((name, n, color))
 
-        col_w = [2.0] + [10.5 / max(n_cols - 1, 1)] * (n_cols - 1)
-
-        for c, h in enumerate(columns):
-            _cell_run(tbl.cell(0, c), h, 10, True, C_WHITE,
-                      align=PP_ALIGN.CENTER, bg=C_BLUE)
-
-        for r, row_vals in enumerate(rows_data):
-            is_total = bool(row_vals) and row_vals[0] == "合计"
-            zebra = C_ZEBRA if (not is_total and r % 2 == 1) else None
-            for c, val in enumerate(row_vals):
-                _cell_run(tbl.cell(r + 1, c), str(val), 10, is_total, C_DARK,
-                          align=PP_ALIGN.CENTER if c > 0 else PP_ALIGN.LEFT,
-                          bg=C_LIGHT if is_total else zebra)
-
-        for c, w in enumerate(col_w):
-            tbl.columns[c].width = Inches(w)
-
-    # ── Slide 1: Title ────────────────────────────────────────────
-    slide1 = prs.slides.add_slide(blank)
-    _txt(slide1, "缺陷统计报表", 1, 1.8, 11, 1.4, size=48, bold=True, color=C_BLUE, align=PP_ALIGN.CENTER)
-    _txt(slide1, f"{data.get('actual_file', '')}   {data.get('file_mtime', '')}",
-         1, 3.4, 11, 0.5, size=13, color=C_GRAY, align=PP_ALIGN.CENTER)
-
-    total  = len(raw)
-    cnts   = {s: sum(1 for r in raw if r.get("severity") == s) for s in ["严重", "一般", "提示"]}
-    cards  = [("合计", total, C_BLUE), ("严重", cnts["严重"], C_RED),
-              ("一般", cnts["一般"], C_ORANGE), ("提示", cnts["提示"], C_GRAY)]
-    cx = 0.7
+    # 卡片整体居中：原来从 0.7" 起固定步长，卡片数一变就偏到一边
+    card_w, gap = 2.5, 0.28
+    total_w = len(cards) * card_w + (len(cards) - 1) * gap
+    cx = (13.333 - total_w) / 2
     for label, val, clr in cards:
-        shp = slide1.shapes.add_shape(1, Inches(cx), Inches(4.4), Inches(2.8), Inches(1.7))
+        shp = cover.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                     Inches(cx), Inches(4.3), Inches(card_w), Inches(1.6))
         shp.fill.solid()
         shp.fill.fore_color.rgb = clr
-        shp.line.color.rgb = clr
+        shp.line.fill.background()
+        shp.shadow.inherit = False
         tf = shp.text_frame
         tf.word_wrap = False
         p1 = tf.paragraphs[0]
         p1.alignment = PP_ALIGN.CENTER
         r1 = p1.add_run()
         r1.text = str(val)
-        _apply_run_font(r1, 40, True, C_WHITE)
+        PU._apply_run_font(r1, 36, True, C_WHITE)
         p2 = tf.add_paragraph()
         p2.alignment = PP_ALIGN.CENTER
         r2 = p2.add_run()
         r2.text = label
-        _apply_run_font(r2, 14, False, C_WHITE)
-        cx += 3.0
+        PU._apply_run_font(r2, 13, False, C_WHITE)
+        cx += card_w + gap
 
-    # ── Slide 2: Monthly by group ─────────────────────────────────
-    m = data.get("monthly_by_group", {})
-    if m.get("rows"):
-        cols  = ["小组"] + m["columns"]
-        rdata = [[r["label"]] + [str(r.get(c, 0)) for c in m["columns"]] for r in m["rows"]]
-        _table_slide("按小组月度统计", cols, rdata)
+    # 封面也带页脚：模板里页脚是每页固定件，只有封面没有的话，
+    # 一叠幻灯片翻过去第一页会显得像另一份材料
+    PU._add_footer(cover, 1, 1)
 
-    # ── Slide 3: By customer ─────────────────────────────────────
-    c = data.get("by_customer", {})
-    if c.get("rows"):
-        cols  = ["小组"] + c["columns"]
-        rdata = [[r["label"]] + [str(r.get(col, 0)) for col in c["columns"]] for r in c["rows"]]
-        _table_slide("按客户分布", cols, rdata)
-
-    # ── Slide 4: Feature by group ─────────────────────────────────
-    f = data.get("feature_by_group", {})
-    if f.get("rows"):
-        cols  = ["小组"] + f["columns"]
-        rdata = [[r["label"]] + [str(r.get(col, 0)) for col in f["columns"]] for r in f["rows"]]
-        _table_slide("特性 × 小组分布", cols, rdata)
+    # ── 三张矩阵表：列多了按列切页，行多了按行切页 ──────────────────
+    for key, title in (("monthly_by_group", "按小组月度统计"),
+                       ("by_customer", "按客户分布"),
+                       ("feature_by_group", "特性 × 小组分布")):
+        blk = data.get(key) or {}
+        cols = blk.get("columns") or []
+        rows = blk.get("rows") or []
+        if not rows:
+            continue
+        PU.add_matrix_slides(
+            prs, title, subtitle, "小组", cols,
+            [[r["label"]] + [str(r.get(c, 0)) for c in cols] for r in rows],
+        )
 
     buf = io.BytesIO()
     prs.save(buf)
@@ -691,6 +661,9 @@ def _enrich_rows(db: Session, rows: List[Dict]) -> List[Dict]:
       issue_stat_departments —— 只统计这些部门（子串匹配责任人部门全路径；留空＝全部）
       issue_groups           —— [{name, members}]，成员分号分隔，按责任人归组
     客户面来自客户主数据（客户面管理），用 code/全称/别名 在标题里做包含匹配。
+
+    **部门过滤会丢行，小组归组不会**：部门答的是"这单归不归我们管"，答否就该出统计；
+    小组答的是"归我们哪个组"，答不上来只说明名单没维护全，不是这单不该统计。
     """
     cfg = _load_config()
     exclude = _as_str_list(cfg.get("issue_exclude_statuses")) or ["关闭", "撤销"]
@@ -709,12 +682,14 @@ def _enrich_rows(db: Session, rows: List[Dict]) -> List[Dict]:
             dept = (r.get("dept_path") or "") or (r.get("department") or "")
             if not any(d in dept for d in depts):
                 continue
-        # ③ 按责任人归组（不在任何小组名单的不保留）
+        # ③ 按责任人归组。**不在名单里的人不丢**，归到「未归组」。
+        # 问题单从定位转到实施修改时换责任人是正常流转，新人/借调/换部门的人
+        # 不在名单里很常见；丢掉这一行的后果不是"少统计一条"，而是它在下一次
+        # 相邻快照差分里凭空变成一笔「解决」（见 _ensure_flows：解决＝上次有、
+        # 今天没有，从不读状态）。所以留下来，并由 _ungrouped_owners() 报出去，
+        # 让管理员去补名单——名单不全是配置问题，不该表现成数据问题。
         if groups:
-            g = _match_group(r.get("owner", ""), groups)
-            if not g:
-                continue
-            r["group"] = g
+            r["group"] = _match_group(r.get("owner", ""), groups) or UNGROUPED_GROUP
         # ④ 从标题提取客户面
         if matchers and not (r.get("customer") or "").strip():
             r["customer"] = _match_customer(r.get("title", ""), matchers)
@@ -722,8 +697,32 @@ def _enrich_rows(db: Session, rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def _take_snapshot(db: Session, project: str, source: str = "api") -> models.IssueSnapshot:
+def _ungrouped_owners(rows: List[Dict]) -> List[Dict]:
+    """本次采集里归不到小组的责任人：[{owner, dept, count}]，按条数降序。
+
+    这不是统计口径，是**待办清单**——每一条都对应「配置里的小组名单少了一个人」。
+    带上部门是为了让管理员一眼看出该往哪个组里加，而不用回 DTS 里查这人是谁。
+    """
+    acc: Dict[str, Dict] = {}
+    for r in rows:
+        if (r.get("group") or "") != UNGROUPED_GROUP:
+            continue
+        owner = str(r.get("owner") or "").strip() or "（无责任人）"
+        item = acc.get(owner)
+        if item is None:
+            item = acc[owner] = {"owner": owner, "dept": "", "count": 0}
+        item["count"] += 1
+        if not item["dept"]:
+            item["dept"] = (r.get("department") or r.get("dept_path") or "").strip()
+    return sorted(acc.values(), key=lambda x: (-x["count"], x["owner"]))
+
+
+def _take_snapshot(db: Session, project: str,
+                   source: str = "api") -> tuple[models.IssueSnapshot, List[Dict]]:
     """拉取该项目问题单 → 明细写文件、聚合数字写库（同项目同日覆盖）。
+
+    返回 (快照, 归不到小组的责任人清单)。后者是给管理员看的待办，不入库——
+    它完全由明细文件推得（`/ungrouped` 随时重算），存一份就得考虑何时失效。
 
     可能抛 HTTPException（脚本未配置 / 执行失败）——调用方按需捕获。
     """
@@ -774,7 +773,7 @@ def _take_snapshot(db: Session, project: str, source: str = "api") -> models.Iss
         _ensure_flows(db, project)
     except Exception:
         db.rollback()   # 差分是附加信息，算不出来不影响这次采集
-    return snap
+    return snap, _ungrouped_owners(raw)
 
 
 def collect_with_log(db: Session, project: str, source: str = "auto") -> Dict[str, Any]:
@@ -786,9 +785,12 @@ def collect_with_log(db: Session, project: str, source: str = "auto") -> Dict[st
     log = models.IssueCollectLog(project=project, source=source, started_at=started)
     result: Dict[str, Any]
     try:
-        snap = _take_snapshot(db, project, source=source)
+        snap, ungrouped = _take_snapshot(db, project, source=source)
         log.ok, log.total, log.error = True, snap.total, ""
-        result = {"project": project, "ok": True, "date": snap.snapshot_date, "total": snap.total}
+        # ungrouped 随采集结果一并回给页面：名单少人是配置问题，采集当场提示
+        # 比等人自己去翻配置页有用得多。
+        result = {"project": project, "ok": True, "date": snap.snapshot_date,
+                  "total": snap.total, "ungrouped": ungrouped}
     except HTTPException as exc:
         log.ok, log.error = False, str(exc.detail)[:2000]
         result = {"project": project, "ok": False, "error": log.error}
@@ -1059,10 +1061,12 @@ def _fill_analysis_sheet(ws, raw: List[Dict]) -> None:
     客户面表只统计标题匹配到客户的单子；匹配不到的是研发问题，单独一张按小组的表
     （口径与前端 IssueApiPanel 一致，页面与导出必须同款）。
     """
+    import brand
     from openpyxl.styles import Alignment, Font, PatternFill
-    head_font = Font(bold=True, color="FFFFFF")
-    head_fill = PatternFill("solid", fgColor="4073BA")
-    title_font = Font(bold=True, size=12, color="4073BA")
+    # 配色走 brand.py，与清单类导出和 PPT 同一套；这里曾经自己写死品牌蓝
+    head_font = Font(bold=True, color=brand.HEADER_TEXT)
+    head_fill = PatternFill("solid", fgColor=brand.HEADER_BG)
+    title_font = Font(bold=True, size=12, color=brand.BRAND)
     total_font = Font(bold=True)
     center = Alignment(horizontal="center", vertical="center")
     ws.title = "统计分析"
@@ -1095,11 +1099,11 @@ def _fill_analysis_sheet(ws, raw: List[Dict]) -> None:
     cus_rows = [r for r in raw if (r.get("customer") or "").strip()]
     dev_rows = [r for r in raw if not (r.get("customer") or "").strip()]
 
-    _write_cross("小组", "按小组 × 严重程度", _cross_table(raw, "group", "severity", SEV, "未分组"))
+    _write_cross("小组", "按小组 × 严重程度", _cross_table(raw, "group", "severity", SEV, UNGROUPED_GROUP))
     _write_cross("客户面", f"按客户面 × 严重程度（客户面问题 {len(cus_rows)} 条）",
                  _cross_table(cus_rows, "customer", "severity", SEV, "未标注"))
     _write_cross("小组", f"研发问题 × 严重程度（{len(dev_rows)} 条，标题未匹配到客户）",
-                 _cross_table(dev_rows, "group", "severity", SEV, "未分组"))
+                 _cross_table(dev_rows, "group", "severity", SEV, UNGROUPED_GROUP))
     _write_cross("年月", "按年月 × 严重程度", _cross_table(raw, "year_month", "severity", SEV, "未标注"))
 
 
@@ -1142,6 +1146,8 @@ def _export_snapshot_excel(project: str, raw: List[Dict], date_str: str) -> None
 # ─── 每日新增 / 解决：相邻快照差分 ──────────────────────────────────────────
 # 快照存的是"当天还开着的单"（关闭/撤销在 _enrich_rows 里已被剔除），所以：
 #   新增 = 今天有、上次没有；解决 = 上次有、今天没有。
+# 注意这里**从不读状态**：一单只要从快照里消失就算「解决」。所以任何"因为过滤规则
+# 而掉出快照"的行都会变成一笔假解决——责任人归组因此刻意不丢行（见 _enrich_rows ③）。
 # 差分要读明细文件，因此结果落 issue_snapshot_flows，采集后增量算一次，看图只读数字。
 _ISSUE_NO_DATE = re.compile(r"^[A-Za-z]*(\d{4})(\d{2})(\d{2})\d*$")
 
@@ -1325,6 +1331,33 @@ def flow_detail(project: str, date: str, kind: str = "created",
                 rows = []
     return {"project": project, "date": date, "kind": kind,
             "source_date": src_date, "count": len(rows), "rows": rows}
+
+
+@router.get("/ungrouped")
+def ungrouped_owners(project: str, date: Optional[str] = None,
+                     db: Session = Depends(get_db),
+                     _: models.User = Depends(get_current_user)):
+    """某次快照里归不到小组的责任人（默认最新一次），给「小组配置」补名单用。
+
+    从明细文件现算而不是查库：小组名单一改，这份清单就该跟着变，存下来的那份
+    会一直显示已经补过的人，比没有更糟。
+    """
+    q = db.query(models.IssueSnapshot).filter(models.IssueSnapshot.project == project)
+    snap = (q.filter(models.IssueSnapshot.snapshot_date == date).first() if date
+            else q.order_by(models.IssueSnapshot.snapshot_date.desc()).first())
+    if snap is None:
+        return {"project": project, "date": "", "rows": [], "count": 0, "issues": 0}
+    rows: List[Dict] = []
+    try:
+        fp = _snapshot_root() / (snap.data_file or "")
+        if snap.data_file and fp.exists():
+            raw = json.loads(fp.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                rows = _ungrouped_owners([r for r in raw if isinstance(r, dict)])
+    except Exception:
+        rows = []   # 明细文件丢了：报"没有"而不是整页 500，配置页照常能用
+    return {"project": project, "date": snap.snapshot_date, "rows": rows,
+            "count": len(rows), "issues": sum(r["count"] for r in rows)}
 
 
 @router.get("/snapshot-export")

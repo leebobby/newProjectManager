@@ -14,13 +14,13 @@
           <el-option v-for="p in projects" :key="p.id" :value="p.id" :label="p.name" />
         </el-select>
         <span class="muted">
-          项目挂在需求行上（同一个迭代里排着多个项目的需求）；调试版本看板按客户统计，不受此处影响
+          项目挂在需求行上（同一个迭代里排着多个项目的需求）；没填项目的行不计入任何一个项目，页面会提示去补
         </span>
       </div>
 
       <el-tabs v-model="active">
-        <!-- 版本完成率 -->
-        <el-tab-pane label="版本完成率" name="version">
+        <!-- ============ 版本质量：口径＝整个版本，跨迭代 ============ -->
+        <el-tab-pane label="版本质量" name="version">
           <div class="bar">
             <el-select
               v-model="selectedVersionId"
@@ -37,7 +37,9 @@
                 :label="`${v.major_version_no ? v.major_version_no + ' / ' : ''}${v.version_no}${v.title ? ' — ' + v.title : ''}`"
               />
             </el-select>
-            <el-button :icon="Refresh" :disabled="!selectedVersionId" @click="loadVersion">刷新</el-button>
+            <span class="muted">整个版本口径，跨迭代——版本是跨月的，按月截一刀会得到一个既不是这个版本、也不是这个月的数</span>
+            <el-button :icon="Refresh" :disabled="!selectedVersionId" style="margin-left: auto"
+              @click="loadVersion">刷新</el-button>
           </div>
 
           <ExclusionNote
@@ -48,7 +50,7 @@
 
           <div v-if="versionMetric" class="metric-summary">
             <div class="stat">
-              <div class="label">总需求</div>
+              <div class="label">总需求<span class="hint">领域+产品</span></div>
               <div class="value">{{ versionMetric.total }}</div>
             </div>
             <div class="stat">
@@ -61,143 +63,204 @@
             </div>
             <div class="stat">
               <div class="label">代码量(行)</div>
-              <div class="value">{{ versionMetric.total_code_volume }}</div>
+              <div class="value">{{ versionMetric.total_code_volume.toLocaleString() }}</div>
             </div>
             <div class="stat">
-              <div class="label">自验证用例数</div>
-              <div class="value">{{ versionMetric.total_self_test_cases }}</div>
+              <div class="label">用例密度<span class="hint">个/kloc</span></div>
+              <div class="value">{{ versionMetric.total_code_volume ? versionMetric.total_self_test_case_density : '—' }}</div>
             </div>
             <div class="stat">
-              <div class="label">转测后问题单</div>
-              <div class="value danger">{{ versionMetric.total_post_test_issues }}</div>
+              <div class="label">问题单密度<span class="hint">个/kloc</span></div>
+              <div class="value danger">{{ versionMetric.total_code_volume ? versionMetric.total_post_test_issue_density : '—' }}</div>
             </div>
           </div>
 
-          <el-table :data="versionMetric?.items || []" v-loading="versionLoading" border stripe size="small">
-            <el-table-column label="类型" width="80">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.kind === 'domain' ? 'primary' : 'success'">
-                  {{ row.kind === 'domain' ? '领域' : '产品' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="title" label="需求标题" min-width="240" />
-            <el-table-column label="完成度" width="160">
-              <template #default="{ row }">
-                <el-progress
-                  :percentage="Math.round(row.completion * 100)"
-                  :status="row.is_done ? 'success' : ''"
-                  :stroke-width="14"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="80" align="center">
-              <template #default="{ row }">
-                <el-tag :type="row.is_done ? 'success' : 'info'" size="small">
-                  {{ row.is_done ? '完成' : '进行中' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
+          <!-- 按领域拆：质量字段只有领域需求有，所以这张表的条数比上面的总需求少
+               （少的是产品需求）。表头写明白，否则会被当成丢数据。 -->
+          <div class="block-head">
+            <span class="block-title">按领域</span>
+            <span class="muted">只数领域需求（产品需求没有 PL 组归属，也没有质量字段），所以合计比上面的「总需求」少</span>
+            <div class="issue-src">
+              <span class="muted">问题单快照：</span>
+              <el-select v-model="issueProject" size="small" clearable placeholder="自动"
+                style="width: 170px" @change="loadVersion">
+                <el-option v-for="p in versionMetric?.issue_projects || []" :key="p.project"
+                  :value="p.project" :label="p.project + (p.latest_date ? ` · ${p.latest_date}` : '（未采集）')" />
+              </el-select>
+            </div>
+          </div>
+
+          <!-- 匹配率显式标注：快照的「版本信息」是 DTS 的自由串，对不上是常态。
+               不报匹配率的话，「这个版本怎么一个问题单都没有」没人说得清。 -->
+          <el-alert v-if="versionMetric?.issues?.available" :closable="false" show-icon
+            :type="matchRateType" style="margin-bottom: 10px">
+            <template #title>
+              {{ versionMetric.issues.project || '报表文件' }}
+              {{ versionMetric.issues.stamp ? `（${versionMetric.issues.stamp}）` : '' }}
+              共 {{ versionMetric.issues.total }} 条，按「版本信息」命中本版本
+              <b>{{ versionMetric.issues.matched }}</b> 条（{{ pct(versionMetric.issues.match_rate) }}）
+            </template>
+            <template v-if="versionMetric.issues.unmatched_top.length" #default>
+              <span class="muted">没命中的版本信息：{{ versionMetric.issues.unmatched_top.join('、') }}</span>
+              <div class="muted">只做精确匹配（版本号 + 名下所有构建号）；模糊匹配会把 C10SPC101 认到 C10SPC1011 上，错挂的单在质量表里只是数字偏一点。</div>
+            </template>
+          </el-alert>
+          <el-alert v-else-if="versionMetric" :closable="false" show-icon type="info" style="margin-bottom: 10px"
+            :title="versionMetric.issues?.note || '没有可用的问题单数据源，「采集问题单」两列留空'" />
+
+          <DomainQualityTable :rows="versionMetric?.by_domain || []" :loading="versionLoading" show-snapshot />
+
+          <el-collapse class="detail-collapse">
+            <el-collapse-item :title="`需求明细（${versionMetric?.items?.length || 0} 条）`" name="items">
+              <el-table :data="versionMetric?.items || []" border stripe size="small">
+                <el-table-column label="类型" width="80">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.kind === 'domain' ? 'primary' : 'success'">
+                      {{ row.kind === 'domain' ? '领域' : '产品' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="title" label="需求标题" min-width="240" />
+                <el-table-column label="完成度" width="160">
+                  <template #default="{ row }">
+                    <el-progress
+                      :percentage="Math.round(row.completion * 100)"
+                      :status="row.is_done ? 'success' : ''"
+                      :stroke-width="14"
+                    />
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="80" align="center">
+                  <template #default="{ row }">
+                    <el-tag :type="row.is_done ? 'success' : 'info'" size="small">
+                      {{ row.is_done ? '完成' : '进行中' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </el-collapse-item>
+          </el-collapse>
         </el-tab-pane>
 
-        <!-- 迭代质量 -->
-        <el-tab-pane label="迭代质量" name="iteration">
+        <!-- ============ 领域质量：口径＝一个迭代（按月排活）============ -->
+        <el-tab-pane label="领域质量" name="domain">
           <div class="bar">
-            <el-select
-              v-model="selectedYear"
-              placeholder="年份"
-              style="width: 140px"
-              @change="onYearChange"
-            >
+            <el-select v-model="selectedYear" placeholder="年份" style="width: 130px" @change="onYearChange">
               <el-option v-for="y in years" :key="y" :value="y" :label="y + '年'" />
             </el-select>
-            <el-select
-              v-model="selectedIterationId"
-              placeholder="选择月份"
-              style="width: 240px"
-              clearable
-              @change="loadIteration"
-            >
-              <el-option
-                v-for="it in iterations"
-                :key="it.id"
-                :value="it.id"
-                :label="`${it.month}月 ${it.name || ''}`"
-              />
+            <el-select v-model="selectedIterationId" placeholder="选择月份" style="width: 220px"
+              @change="loadIterationTab">
+              <el-option v-for="it in iterations" :key="it.id" :value="it.id"
+                :label="`${it.month}月 ${it.name || ''}`" />
             </el-select>
-            <el-button :icon="Refresh" :disabled="!selectedIterationId" @click="loadIteration">刷新</el-button>
+            <span class="muted">按迭代口径——领域是按月排活的，问「这个月各领域干得怎么样」才有意义</span>
+            <el-button :icon="Refresh" :disabled="!selectedIterationId" style="margin-left: auto"
+              @click="loadIterationTab">刷新</el-button>
           </div>
 
           <ExclusionNote
-            :unassigned="iterMetric?.unassigned || 0"
-            :changed="iterMetric?.changed || 0"
+            :unassigned="domainQuality?.unassigned || 0"
+            :changed="domainQuality?.changed || 0"
             scope="该迭代里"
           />
 
-          <div v-if="iterMetric" class="metric-summary">
-            <div class="stat"><div class="label">领域需求</div><div class="value">{{ iterMetric.total_domain }}</div></div>
-            <div class="stat"><div class="label">产品需求</div><div class="value">{{ iterMetric.total_product }}</div></div>
-            <div class="stat"><div class="label">已完成</div><div class="value primary">{{ iterMetric.done_count }}</div></div>
-            <div class="stat"><div class="label">已延期</div><div class="value danger">{{ iterMetric.delayed_count }}</div></div>
-            <div class="stat"><div class="label">平均完成度</div><div class="value primary">{{ pct(iterMetric.avg_completion) }}</div></div>
+          <div v-if="domainQuality" class="metric-summary">
+            <div class="stat">
+              <div class="label">领域需求</div>
+              <div class="value">{{ domainQuality.total }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">已完成</div>
+              <div class="value primary">{{ domainQuality.done }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">平均完成度</div>
+              <div class="value primary">{{ pct(domainQuality.avg_completion) }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">代码量(行)</div>
+              <div class="value">{{ domainQuality.code_volume.toLocaleString() }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">用例密度<span class="hint">个/kloc</span></div>
+              <div class="value">{{ domainQuality.code_volume ? domainQuality.self_test_case_density : '—' }}</div>
+            </div>
+            <div class="stat">
+              <div class="label">问题单密度<span class="hint">个/kloc</span></div>
+              <div class="value danger">{{ domainQuality.code_volume ? domainQuality.post_test_issue_density : '—' }}</div>
+            </div>
           </div>
 
-          <el-card v-if="iterMetric" shadow="never" style="margin-top: 12px">
-            <div class="block-title">按优先级分布</div>
-            <div class="priority-grid">
-              <div v-for="(cnt, p) in iterMetric.by_priority" :key="p" class="prio-cell">
-                <div class="prio-label">{{ p }}</div>
-                <div class="prio-cnt">{{ cnt }}</div>
-              </div>
-            </div>
-          </el-card>
+          <div class="block-head">
+            <span class="block-title">按领域</span>
+            <span class="muted">
+              「转测后问题单」是需求行上人填的那一列。采集快照没有迭代维度（它是"当天还开着的单"），
+              按月摊给某个迭代是编的，所以这里不放采集问题单——那两列在「版本质量」里。
+            </span>
+          </div>
+          <DomainQualityTable :rows="domainQuality?.rows || []" :loading="domainLoading" />
 
-          <el-card shadow="never" style="margin-top: 12px">
-            <div class="block-title">{{ selectedYear }} 年各迭代质量（领域需求汇总）</div>
-            <el-table :data="qualityRows" v-loading="qualityLoading" border stripe size="small">
-              <el-table-column label="迭代" min-width="140">
-                <template #default="{ row }">
-                  {{ row.month }}月{{ row.name ? ' · ' + row.name : '' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="代码量(行)" width="110" align="right">
-                <template #default="{ row }">{{ row.code_volume.toLocaleString() }}</template>
-              </el-table-column>
-              <el-table-column label="自验证用例数" width="120" align="right">
-                <template #default="{ row }">{{ row.self_test_cases }}</template>
-              </el-table-column>
-              <el-table-column label="用例密度(个/kloc)" width="150" align="right">
-                <template #default="{ row }">
-                  <span :class="row.code_volume ? '' : 'muted'">
-                    {{ row.code_volume ? row.self_test_case_density : '—' }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column label="转测后问题单" width="120" align="right">
-                <template #default="{ row }">{{ row.post_test_issues }}</template>
-              </el-table-column>
-              <el-table-column label="问题单密度(个/kloc)" width="160" align="right">
-                <template #default="{ row }">
-                  <span :class="row.code_volume ? '' : 'muted'">
-                    {{ row.code_volume ? row.post_test_issue_density : '—' }}
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column label="已变更" width="90" align="right">
-                <template #default="{ row }">
-                  <span :class="row.changed ? '' : 'muted'">{{ row.changed || '—' }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-            <div class="quality-tip">
-              密度 = 数量 ÷ (代码量 / 1000)；代码量为空的迭代不计算密度。数据来源于领域需求页填报的版本质量统计。
-              标了「已变更」的需求整行不计入（分子分母一起剔），「已变更」列是本年度各迭代被剔掉的条数。
-            </div>
-          </el-card>
+          <el-collapse class="detail-collapse">
+            <el-collapse-item title="本迭代交付概览（含产品需求 / 优先级分布）" name="iter">
+              <div v-if="iterMetric" class="metric-summary">
+                <div class="stat"><div class="label">领域需求</div><div class="value">{{ iterMetric.total_domain }}</div></div>
+                <div class="stat"><div class="label">产品需求</div><div class="value">{{ iterMetric.total_product }}</div></div>
+                <div class="stat"><div class="label">已完成</div><div class="value primary">{{ iterMetric.done_count }}</div></div>
+                <div class="stat"><div class="label">已延期</div><div class="value danger">{{ iterMetric.delayed_count }}</div></div>
+                <div class="stat"><div class="label">平均完成度</div><div class="value primary">{{ pct(iterMetric.avg_completion) }}</div></div>
+              </div>
+              <div class="priority-grid">
+                <div v-for="(cnt, p) in iterMetric?.by_priority || {}" :key="p" class="prio-cell">
+                  <div class="prio-label">{{ p }}</div>
+                  <div class="prio-cnt">{{ cnt }}</div>
+                </div>
+              </div>
+            </el-collapse-item>
+            <el-collapse-item :title="`${selectedYear} 年逐迭代质量趋势`" name="trend">
+              <el-table :data="qualityRows" v-loading="qualityLoading" border stripe size="small">
+                <el-table-column label="迭代" min-width="140">
+                  <template #default="{ row }">
+                    {{ row.month }}月{{ row.name ? ' · ' + row.name : '' }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="代码量(行)" width="110" align="right">
+                  <template #default="{ row }">{{ row.code_volume.toLocaleString() }}</template>
+                </el-table-column>
+                <el-table-column label="自验证用例数" width="120" align="right">
+                  <template #default="{ row }">{{ row.self_test_cases }}</template>
+                </el-table-column>
+                <el-table-column label="用例密度(个/kloc)" width="150" align="right">
+                  <template #default="{ row }">
+                    <span :class="row.code_volume ? '' : 'muted'">
+                      {{ row.code_volume ? row.self_test_case_density : '—' }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="转测后问题单" width="120" align="right">
+                  <template #default="{ row }">{{ row.post_test_issues }}</template>
+                </el-table-column>
+                <el-table-column label="问题单密度(个/kloc)" width="160" align="right">
+                  <template #default="{ row }">
+                    <span :class="row.code_volume ? '' : 'muted'">
+                      {{ row.code_volume ? row.post_test_issue_density : '—' }}
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="已变更" width="90" align="right">
+                  <template #default="{ row }">
+                    <span :class="row.changed ? '' : 'muted'">{{ row.changed || '—' }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <div class="quality-tip">
+                密度 = 数量 ÷ (代码量 / 1000)；代码量为空的迭代不计算密度。数据来源于领域需求页填报的版本质量统计。
+                标了「已变更」的需求整行不计入（分子分母一起剔），「已变更」列是本年度各迭代被剔掉的条数。
+              </div>
+            </el-collapse-item>
+          </el-collapse>
         </el-tab-pane>
 
-        <!-- 组级负载 -->
+        <!-- ============ 组级负载 ============ -->
         <el-tab-pane label="组级负载" name="group">
           <div class="bar">
             <el-select
@@ -250,42 +313,6 @@
             </el-table-column>
           </el-table>
         </el-tab-pane>
-
-        <!-- 调试版本（现场使用看板） -->
-        <el-tab-pane label="调试版本" name="debug">
-          <div class="bar">
-            <span class="muted">按月统计现场调试版本数量与目标客户分布（月份口径＝发布时间，缺失用计划发布时间）</span>
-            <el-button :icon="Refresh" style="margin-left: auto" @click="loadDebug">刷新</el-button>
-          </div>
-
-          <div v-if="debugStat" class="metric-summary">
-            <div class="stat"><div class="label">调试版本总数</div><div class="value primary">{{ debugTotal }}</div></div>
-            <div class="stat"><div class="label">涉及目标客户</div><div class="value">{{ debugStat.customers.length }}</div></div>
-            <div class="stat"><div class="label">统计月份数</div><div class="value">{{ debugStat.months.length }}</div></div>
-          </div>
-
-          <el-table :data="debugStat?.months || []" v-loading="debugLoading" border stripe size="small">
-            <el-table-column prop="month" label="月份" width="120" fixed />
-            <el-table-column
-              v-for="c in debugStat?.customers || []"
-              :key="c"
-              :label="c"
-              min-width="110"
-              align="center"
-            >
-              <template #default="{ row }">
-                <span v-if="row.by_customer[c]">{{ row.by_customer[c] }}</span>
-                <span v-else class="muted">·</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="合计" width="90" align="center" fixed="right">
-              <template #default="{ row }"><b>{{ row.total }}</b></template>
-            </el-table-column>
-          </el-table>
-          <div v-if="debugStat && !debugStat.months.length" class="quality-tip">
-            暂无调试版本数据。去「版本管理 → 现场调试版本」录入后即可统计。
-          </div>
-        </el-tab-pane>
       </el-tabs>
     </el-card>
   </div>
@@ -296,8 +323,9 @@ import { computed, defineComponent, h, onMounted, ref } from 'vue'
 import { ElAlert, ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import {
-  annualIterationApi, debugVersionApi, majorVersionApi, metricsApi, resourceGroupApi, roadmapApi,
+  annualIterationApi, majorVersionApi, metricsApi, resourceGroupApi, roadmapApi,
 } from '../api'
+import DomainQualityTable from '../components/metrics/DomainQualityTable.vue'
 
 const active = ref('version')
 
@@ -356,7 +384,7 @@ const projectParams = () => (projectId.value ? { project_id: projectId.value } :
 function onProjectChange() {
   // 换项目后已经展示着的数字全都过期了，一次性重算，别让人以为某个 tab 没跟着变
   loadVersion()
-  loadIteration()
+  loadIterationTab()
   loadQuality()
   loadGroup()
 }
@@ -379,11 +407,24 @@ async function loadVersionList() {
   }
 }
 
+// 问题单快照取哪个项目：留空＝后端挑第一个有快照的。指定的项目没有快照时后端
+// 如实回不可用，**不会静默换成别的项目的数字**——那种错没人看得出来。
+const issueProject = ref('')
+
+// 匹配率的配色：低命中率多半是版本命名没对上，得让人一眼看见，而不是当成"没问题单"
+const matchRateType = computed(() => {
+  const r = versionMetric.value?.issues?.match_rate ?? 0
+  if (r >= 0.6) return 'success'
+  return r > 0 ? 'warning' : 'error'
+})
+
 async function loadVersion() {
   if (!selectedVersionId.value) return
   versionLoading.value = true
   try {
-    const { data } = await metricsApi.version(selectedVersionId.value, projectParams())
+    const params = { ...projectParams() }
+    if (issueProject.value) params.issue_project = issueProject.value
+    const { data } = await metricsApi.version(selectedVersionId.value, params)
     versionMetric.value = data
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
@@ -398,6 +439,8 @@ const selectedYear = ref(new Date().getFullYear())
 const iterations = ref([])
 const selectedIterationId = ref(null)
 const iterMetric = ref(null)
+const domainQuality = ref(null)
+const domainLoading = ref(false)
 const qualityRows = ref([])
 const qualityLoading = ref(false)
 
@@ -437,7 +480,7 @@ async function onYearChange() {
       const m = data.find((i) => i.month === now.getMonth() + 1)
       if (m) {
         selectedIterationId.value = m.id
-        await loadIteration()
+        await loadIterationTab()
       }
     }
   } catch (e) {
@@ -445,13 +488,22 @@ async function onYearChange() {
   }
 }
 
-async function loadIteration() {
+// 领域质量（按领域分行）与交付概览是同一个迭代的两面，一起加载：
+// 分开触发的话，切月份时两块会一先一后地跳，看着像其中一块没跟上。
+async function loadIterationTab() {
   if (!selectedIterationId.value) return
+  domainLoading.value = true
   try {
-    const { data } = await metricsApi.iteration(selectedIterationId.value, projectParams())
-    iterMetric.value = data
+    const [q, m] = await Promise.all([
+      metricsApi.domainQuality(selectedIterationId.value, projectParams()),
+      metricsApi.iteration(selectedIterationId.value, projectParams()),
+    ])
+    domainQuality.value = q.data
+    iterMetric.value = m.data
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
+  } finally {
+    domainLoading.value = false
   }
 }
 
@@ -486,27 +538,13 @@ async function loadGroup() {
   }
 }
 
-// 调试版本看板
-const debugStat = ref(null)
-const debugLoading = ref(false)
-const debugTotal = computed(() => (debugStat.value?.months || []).reduce((s, m) => s + m.total, 0))
-
-async function loadDebug() {
-  debugLoading.value = true
-  try {
-    const { data } = await debugVersionApi.dashboard()
-    debugStat.value = data
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '加载调试版本看板失败')
-  } finally {
-    debugLoading.value = false
-  }
-}
+// 调试版本看板搬到「版本管理 → 现场调试版本」了：它是按客户×月统计的，
+// 和这里的三个（版本 / 领域 / 组）不是一个维度，混在一起正是"看板有点乱"的来源之一。
 
 onMounted(async () => {
   // 项目下拉先到位：loadYears() 会顺带拉当月迭代的数字，晚了就得再算一遍
   await loadProjects()
-  await Promise.all([loadVersionList(), loadYears(), loadGroupList(), loadDebug()])
+  await Promise.all([loadVersionList(), loadYears(), loadGroupList()])
 })
 </script>
 
@@ -540,7 +578,20 @@ onMounted(async () => {
 .stat .value { font-size: 24px; font-weight: 600; color: #303133; }
 .stat .value.primary { color: #409eff; }
 .stat .value.danger { color: #f56c6c; }
-.block-title { font-weight: 600; margin-bottom: 8px; color: #303133; }
+.block-title { font-weight: 600; color: #303133; }
+/* 「按领域」表上方那一行：标题 + 口径说明 + 问题单来源选择挤在一行，窄屏时换行不错位 */
+.block-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin: 18px 0 8px;
+}
+.block-head .muted { font-size: 12px; flex: 1 1 320px; line-height: 1.6; }
+.issue-src { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+/* 明细/趋势收进折叠面板：默认收起，看板一屏之内先给结论，要细节再展开 */
+.detail-collapse { margin-top: 14px; }
+.stat .label .hint { color: #c0c4cc; margin-left: 4px; }
 .priority-grid { display: flex; gap: 8px; flex-wrap: wrap; }
 .prio-cell {
   border: 1px solid #ebeef5;

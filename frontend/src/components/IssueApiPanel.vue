@@ -406,7 +406,8 @@ const flowHint = computed(() => {
 })
 
 const flowNote = computed(() => (flowMode.value === 'snapshot'
-  ? '「解决」＝该单从快照里消失：多数是闭环或撤销，也可能是责任人转出了统计部门/小组。采集中断的日子会并到恢复采集的那天。'
+  ? '「解决」＝该单从快照里消失：多数是闭环或撤销，也可能是责任人转出了统计部门。'
+  + '转给不在小组名单里的人不再算解决（归到「未归组」保留）。采集中断的日子会并到恢复采集的那天。'
   : '按缺陷编号里的创建日统计，可回溯到开始采集之前；但首次采集前就已闭环的单不会出现在这里。'))
 
 const flowTableRows = computed(() => {
@@ -601,6 +602,17 @@ async function finishCollect(results) {
   const r = (results || []).find((x) => x.project === props.project) || (results || [])[0]
   if (r && r.ok) {
     ElMessage.success(`采集完成：${r.total} 条（${r.date}）`)
+    // 归不到小组的责任人当场提醒：这些单已经**留在**统计里了（丢掉会变成假「解决」），
+    // 但没归组就进不了按小组的那几张表。名单在「配置 → 小组配置」底下补。
+    const ung = r.ungrouped || []
+    if (ung.length) {
+      const top = ung.slice(0, 5).map((x) => `${x.owner}(${x.count})`).join('、')
+      ElMessage({
+        type: 'warning', duration: 8000, showClose: true,
+        message: `有 ${ung.length} 位责任人不在任何小组名单：${top}${ung.length > 5 ? ` 等 ${ung.length} 人` : ''}。`
+          + '这些单已归到「未归组」不会丢，请到「配置 → 小组配置」补名单。',
+      })
+    }
     trend.value = null       // 让趋势下次进入时按最新数据重算
     flow.value = null        // 新增/解决同理：多了一天，差分要重取
     selDate.value = ''       // 强制选中最新一天

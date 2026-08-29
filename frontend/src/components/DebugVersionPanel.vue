@@ -1,5 +1,40 @@
 <template>
   <div class="dv-panel">
+    <!-- ===== 看板：按月 × 目标客户 =====
+         从度量看板搬过来的：它是按客户统计的，和那边的版本/领域/组三个维度不是一回事，
+         混在一起谁都找不到重点；挂在录入的同一页反而顺手。 -->
+    <el-collapse v-model="boardOpen" class="dv-board">
+      <el-collapse-item name="board">
+        <template #title>
+          <span class="sec-title">调试版本看板</span>
+          <span class="muted" style="margin-left: 10px">
+            按月统计数量与目标客户分布（月份口径＝发布时间，缺失用计划发布时间）
+          </span>
+        </template>
+        <div v-if="boardStat" class="dv-stats">
+          <div class="dv-stat"><div class="label">调试版本总数</div><div class="value">{{ boardTotal }}</div></div>
+          <div class="dv-stat"><div class="label">涉及目标客户</div><div class="value">{{ boardStat.customers.length }}</div></div>
+          <div class="dv-stat"><div class="label">统计月份数</div><div class="value">{{ boardStat.months.length }}</div></div>
+        </div>
+        <el-table :data="boardStat?.months || []" v-loading="boardLoading" border stripe size="small">
+          <el-table-column prop="month" label="月份" width="120" fixed />
+          <el-table-column v-for="c in boardStat?.customers || []" :key="c" :label="c"
+            min-width="110" align="center">
+            <template #default="{ row }">
+              <span v-if="row.by_customer[c]">{{ row.by_customer[c] }}</span>
+              <span v-else class="muted">·</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="合计" width="90" align="center" fixed="right">
+            <template #default="{ row }"><b>{{ row.total }}</b></template>
+          </el-table-column>
+        </el-table>
+        <div v-if="boardStat && !boardStat.months.length" class="rec-empty">
+          暂无调试版本数据。在下面录入后即可统计。
+        </div>
+      </el-collapse-item>
+    </el-collapse>
+
     <!-- ===== 调试版本 ===== -->
     <div class="sec-head">
       <span class="sec-title">现场调试版本</span>
@@ -188,6 +223,11 @@ import { fmtDate } from '../utils/format'
 
 const loading = ref(false)
 const saving = ref(false)
+// 看板默认展开：进这一页多半是想先看一眼分布，再往下翻明细
+const boardOpen = ref(['board'])
+const boardStat = ref(null)
+const boardLoading = ref(false)
+const boardTotal = computed(() => (boardStat.value?.months || []).reduce((s, m) => s + m.total, 0))
 const versions = ref([])
 const demands = ref([])
 const customers = ref([])
@@ -206,6 +246,17 @@ async function load() {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {
     loading.value = false
+  }
+}
+async function loadBoard() {
+  boardLoading.value = true
+  try {
+    const { data } = await debugVersionApi.dashboard()
+    boardStat.value = data
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || '加载调试版本看板失败')
+  } finally {
+    boardLoading.value = false
   }
 }
 async function loadCustomers() {
@@ -237,7 +288,10 @@ async function saveVer() {
     else await debugVersionApi.create(verForm)
     ElMessage.success('已保存')
     verVisible.value = false
+    // 版本本身变了，看板的月份/客户分布也跟着变——不一起刷的话，
+    // 上面的看板会停在旧数字，看着像"新增的没进统计"
     load()
+    loadBoard()
   } catch (e) {
     if (e.response?.status === 409) { verVisible.value = false; load() }
     else ElMessage.error(e.response?.data?.detail || '保存失败')
@@ -251,6 +305,7 @@ async function delVer(row) {
     await debugVersionApi.remove(row.id)
     ElMessage.success('已删除')
     load()
+    loadBoard()
   } catch (e) { ElMessage.error(e.response?.data?.detail || '删除失败') }
 }
 
@@ -367,11 +422,27 @@ async function delRecipient(row) {
   } catch (e) { ElMessage.error(e.response?.data?.detail || '删除失败') }
 }
 
-onMounted(() => { load(); loadCustomers() })
+onMounted(() => { load(); loadCustomers(); loadBoard() })
 </script>
 
 <style scoped>
 .dv-panel { padding: 2px; }
+.dv-board { margin-bottom: 14px; }
+.dv-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dv-stat {
+  background: #f8fafc;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  padding: 10px 14px;
+  text-align: center;
+}
+.dv-stat .label { color: #909399; font-size: 12px; }
+.dv-stat .value { font-size: 22px; font-weight: 600; color: #409eff; }
 .sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .sec-title { font-size: 15px; font-weight: 600; color: #303133; margin-right: 4px; }
 .muted { color: #c0c4cc; }

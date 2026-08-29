@@ -75,19 +75,43 @@ def fetch_from_api(project: str) -> list:
         resp.raise_for_status()
         return resp.json()
 
-    body = _page(1)
-    data = body.get("data") if isinstance(body, dict) else None
-    if not isinstance(data, dict):
-        # data=null 一般是无权限/无数据；把服务端 message 抛出来，便于页面看到原因
-        msg = body.get("message") if isinstance(body, dict) else str(body)[:200]
-        raise RuntimeError(f"DTS 接口未返回数据（{msg or '结构异常'}）")
+    def _rows_of(body, page_no: int) -> tuple:
+        """取一页的记录与 total，取不到就抛——**不能 `or []` 吞掉**。
 
-    total = int(data.get("total") or 0)
-    rows = list(data.get("data") or [])
+        DTS 会话中途失效返回的是 **HTTP 200 + data:null**，`raise_for_status()`
+        拦不住；吞成空页的话，少拉一页（200 条）的快照看起来完全合法，
+        第二天的相邻快照差分就给出 200 条假「解决」，而"解决"从不读状态、
+        没人会当 bug 报。宁可这次采集失败（采集日志里留痕、可重跑），
+        也不要写一份短了一截的快照。
+        """
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            msg = body.get("message") if isinstance(body, dict) else str(body)[:200]
+            raise RuntimeError(
+                f"DTS 接口第 {page_no} 页未返回数据（{msg or '结构异常'}）"
+                + ("；会话多半已失效，更新 ISSUE_API_COOKIE 后重跑" if page_no > 1 else "")
+            )
+        return list(data.get("data") or []), int(data.get("total") or 0)
+
+    rows, total = _rows_of(_page(1), 1)
     total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE if total else 1
     for page in range(2, total_pages + 1):
-        d = (_page(page).get("data") or {})
-        rows.extend(d.get("data") or [])
+        page_rows, _ = _rows_of(_page(page), page)
+        if not page_rows:
+            raise RuntimeError(f"DTS 接口第 {page}/{total_pages} 页返回 0 条（total={total}），"
+                               "疑似分页中断；本次不落快照，请重跑")
+        rows.extend(page_rows)
+
+    # 拉全校验：条数对不上就整次失败。少一条都可能变成一笔假「解决」，
+    # 而快照一旦落盘，差分结果会被缓存进 issue_snapshot_flows，事后修数据源也不自动重算。
+    if total and len(rows) < total:
+        raise RuntimeError(f"DTS 只返回 {len(rows)}/{total} 条（差 {total - len(rows)} 条），"
+                           "本次不落快照，请重跑")
+    if total and len(rows) > total:
+        # 翻页期间有单被关掉/新建，页内容会整体位移，出现重复行——去重在后面做，
+        # 这里只提示一声，不当失败处理（多出来的行不会变成假解决）。
+        print(f"[warn] 拉回 {len(rows)} 条，多于 total={total}，翻页期间数据有变动，已交给去重处理",
+              file=sys.stderr)
 
     # pbiName 即版本信息：给每条补上「版本信息」字段（DTS 原本没有独立 version 时兜底）
     for r in rows:

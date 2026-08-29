@@ -257,3 +257,139 @@ def test_legacy_filters_and_delete(client, admin_headers, domain_env):
                          headers=admin_headers).status_code == 200
     after = client.get("/api/domains/legacy-issues", headers=admin_headers).json()
     assert row["id"] not in [r["id"] for r in after]
+
+
+# ─── 事务/风险：责任人与风险等级 ─────────────────────────────────────────────
+def _make_task(client, headers, **over):
+    body = {"content": "风险：老库缺列", "priority": "高"}
+    body.update(over)
+    r = client.post("/api/domains/risks", headers=headers, json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_task_owner_resolves_to_name(client, admin_headers, domain_env):
+    """责任领域是个组，组不会去闭环一条风险——责任人要能落到具体的人。"""
+    users = client.get("/api/users/options", headers=admin_headers).json()
+    uid = users[0]["id"]
+    row = _make_task(client, admin_headers, content="风险：有主的",
+                     owner_id=uid, domain_id=domain_env["ga"])
+    assert row["owner_id"] == uid and row["owner_name"]
+    assert row["domain_name"] == domain_env["ga_name"]
+
+    # 列表口径必须与单条一致：一次取名字映射，别逐行 join
+    listed = client.get("/api/domains/risks", headers=admin_headers).json()
+    hit = next(r for r in listed if r["id"] == row["id"])
+    assert hit["owner_name"] == row["owner_name"]
+
+
+def test_task_risk_level_is_independent_of_priority(client, admin_headers, domain_env):
+    """低优先级 + 高等级是常态（短期不动、但爆了很惨）。两列合一就表达不出来。"""
+    row = _make_task(client, admin_headers, content="风险：先不动但很疼",
+                     priority="低", risk_level="高")
+    assert row["priority"] == "低" and row["risk_level"] == "高"
+
+
+def test_task_risk_level_blank_is_legal_and_never_defaults(client, admin_headers, domain_env):
+    """事务行没有风险等级。默认成「中」会让半屏事务挂上一个凭空捏的等级。"""
+    row = _make_task(client, admin_headers, content="事务：只是件活儿")
+    assert row["risk_level"] == ""
+
+    # 评过等级后又想清掉：空串是"清掉"，不是"不修改"
+    r = client.put(f"/api/domains/risks/{row['id']}", headers=admin_headers,
+                   json={"version": row["version"], "risk_level": "中"})
+    assert r.status_code == 200 and r.json()["risk_level"] == "中"
+    cleared = client.put(f"/api/domains/risks/{row['id']}", headers=admin_headers,
+                         json={"version": r.json()["version"], "risk_level": ""})
+    assert cleared.status_code == 200 and cleared.json()["risk_level"] == ""
+
+
+def test_task_risk_level_rejects_off_whitelist(client, admin_headers, domain_env):
+    r = client.post("/api/domains/risks", headers=admin_headers,
+                    json={"content": "风险：错等级", "risk_level": "P1"})
+    assert r.status_code == 422
+
+
+# ─── 遗留问题：当前进展（富文本）────────────────────────────────────────────
+def test_legacy_progress_keeps_formatting_but_drops_script(client, admin_headers, domain_env):
+    """页面用 v-html 渲染这一列，所以写库前就得洗——只在导出时洗等于只保护了收件人。"""
+    row = _make_legacy(
+        client, admin_headers, title="遗留：带格式的进展",
+        progress='<p><strong>已定位</strong>到 <span style="color:#F56C6C">驱动层</span></p>'
+                 '<script>alert(1)</script>',
+    )
+    assert "<strong>" in row["progress"]
+    assert "color" in row["progress"]
+    assert "script" not in row["progress"].lower()
+    assert "alert(1)" not in row["progress"]      # script 连内容一起丢
+
+
+def test_legacy_progress_sanitized_on_update_too(client, admin_headers, domain_env):
+    row = _make_legacy(client, admin_headers, title="遗留：改进展")
+    assert row["progress"] == ""
+    r = client.put(f"/api/domains/legacy-issues/{row['id']}", headers=admin_headers,
+                   json={"version": row["version"],
+                         "progress": '<b>推进中</b><img src=x onerror="alert(1)">'})
+    assert r.status_code == 200
+    assert "<b>" in r.json()["progress"]
+    assert "onerror" not in r.json()["progress"]
+
+
+def test_task_progress_keeps_formatting_but_drops_script(client, admin_headers, domain_env):
+    row = _make_task(
+        client, admin_headers, content="风险：带格式的进展",
+        progress='<p><b>已定位</b>到 <span style="color:#F56C6C">驱动层</span></p>'
+                 '<script>alert(1)</script>',
+    )
+    assert "<b>" in row["progress"] and "color" in row["progress"]
+    assert "script" not in row["progress"].lower()
+    assert "alert(1)" not in row["progress"]
+
+    r = client.put(f"/api/domains/risks/{row['id']}", headers=admin_headers,
+                   json={"version": row["version"],
+                         "progress": '<b>推进中</b><img src=x onerror="alert(1)">'})
+    assert r.status_code == 200 and "onerror" not in r.json()["progress"]
+
+
+def test_task_legacy_plaintext_progress_survives_switch_to_v_html(client, admin_headers,
+                                                                  domain_env):
+    """这一列改富文本前存了多年纯文本。直接丢给 v-html 会吃掉 < 、压平换行。
+
+    所以出口过 _rich_to_html()：老行显示成什么样，和改造前一模一样。
+    """
+    import models
+    from database import SessionLocal
+
+    db = SessionLocal()
+    obj = models.DomainRisk(content="风险：老库纯文本进展",
+                            progress="第一行\n第二行 a<b 的比较")
+    db.add(obj)
+    db.commit()
+    rid = obj.id
+    db.close()
+
+    rows = client.get("/api/domains/risks", headers=admin_headers).json()
+    hit = next(r for r in rows if r["id"] == rid)
+    assert "<br>" in hit["progress"]              # 换行还在
+    assert "a&lt;b" in hit["progress"]            # < 被转义，不会被当成标签吃掉
+    assert "第二行" in hit["progress"]
+
+
+def test_task_legacy_markup_in_plaintext_column_is_defanged(client, admin_headers, domain_env):
+    """入口清洗是这次才加的：之前存进来的值没洗过，出口得挡住。"""
+    import models
+    from database import SessionLocal
+
+    db = SessionLocal()
+    obj = models.DomainRisk(content="风险：老库脏值",
+                            progress='<p>进展</p><script>alert(1)</script>')
+    db.add(obj)
+    db.commit()
+    rid = obj.id
+    db.close()
+
+    rows = client.get("/api/domains/risks", headers=admin_headers).json()
+    hit = next(r for r in rows if r["id"] == rid)
+    assert "script" not in hit["progress"].lower()
+    assert "alert(1)" not in hit["progress"]
+    assert "进展" in hit["progress"]

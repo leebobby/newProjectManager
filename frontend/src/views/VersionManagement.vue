@@ -81,8 +81,16 @@
                       >
                         <el-table-column prop="version_no" label="版本号" width="170" />
                         <el-table-column prop="title" label="标题" min-width="180" show-overflow-tooltip />
-                        <el-table-column prop="planned_date" label="预计发布日期" width="150">
+                        <el-table-column prop="planned_date" label="预计发布日期" width="130">
                           <template #default="{ row: ir }">{{ fmtDate(ir.planned_date) }}</template>
+                        </el-table-column>
+                        <el-table-column prop="actual_release_date" label="实际发布" width="120">
+                          <template #default="{ row: ir }">
+                            <el-tag v-if="ir.actual_release_date" type="success" size="small">
+                              {{ fmtDate(ir.actual_release_date) }}
+                            </el-tag>
+                            <span v-else class="muted">未发布</span>
+                          </template>
                         </el-table-column>
                         <el-table-column label="合入需求" width="100" align="center">
                           <template #default="{ row: ir }">
@@ -306,6 +314,14 @@
           <el-date-picker v-model="iterForm.planned_date" type="date"
             value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
         </el-form-item>
+        <el-form-item label="实际发布日期">
+          <el-date-picker v-model="iterForm.actual_release_date" type="date"
+            value-format="YYYY-MM-DDTHH:mm:ss" style="width: 100%" />
+          <div class="form-tip">
+            填了并且这天过了之后，迭代管理的「计划交付版本」下拉里就不再列这个构建了。
+            所属版本一旦发布，它名下的构建也一并收起来。
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="iterDialogVisible = false">取消</el-button>
@@ -413,8 +429,8 @@ function defaultReleaseForm() {
            actual_release_date: null, sort_order: 0, major_version_id: null }
 }
 function defaultIterForm() {
-  return { version_no: '', title: '', planned_date: null, sort_order: 0,
-           release_version_id: null }
+  return { version_no: '', title: '', planned_date: null, actual_release_date: null,
+           sort_order: 0, release_version_id: null }
 }
 
 // ── 版本号建议 ────────────────────────────────────────────────────────────
@@ -638,6 +654,7 @@ function openEditIter(row, releaseRow) {
     version_no: row.version_no,
     title: row.title,
     planned_date: row.planned_date,
+    actual_release_date: row.actual_release_date,
     release_version_id: row.release_version_id ?? releaseRow.id,
     sort_order: undefined,      // 同上：改挂版本后由服务端排到末尾
   })
@@ -731,4 +748,5 @@ onMounted(loadProjects)
   font-size: 12px;
   line-height: 1.6;
 }
+.muted { color: #909399; }
 </style>
