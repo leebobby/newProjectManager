@@ -11,6 +11,7 @@
    保留它只是为了不让还没接 API 采集的部署丢掉这一列。
 """
 import json
+from datetime import date, datetime
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -28,6 +29,69 @@ SEVERITY_WEIGHTS = {"致命": 10.0, "严重": 3.0, "一般": 1.0, "提示": 0.1}
 def weighted_score(rows: List[dict]) -> float:
     return round(sum(SEVERITY_WEIGHTS.get((r.get("severity") or "").strip(), 0.0)
                      for r in rows), 1)
+
+
+# ─── 超期未处理 ────────────────────────────────────────────────────────────
+# 「预计闭环时间」（DTS 的 planCloseTime）是自由格式的字符串：不同来源见过
+# 2026-09-15、2026/9/15、2026-09-15 00:00:00、13 位毫秒时间戳。**认不出来的一律
+# 算"没填"而不是算"没超期"**——后者会把一批读不懂的日期悄悄记成达标，数字看着还挺好。
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m-%d %H:%M:%S",
+                 "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y年%m月%d日")
+
+
+def parse_plan_date(value) -> Optional[date]:
+    """把「预计闭环时间」解析成日期；认不出返回 None。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    # 纯数字：秒 / 毫秒时间戳
+    if s.isdigit() and len(s) in (10, 13):
+        try:
+            return datetime.fromtimestamp(int(s) / (1000 if len(s) == 13 else 1)).date()
+        except (ValueError, OSError, OverflowError):
+            return None
+    head = s.replace("T", " ").split(" ")[0] if " " in s or "T" in s else s
+    for fmt in _DATE_FORMATS:
+        for cand in (s, head):
+            try:
+                return datetime.strptime(cand, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def is_overdue(row: dict, today: Optional[date] = None) -> bool:
+    """这一单是否**超过预计闭环时间还没处理**。
+
+    「没处理」不用读状态：快照里本来就只有当天还开着的单（关闭/撤销在采集时就剔掉了），
+    在快照里 ＝ 还没处理。这与「解决＝从快照里消失」是同一套口径，两处必须一致，
+    否则会出现"已解决的单还挂在超期数里"。
+    """
+    d = parse_plan_date(row.get("estimated_close"))
+    return bool(d and d < (today or date.today()))
+
+
+def overdue_stats(rows: List[dict], today: Optional[date] = None) -> Tuple[int, int]:
+    """(超期未处理条数, 没填预计闭环时间因而算不出的条数)。
+
+    第二个数必须一起报出去：DTS 那边这一列是选填的，没接上时全库都是空，
+    此时「超期 0」会被读成"一条都没超期"，而实际是"这个数算不出来"。
+    """
+    today = today or date.today()
+    overdue = no_date = 0
+    for r in rows:
+        d = parse_plan_date(r.get("estimated_close"))
+        if d is None:
+            no_date += 1
+        elif d < today:
+            overdue += 1
+    return overdue, no_date
 
 
 # ─── Excel 回退 ────────────────────────────────────────────────────────────

@@ -124,7 +124,7 @@
           <el-table-column label="问题单情况" min-width="190">
             <template #header>
               问题单情况
-              <el-tooltip placement="top" content="数据来自问题单管理的最新一次采集快照；加权总分：致命 10 分 / 严重 3 分 / 一般 1 分 / 提示 0.1 分">
+              <el-tooltip placement="top" content="数据来自问题单管理的最新一次采集快照；加权总分：致命 10 分 / 严重 3 分 / 一般 1 分 / 提示 0.1 分；超期＝超过 DTS「预计闭环时间」且仍在快照里（＝还没闭环）">
                 <el-icon class="hdr-help"><QuestionFilled /></el-icon>
               </el-tooltip>
             </template>
@@ -144,7 +144,22 @@
                       {{ overTarget(row.issue_summary) ? '超标' : '达成' }}
                     </el-tag>
                   </div>
+                  <!-- 超期单独一行、点得进去：只给个数字的话，没人说得清是哪几条 -->
                   <div class="sev-line">
+                    <el-tooltip v-if="row.issue_summary.overdue" placement="top"
+                      :content="overdueHint(row.issue_summary)">
+                      <el-tag size="small" type="danger" @click.stop="openIssues(row, true)">
+                        超期 {{ row.issue_summary.overdue }}
+                      </el-tag>
+                    </el-tooltip>
+                    <!-- 一条都算不出来时说"算不出"，不说"0"：0 会被读成"没有超期的" -->
+                    <el-tooltip v-else-if="allDatesMissing(row.issue_summary)" placement="top"
+                      :content="overdueHint(row.issue_summary)">
+                      <el-tag size="small" type="info" effect="plain">超期未知</el-tag>
+                    </el-tooltip>
+                    <el-tooltip v-else placement="top" :content="overdueHint(row.issue_summary)">
+                      <el-tag size="small" type="success" effect="plain">无超期</el-tag>
+                    </el-tooltip>
                     <span v-for="(n, s) in row.issue_summary.by_severity" :key="s">
                       <el-tag size="small" :type="sevType(s)" :effect="s === '致命' ? 'dark' : 'plain'">{{ s }} {{ n }}</el-tag>
                     </span>
@@ -519,6 +534,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="progress" label="进展" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="estimated_close" label="预计闭环时间" width="130">
+          <template #default="{ row }">
+            <span v-if="row.estimated_close">{{ row.estimated_close }}</span>
+            <span v-else class="muted">未填</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="version" label="版本" width="120" show-overflow-tooltip />
       </el-table>
     </el-dialog>
@@ -911,13 +932,33 @@ async function openReq(row) {
     reqLoading.value = false
   }
 }
-async function openIssues(row) {
-  drillName.value = row.name
+// 超期的口径与提示：把"另有 N 条没填预计闭环时间"一起说出来。只报超期数的话，
+// DTS 那列没接上时全库都是空，「超期 0」会被读成"一条都没超期"。
+function allDatesMissing(sum) {
+  return (sum.overdue_unknown || 0) >= (sum.total || 0) && (sum.total || 0) > 0
+}
+function overdueHint(sum) {
+  const unknown = sum.overdue_unknown || 0
+  if (allDatesMissing(sum)) {
+    return `这 ${sum.total} 条都没有「预计闭环时间」，算不出是否超期`
+      + '（DTS 该字段为空，或采集脚本里还没映射上）'
+  }
+  const head = sum.overdue
+    ? `${sum.overdue} 条超过预计闭环时间仍未闭环，点开看是哪些`
+    : '没有超过预计闭环时间的单'
+  return unknown ? `${head}；另有 ${unknown} 条没填预计闭环时间，未计入` : head
+}
+
+async function openIssues(row, overdueOnly = false) {
+  drillName.value = overdueOnly ? `${row.name} · 超期未处理` : row.name
   issueVisible.value = true
   issueLoading.value = true
   issueRows.value = []
   try {
-    const { data: res } = await domainApi.issues(row.group_id, { project: project.value || undefined })
+    const { data: res } = await domainApi.issues(row.group_id, {
+      project: project.value || undefined,
+      overdue: overdueOnly || undefined,
+    })
     issueRows.value = res.rows || []
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
@@ -953,6 +994,8 @@ onMounted(() => { load(); loadRisks(); loadDomainOptions(); loadLegacy(); loadUs
 .cell-clickable:hover { color: #409EFF; }
 .sum-line { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .sev-line { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+/* 超期那枚标签是点得进去的（下钻只看超期），给个手型，否则没人知道能点 */
+.sev-line .el-tag--danger { cursor: pointer; }
 .score-sep { color: #c0c4cc; margin: 0 2px; }
 .issue-score { color: #e6a23c; }
 .hdr-help { font-size: 13px; color: #909399; vertical-align: -1px; cursor: help; }

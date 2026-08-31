@@ -1461,6 +1461,12 @@ class DomainIssueSummary(BaseModel):
     target_score: Optional[float] = None  # 管理员设定的加权分目标
     over_total: bool = False       # 数量超目标
     over_score: bool = False       # 加权分超目标
+    # 超过「预计闭环时间」还没处理的条数。在快照里 ＝ 还没处理（关闭/撤销在采集时
+    # 就剔掉了），与「解决＝从快照里消失」同一套口径。
+    overdue: int = 0
+    # 没填预计闭环时间、因而算不出是否超期的条数。**必须一起报**：DTS 那列是选填的，
+    # 没接上时全库都空，此时「超期 0」会被读成"一条都没超期"，而实际是算不出来。
+    overdue_unknown: int = 0
 
 
 class DomainProjectOpt(BaseModel):
