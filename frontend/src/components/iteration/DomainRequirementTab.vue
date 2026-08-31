@@ -12,6 +12,8 @@
       />
     </el-tabs>
 
+    <RequirementDuplicateAlert :data="dupInfo" />
+
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openCreate">新增需求</el-button>
       <el-button :icon="Upload" type="warning" @click="openImport">批量导入</el-button>
@@ -488,6 +490,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import RequirementDuplicateAlert from './RequirementDuplicateAlert.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Refresh, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { downloadBlob, iterationRequirementApi, resourceGroupApi, userApi } from '../../api'
@@ -626,10 +629,11 @@ const importResult = ref(null)
 const importSummary = computed(() => {
   const d = importResult.value
   if (!d) return ''
-  const skipped = d.skipped || 0
-  return skipped
-    ? `成功导入 ${d.created} 条，跳过重复 ${skipped} 条`
-    : `成功导入 ${d.created} 条`
+  const parts = [`成功导入 ${d.created} 条`]
+  if (d.skipped) parts.push(`跳过重复 ${d.skipped} 条`)
+  // 跨迭代的那些是**导进来了**的，和"跳过"分开说，否则会被当成也没进
+  if (d.cross_iteration) parts.push(`其中 ${d.cross_iteration} 条别的迭代里也有，请确认`)
+  return parts.join('，')
 })
 const uploadRef = ref(null)
 
@@ -669,11 +673,25 @@ function splitLinks(text) {
     .filter(Boolean)
 }
 
+const dupInfo = ref(null)
+
+// 重复提示跟着列表一起刷新，但**不挡列表**：查重失败只是少一条提示，
+// 让整页加载失败就本末倒置了。
+async function loadDuplicates() {
+  try {
+    const { data } = await iterationRequirementApi.duplicates(props.iterationId)
+    dupInfo.value = data
+  } catch {
+    dupInfo.value = null
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     const { data } = await iterationRequirementApi.list(props.iterationId)
     list.value = data
+    loadDuplicates()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {

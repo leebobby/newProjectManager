@@ -162,3 +162,72 @@ def test_import_still_creates_the_new_rows(client, admin_headers, iters):
         {"需求编号": "IMP-21", "需求标题": "新的"},
     ]).json()
     assert d["created"] == 1 and d["skipped"] == 1
+
+
+# ── 跨迭代：不拦，但要报出来 ────────────────────────────────────────────────
+
+def test_cross_iteration_duplicate_is_reported_not_blocked(client, admin_headers, iters):
+    """本轮没做完、下个月接着排是正常的，所以不拦；但也可能是重复录了，所以要报。"""
+    it_a, it_b = iters
+    _post(client, admin_headers, DOMAIN, it_a, req_no="X-1", title="跨迭代提示")
+    ok = _post(client, admin_headers, DOMAIN, it_b, req_no="X-1", title="跨迭代提示")
+    assert ok.status_code == 200, "跨迭代不该拦"
+
+    d = client.get(f"{DOMAIN}/duplicates", headers=admin_headers,
+                   params={"iteration_id": it_b}).json()
+    g = next(g for g in d["groups"] if any(r["req_no"] == "X-1" for r in g["rows"]))
+    assert g["kind"] == "no"
+    assert len(g["rows"]) == 1, "本迭代里只有一条"
+    assert [o["iteration_id"] for o in g["others"]] == [it_a]
+    assert g["others"][0]["iteration_label"], "要写清楚是哪个迭代，光给 id 没人查得动"
+    assert d["cross_iteration"] >= 1
+
+
+def test_duplicates_scan_also_surfaces_legacy_same_iteration_rows(client, admin_headers, iters):
+    """判重是后加的，存量数据里的重复不会自己消失——扫描要能把它们捞出来。"""
+    import models
+    from database import SessionLocal
+
+    it, _ = iters
+    a = _post(client, admin_headers, DOMAIN, it, req_no="LEGACY-1", title="老重复").json()
+    # 绕过接口直接塞一条，模拟判重上线之前就已经在库里的行
+    db = SessionLocal()
+    db.add(models.IterationRequirement(iteration_id=it, seq=999,
+                                       req_no="LEGACY-1", title="老重复（另一条）"))
+    db.commit()
+    db.close()
+
+    d = client.get(f"{DOMAIN}/duplicates", headers=admin_headers,
+                   params={"iteration_id": it}).json()
+    g = next(g for g in d["groups"] if any(r["req_no"] == "LEGACY-1" for r in g["rows"]))
+    assert len(g["rows"]) == 2, "同一迭代里的两条都要列出来"
+    assert a["id"] in [r["id"] for r in g["rows"]]
+    assert d["same_iteration"] >= 1
+
+
+def test_clean_iteration_reports_nothing(client, admin_headers, iters):
+    """没有重复时不要报一堆——提示条只在真有问题时出现。"""
+    _, it_b = iters
+    d = client.get(f"{DOMAIN}/duplicates", headers=admin_headers,
+                   params={"iteration_id": it_b}).json()
+    for g in d["groups"]:
+        assert len(g["rows"]) > 1 or g["others"], "列出来的每一组都得真有重复"
+
+
+def test_import_flags_cross_iteration_rows_but_still_imports_them(client, admin_headers, iters):
+    it_a, it_b = iters
+    _post(client, admin_headers, DOMAIN, it_a, req_no="XIMP-1", title="上个月就有")
+    d = _upload(client, admin_headers, DOMAIN, it_b,
+                [{"需求编号": "XIMP-1", "需求标题": "上个月就有"}]).json()
+    assert d["created"] == 1 and d["skipped"] == 0, "跨迭代照进"
+    assert d["cross_iteration"] == 1
+    assert any("请确认是否重复" in e for e in d["errors"]), "进了也要说一声"
+
+
+def test_product_tab_has_its_own_scan(client, admin_headers, iters):
+    it_a, it_b = iters
+    _post(client, admin_headers, PRODUCT, it_a, req_no="PX-1", title="产品跨迭代")
+    _post(client, admin_headers, PRODUCT, it_b, req_no="PX-1", title="产品跨迭代")
+    d = client.get(f"{PRODUCT}/duplicates", headers=admin_headers,
+                   params={"iteration_id": it_b}).json()
+    assert d["cross_iteration"] >= 1

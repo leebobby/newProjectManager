@@ -59,3 +59,64 @@ def duplicate_message(row, prefix: str = "本迭代里已经有这条需求") ->
     tail = f"（需求编号 {no}）" if no else ""
     return (f"{prefix}：序号 {row.seq or '-'}、{(row.title or '').strip() or '无标题'}{tail}。"
             "要改内容请直接编辑那一行。")
+
+
+def scan_duplicates(db: Session, model, iteration_id: int) -> dict:
+    """本迭代的需求里，哪些在**别的迭代**（或本迭代内）还录过一遍。
+
+    与 `find_duplicate()` 的区别是它**不拦，只报**：
+
+    - 同一迭代内重复是硬错误，新增/导入那一刻就已经 409 挡住了；这里仍然要扫，
+      因为判重是后加的，**存量数据里的重复不会自己消失**，得让人看见去合并。
+    - 跨迭代重复**不能拦**——同一条需求本轮没做完、下个月接着排是正常的。但它也
+      可能是"上个月已经录过，这个月又录了一条"，两者从数据上分不出来，只有人分得出。
+      所以做成提示：把"它还出现在哪几个迭代"摆出来，让人自己判断要不要改。
+
+    返回 {"groups": [...], "same_iteration": n, "cross_iteration": m}，
+    groups 按本迭代的序号排，每组带上本迭代里的行与别处的出现位置。
+    """
+    import models
+
+    rows = db.query(model).filter(model.iteration_id == iteration_id).all()
+    here: dict = {}
+    for r in rows:
+        k = dedup_key(r.req_no, r.title)
+        if k is not None:
+            here.setdefault(k, []).append(r)
+    if not here:
+        return {"groups": [], "same_iteration": 0, "cross_iteration": 0}
+
+    elsewhere: dict = {}
+    for r in db.query(model).filter(model.iteration_id != iteration_id).all():
+        k = dedup_key(r.req_no, r.title)
+        if k in here:
+            elsewhere.setdefault(k, []).append(r)
+
+    labels = {i.id: f"{i.year}-{i.month:02d}"
+              for i in db.query(models.AnnualIteration).all()}
+
+    def _brief(r, with_iteration=False):
+        d = {"id": r.id, "seq": r.seq, "req_no": (r.req_no or "").strip(),
+             "title": (r.title or "").strip()}
+        if with_iteration:
+            d["iteration_id"] = r.iteration_id
+            d["iteration_label"] = labels.get(r.iteration_id, str(r.iteration_id))
+        return d
+
+    groups, same_n, cross_n = [], 0, 0
+    for key, mine in here.items():
+        others = elsewhere.get(key, [])
+        if len(mine) < 2 and not others:
+            continue
+        if len(mine) > 1:
+            same_n += 1
+        if others:
+            cross_n += 1
+        groups.append({
+            "kind": key[0],                       # no ＝按编号撞的，title ＝按标题撞的
+            "rows": [_brief(r) for r in sorted(mine, key=lambda x: (x.seq or 0, x.id))],
+            "others": [_brief(r, True) for r in
+                       sorted(others, key=lambda x: (x.iteration_id, x.seq or 0))],
+        })
+    groups.sort(key=lambda g: (g["rows"][0]["seq"] or 0, g["rows"][0]["id"]))
+    return {"groups": groups, "same_iteration": same_n, "cross_iteration": cross_n}

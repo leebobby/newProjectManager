@@ -268,6 +268,12 @@ Excel 导入的「项目」列按项目名**完全匹配**（`_lookups.resolve_p
   报出来：响应里带 `skipped`，每一条进 `errors` 指明撞的是哪一行。只跳不报的表现是
   「导入 80 条只进了 60 条」，而没人说得清少的是哪些。
 - 编辑也能造出重复（把编号改成另一行的），所以 `PUT` 同样判，并把自己排除掉。
+- **跨迭代重复不拦、只报**：本轮没做完下个月接着排，和"上个月录过这个月又录一条"，
+  从数据上分不出来，只有人分得出。`scan_duplicates()` 把「它还出现在哪几个迭代」摆到
+  页面顶部（`RequirementDuplicateAlert.vue`，两个 Tab 共用），导入时也在 `errors` 里
+  提一句并计入 `cross_iteration`（**这些行是导进来了的**，与 `skipped` 分开报，
+  合在一起说会被当成也没进）。同一迭代内的重复照样扫——判重是后加的，
+  **存量重复不会自己消失**，不摆出来就永远没人去合并。
 - 重复的需求在度量里是**实打实的分母**（加权完成度被摊薄、按项目/领域的条数偏大），
   而每一行单独看都合法。存量重复用
   [scripts/find_duplicate_requirements.py](backend/scripts/find_duplicate_requirements.py)
