@@ -620,7 +620,11 @@ def _match_group(owner: str, groups: List[tuple]) -> str:
 
 
 def _load_customer_matchers(db: Session) -> List[tuple]:
-    """从客户主数据（code/全称/别名）构建 [(匹配文本_lower, 展示名)]，按长度降序（优先更具体）。"""
+    """从客户主数据（code/全称/别名）构建 [(匹配文本_lower, 展示名)]，按长度降序（优先更具体）。
+
+    长度降序只解决「两个名字都登记了」的情形（「11号机」比「1号机」长，先试到先命中）。
+    名字被另一个名字从中间切开的那一类要靠 `_contains_name()` 的数字边界挡——两道缺一不可。
+    """
     matchers: List[tuple] = []
     customers = db.query(models.Customer).filter(models.Customer.is_active == True).all()  # noqa: E712
     id2label = {}
@@ -643,12 +647,41 @@ def _load_customer_matchers(db: Session) -> List[tuple]:
     return uniq
 
 
+def _contains_name(text: str, name: str) -> bool:
+    """`name` 是否作为一个完整的名字出现在 `text` 里——**不接受把一串数字从中间切开**。
+
+    客户面在这套数据里大量是「N号机」这种带编号的名字，而 `"1号机" in "11号机"` 是真的
+    （从第二个字符起就是）。于是「11号机」的单子会落到「1号机」那一档：两台机器的问题
+    混进同一行，同一台机器的问题散在两行——数字还是那些数字、加起来也对得上，
+    没人会把它当成 bug 报上来。
+
+    按长度降序试（`_load_customer_matchers`）只挡得住「两台机器都在客户主数据里」的情形；
+    只要「11号机」没登记、或写法对不上，「1号机」照样会把它吃掉。所以这里再加一道边界：
+    匹配文本以数字开头时，它前面一位不能还是数字；以数字结尾时，后面一位不能还是数字。
+    只拒绝「数字被切开」这一种，中文/英文边界不管——客户名混在标题里本来就没有分隔符，
+    要求两侧都是分隔符会把「西安1号机异常」这类正常标题一并拒掉。
+    """
+    if not name:
+        return False
+    start = 0
+    while True:
+        i = text.find(name, start)
+        if i < 0:
+            return False
+        end = i + len(name)
+        head_ok = not (name[0].isdigit() and i > 0 and text[i - 1].isdigit())
+        tail_ok = not (name[-1].isdigit() and end < len(text) and text[end].isdigit())
+        if head_ok and tail_ok:
+            return True
+        start = i + 1
+
+
 def _match_customer(title: str, matchers: List[tuple]) -> str:
     t = (title or "").lower()
     if not t:
         return ""
     for mt, label in matchers:
-        if mt in t:
+        if _contains_name(t, mt):
             return label
     return ""
 
