@@ -179,6 +179,21 @@ def norm_domain_risk_level(v, *, partial: bool = False) -> str:
         return s
     raise ValueError(f"风险等级「{v}」非法，应为 {'/'.join(DOMAIN_RISK_LEVELS)} 之一或留空")
 
+# ── 问题单跟踪：合入状态（issue_tracks）──────────────────────────────────────
+# 问题单本身的状态来自 DTS（采集回来的「进展」列），这里这一档是**我们自己的**
+# 合入节奏：从"看过了"到"代码进版本了"。两者答的是两个问题，不要合并——
+# DTS 说这单还开着，不等于我们这边已经安排了合入。
+# 「不合入」是显式的一档（评估后决定本版本不合），与「未开始」不是一回事：
+# 前者是结论，后者是还没看；合并掉的话，看板上分不出"没人管"和"决定不做"。
+ISSUE_MERGE_STATUSES = ("未开始", "分析中", "开发中", "已合入", "不合入")
+ISSUE_MERGE_STATUS_DEFAULT = "未开始"
+
+
+def norm_issue_merge_status(v, *, partial: bool = False) -> Optional[str]:
+    return _norm_choice(v, ISSUE_MERGE_STATUSES, ISSUE_MERGE_STATUS_DEFAULT,
+                        "合入状态", partial=partial)
+
+
 # ── 关键特性交付状态（key_features）───────────────────────────────────────────
 # 从"最成熟"到"最早期"排序；前端点灯颜色须与本顺序一致。
 KEY_FEATURE_STATUSES = ("可商用", "beta验证", "测试", "开发", "设计", "分析")

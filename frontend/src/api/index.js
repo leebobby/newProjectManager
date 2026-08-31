@@ -392,6 +392,15 @@ export const customerCustomReqApi = {
 // 版本三层：大版本（C10SPC100）→ 版本（C10SPC101）→ 迭代版本（C10SPC101B001）。
 // 哪一层给谁用见 backend/routers/major_versions.py 顶部：
 // 客户面用「版本」，迭代管理与问题单用「迭代版本」，达成率看「版本」。
+// 问题单跟踪（进展 + 合入计划）。按「项目 + 缺陷编号」认领，与每天的快照解耦——
+// 挂在快照上的话第二天重采就全丢了，页面上只表现成"昨天填的怎么没了"。
+export const issueTrackApi = {
+  list: (project) => http.get('/issue-tracks', { params: { project } }),
+  // upsert：问题单不是我们建的，第一次填时"这条记录存不存在"是实现细节，
+  // 不该让页面先查一次再决定调哪个接口
+  save: (data) => http.put('/issue-tracks', data),
+}
+
 export const majorVersionApi = {
   list: (project_id) => http.get('/major-versions', { params: project_id != null ? { project_id } : {} }),
   create: (data) => http.post('/major-versions', data),

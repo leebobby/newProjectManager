@@ -12,7 +12,7 @@ from migrate import ensure_schema
 from routers import annual_iterations, iteration_product_requirements, iteration_requirements
 from routers import auth as auth_router
 from routers import config as config_router
-from routers import business_trips, customer_custom_req, customer_extra, customer_issues, customer_status, customers, debug_versions, domains, handbook, hardware_issues, issues, key_features, licenses, major_versions, mapping, metrics, notifications, op_logs, project_formation, resource_groups, roadmap, sow, special_templates, specials, stakeholders, system as system_router, users
+from routers import business_trips, customer_custom_req, customer_extra, customer_issues, customer_status, customers, debug_versions, domains, handbook, hardware_issues, issue_tracks, issues, key_features, licenses, major_versions, mapping, metrics, notifications, op_logs, project_formation, resource_groups, roadmap, sow, special_templates, specials, stakeholders, system as system_router, users
 
 # 先做轻量迁移（给老库加列），再 create_all 补齐缺失的表，
 # 最后自动把 Alembic 迁移追平 head（数据迁移/改列类，create_all 覆盖不到）。
@@ -54,6 +54,7 @@ app.include_router(iteration_requirements.router, dependencies=authed)
 app.include_router(iteration_product_requirements.router, dependencies=authed)
 app.include_router(roadmap.router, dependencies=authed)
 app.include_router(issues.router, dependencies=authed)
+app.include_router(issue_tracks.router, dependencies=authed)
 app.include_router(major_versions.router, dependencies=authed)
 app.include_router(debug_versions.router, dependencies=authed)
 app.include_router(stakeholders.router, dependencies=authed)
