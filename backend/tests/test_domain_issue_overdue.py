@@ -116,3 +116,40 @@ def test_plan_date_parsing_is_tolerant_but_never_guesses(client, value, expected
     悄悄记成达标，数字看着还挺好。"""
     from routers._issue_source import parse_plan_date
     assert parse_plan_date(value) == expected
+
+
+# ─── 度量看板：各领域横向对比 ────────────────────────────────────────────────
+
+def test_dashboard_ranks_domains_by_overdue(client, admin_headers, env):
+    """看板与领域总览走同一份数据源和同一份口径——两处各写一份的表现是
+    同一个组在两个页面上超期数不一样，而两边看着都像对的。"""
+    d = client.get("/api/metrics/issue-overdue", headers=admin_headers,
+                   params={"project": "ODPROJ"}).json()
+    assert d["available"] and d["project"] == "ODPROJ"
+    assert d["total"] == 7 and d["overdue"] == 2 and d["overdue_unknown"] == 3
+
+    names = [r["group_name"] for r in d["rows"]]
+    assert names[0] == "超期测试组", "超期多的排最前面"
+    row = d["rows"][0]
+    assert row["overdue"] == 2 and row["total"] == 6
+    # 分母是"填了预计闭环时间的条数"（6-2=4），不是 total：按 total 算的话，
+    # 一个压根没填日期的组会显示成 0%，看着比谁都干净
+    assert row["overdue_rate"] == 0.5
+    assert row["oldest_overdue_days"] == 10
+
+
+def test_group_with_no_dates_shows_zero_rate_not_a_clean_bill(client, admin_headers, env):
+    g2 = next(r for r in client.get("/api/metrics/issue-overdue", headers=admin_headers,
+                                    params={"project": "ODPROJ"}).json()["rows"]
+              if r["group_name"] == "超期测试组乙")
+    assert g2["overdue"] == 0 and g2["overdue_unknown"] == g2["total"]
+    assert g2["overdue_rate"] == 0.0, "没有可比的基数时是 0，页面据此显示「算不出」"
+
+
+def test_unknown_project_is_reported_not_silently_swapped(client, admin_headers, env):
+    """指定了没有快照的项目时如实说明，绝不静默换成别的项目的数字。"""
+    d = client.get("/api/metrics/issue-overdue", headers=admin_headers,
+                   params={"project": "NOSUCHPROJ"}).json()
+    assert d["available"] is False and d["note"]
+    assert d["rows"] == []
+    assert any(p["project"] == "ODPROJ" for p in d["projects"]), "可选项目仍要给出来"

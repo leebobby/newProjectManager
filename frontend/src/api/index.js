@@ -208,6 +208,10 @@ export const metricsApi = {
   // 版本是跨月的，按月截一刀会得到一个既不是这个版本也不是这个月的数。
   domainQuality: (iteration_id, params = {}) =>
     http.get(`/metrics/domain-quality/${iteration_id}`, { params }),
+  // 注意这里的 project 是**问题单的采集项目**（字符串，如 YLS3000），
+  // 与看板顶部的「度量项目」（需求上的 roadmap_projects FK）不是一回事。
+  issueOverdue: (project) =>
+    http.get('/metrics/issue-overdue', { params: { project: project || undefined } }),
   group: (group_id, params = {}) => http.get(`/metrics/group/${group_id}`, { params }),
 }
 
