@@ -606,15 +606,65 @@ def _load_issue_groups(cfg: Dict) -> List[tuple]:
     return groups
 
 
+def _name_class(ch: str) -> str:
+    """字符在「名字」意义上的类别：分隔符 / 汉字 / 西文（字母数字算一类）。
+
+    用来判断一次子串匹配是不是把一个更长的名字从中间切开了。
+    """
+    if not ch.isalnum():
+        return ""            # 空格、括号、斜杠、逗号……都算分隔符
+    return "cjk" if "\u4e00" <= ch <= "\u9fff" else "latin"
+
+
+def _contains_person_name(text: str, name: str) -> bool:
+    """`name` 是否作为一个**完整的人名**出现在 `text` 里。
+
+    归组必须做模糊匹配：DTS 的责任人字段常常是「张伟 00123456」「张伟(zhangwei)」
+    这种姓名带工号/英文名的写法，而配置里的小组名单只写姓名。但**朴素的子串包含**
+    会让「张伟」认走「张伟明」的单——名单里没有张伟明，他的单却被安安静静地记到了
+    张伟所在的组，组级负载和交叉表都因此偏一点，而两边看着都对。
+
+    所以要求匹配处的两端是**真正的边界**：紧邻的字符要么是分隔符，要么属于另一个
+    字符类。汉字接汉字（张伟|明）＝切开了一个更长的名字，拒绝；汉字接西文
+    （张伟|00123456、张伟|zhangwei）是姓名与工号/英文名的交界，接受。
+
+    注意这条规则**比客户面的 `_contains_name()` 严**，两者不能互相套用：客户名是从
+    问题单**标题**里认的，标题是自然语句、名字两侧本来就没有分隔符（「西安1号机异常」），
+    按这里的规则会被整批拒掉；而责任人是一个**名字字段**，两端本就该是边界。
+    """
+    if not name:
+        return False
+    head, tail = _name_class(name[0]), _name_class(name[-1])
+    start = 0
+    while True:
+        i = text.find(name, start)
+        if i < 0:
+            return False
+        end = i + len(name)
+        head_ok = not head or i == 0 or _name_class(text[i - 1]) != head
+        tail_ok = not tail or end >= len(text) or _name_class(text[end]) != tail
+        if head_ok and tail_ok:
+            return True
+        start = i + 1
+
+
 def _match_group(owner: str, groups: List[tuple]) -> str:
-    """按责任人姓名匹配所属小组（大小写不敏感 + 互为子串的模糊匹配）。"""
+    """按责任人姓名匹配所属小组（大小写不敏感 + 带边界的双向包含匹配）。
+
+    双向是有意的：名单可能写得比 DTS 短（只写姓名，DTS 里带工号），也可能写得更长
+    （名单里写「张伟(SE)」，DTS 里只有姓名）。两个方向都过 `_contains_person_name()`
+    的边界检查，所以「张伟」不会再认走「张伟明」。
+    认不上的人不丢行，由调用方归到 UNGROUPED_GROUP 并报给管理员去补名单。
+    """
     o = (owner or "").strip().lower()
     if not o:
         return ""
     for name, members in groups:
         for m in members:
-            ml = m.lower()
-            if ml and (ml == o or ml in o or o in ml):
+            ml = (m or "").strip().lower()
+            if not ml:
+                continue
+            if ml == o or _contains_person_name(o, ml) or _contains_person_name(ml, o):
                 return name
     return ""
 
