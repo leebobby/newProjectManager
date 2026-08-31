@@ -407,7 +407,7 @@
 
       <div v-if="importResult" class="import-result">
         <el-alert
-          :title="`成功导入 ${importResult.created} 条`"
+          :title="importSummary"
           :type="importResult.errors?.length ? 'warning' : 'success'"
           :description="importResult.errors?.length ? importResult.errors.join('\n') : '无错误'"
           show-icon
@@ -594,6 +594,16 @@ const importVisible = ref(false)
 const importing = ref(false)
 const importFile = ref(null)
 const importResult = ref(null)
+// 跳过的条数要和导入的条数摆在一起：只报"成功导入 N 条"的话，
+// 「导了 80 条只进了 60 条」看着就像丢数据，而少的那些其实是本来就有的
+const importSummary = computed(() => {
+  const d = importResult.value
+  if (!d) return ''
+  const skipped = d.skipped || 0
+  return skipped
+    ? `成功导入 ${d.created} 条，跳过重复 ${skipped} 条`
+    : `成功导入 ${d.created} 条`
+})
 const uploadRef = ref(null)
 
 function defaultForm() {
@@ -836,8 +846,12 @@ async function onSubmitImport() {
     const { data } = await productRequirementApi.importExcel(props.iterationId, importFile.value)
     importResult.value = data
     if (data.created > 0) {
-      ElMessage.success(`成功导入 ${data.created} 条`)
+      ElMessage.success(importSummary.value)
       load()
+    } else if (data.skipped > 0) {
+      // 「未导入任何数据」在整份表格都已录过时是句会引起误会的话——
+      // 看着像文件没读进去，其实是一条都不用再录了
+      ElMessage.warning(`这 ${data.skipped} 条本迭代里都已经有了，没有新增`)
     } else {
       ElMessage.warning('未导入任何数据')
     }

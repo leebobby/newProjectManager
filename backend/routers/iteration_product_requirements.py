@@ -19,6 +19,7 @@ from op_log import log_op
 from routers._lookups import (
     fill_user_fk, fill_version_fk, project_name_map, resolve_project_id,
 )
+from routers._req_dedup import dedup_key, duplicate_message, find_duplicate
 
 
 def _fill_product_fks(db, data):
@@ -130,6 +131,12 @@ def create_item(
     )
     if not parent:
         raise HTTPException(status_code=404, detail="所属迭代不存在")
+    # 同一迭代里已经有这条需求就别再录一条（判重口径见 routers/_req_dedup.py，
+    # 与领域需求共用一份实现）
+    dup = find_duplicate(db, models.IterationProductRequirement, payload.iteration_id,
+                         payload.req_no, payload.title)
+    if dup is not None:
+        raise HTTPException(status_code=409, detail=duplicate_message(dup))
     data = payload.model_dump()
     _validate_enums(data)
     if not data.get("seq"):
@@ -169,6 +176,15 @@ def update_item(
         raise HTTPException(status_code=409, detail="数据已被他人修改，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    # 编辑也能造出重复（把编号改成另一行的），用改完之后的值去比，并排除自己
+    if "req_no" in changes or "title" in changes:
+        dup = find_duplicate(
+            db, models.IterationProductRequirement, item.iteration_id,
+            changes.get("req_no", item.req_no), changes.get("title", item.title),
+            exclude_id=item.id,
+        )
+        if dup is not None:
+            raise HTTPException(status_code=409, detail=duplicate_message(dup))
     _validate_enums(changes)
     _fill_product_fks(db, changes)
     for k, v in changes.items():
@@ -286,8 +302,17 @@ async def import_from_excel(
         "progress_test_result",
     ]
     created = 0
+    skipped = 0
     errors: List[str] = []
     pending = []
+    # 判重用的已有键：一次查完，别在循环里逐行查库（一份表格几百行）
+    existing_keys = {}
+    for row in (db.query(models.IterationProductRequirement)
+                .filter(models.IterationProductRequirement.iteration_id == iteration_id).all()):
+        k = dedup_key(row.req_no, row.title)
+        if k is not None:
+            existing_keys.setdefault(k, row)
+    seen_in_file = {}
 
     for r_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         if not row or all(v in (None, "") for v in row):
@@ -311,6 +336,21 @@ async def import_from_excel(
         if not title:
             errors.append(f"第 {r_idx} 行：缺少需求标题，已跳过")
             continue
+
+        # 重复的行**跳过而不是报错**，但要如实报出来——只跳不报的表现是
+        # 「导入 80 条只进了 60 条」，而没人说得清少的是哪些。
+        key = dedup_key(data.get("req_no"), title)
+        if key is not None:
+            if key in existing_keys:
+                skipped += 1
+                errors.append(f"第 {r_idx} 行：{duplicate_message(existing_keys[key], '本迭代里已有')}"
+                              "本行已跳过")
+                continue
+            if key in seen_in_file:
+                skipped += 1
+                errors.append(f"第 {r_idx} 行：与本文件第 {seen_in_file[key]} 行重复，已跳过")
+                continue
+            seen_in_file[key] = r_idx
 
         bad_progress = False
         for pf in progress_fields:
@@ -352,9 +392,10 @@ async def import_from_excel(
     db.commit()
 
     log_op(db, action="导入", target="迭代产品需求", target_id=iteration_id,
-           detail=f"created={created} errors={len(errors)} file={file.filename or ''}",
+           detail=f"created={created} skipped={skipped} errors={len(errors)} "
+                  f"file={file.filename or ''}",
            user=current_user, request=request)
-    return {"created": created, "errors": errors}
+    return {"created": created, "skipped": skipped, "errors": errors}
 
 
 @router.delete("/{item_id}")
