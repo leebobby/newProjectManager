@@ -33,6 +33,14 @@ def test_ppt_and_excel_share_one_palette():
     assert xlsx_utils._HEADER_BG == brand.HEADER_BG
     assert xlsx_utils._BRAND == brand.BRAND
     assert {k: str(v) for k, v in PU._STATUS_FILLS.items()} == brand.STATUS_FILLS
+    # 点灯（自由表格的点灯列 / 专项总览的风险灯）也只有一份：Excel 与 PPT
+    # 各写一份字面量的表现是同一盏灯在两份文件里颜色不一样，而两份单独看都正常
+    assert xlsx_utils._LIGHT_FILL == brand.LIGHT_FILLS
+    assert xlsx_utils._LIGHT_FONT == brand.LIGHT_TEXTS
+    assert {k: str(v) for k, v in PU._LIGHT_FILLS.items()} == brand.LIGHT_FILLS
+    assert {k: str(v) for k, v in PU._LIGHT_TEXTS.items()} == brand.LIGHT_TEXTS
+    # 但这两套**不能合并**：一套认进展状态词，一套认用户拨的灯
+    assert set(brand.LIGHT_FILLS) & set(brand.STATUS_FILLS) == set()
 
 
 def test_status_match_is_exact_not_substring():

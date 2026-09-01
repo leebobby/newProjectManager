@@ -214,6 +214,108 @@ def test_status_is_a_cell_fill_not_just_coloured_text():
     assert fills["不涉及"] in ("FFFFFF", str(PU._ZEBRA)), "不涉及不点灯"
 
 
+# ─── 专项总览 ────────────────────────────────────────────────────────────
+
+
+def _orisk(text, act="", overdue=False):
+    return NS(id=1, content=text, progress=act, owner="李工",
+              planned_close_date="2026-08-28", overdue=overdue)
+
+
+def _orow(seq, light="yellow", risks=(), risk_total=None, manual="", kind="special"):
+    risks = list(risks)
+    return NS(seq=seq, id=seq, name=f"专项 {seq}", kind=kind,
+              kind_label="攻关" if kind == "assault" else "专项",
+              owner="张三",
+              goal="把一次通过率从 82% 提到 95% 以上，9 月底前收口。",
+              progress="已完成三轮 DOE，本周起在 2 号线试产验证。",
+              risks=risks, light=light, light_auto=light, light_manual=manual,
+              light_reason="", risk_total=len(risks) if risk_total is None else risk_total,
+              risk_open=len(risks), risk_overdue=0, version=0)
+
+
+def test_special_overview_fits_every_page():
+    """行多、每格文字也多——照样每页都装得下。"""
+    rows = [_orow(i, risks=[_orisk(f"风险 {i}-{k}：供货周期长且备料只够两轮试产",
+                                   "已提前下单并启动并行询价", overdue=(k == 0))
+                            for k in range(6)])
+            for i in range(1, 26)]
+    pres = Presentation(PU.build_special_overview_pptx(rows))
+    _assert_fits(pres)
+    assert len(_tables(pres)) > 1, "25 个专项该分页，而不是挤在一张里"
+
+
+def test_special_overview_light_is_a_cell_fill():
+    """风险那一列**给格子上底色**，四档各一色。
+
+    这套灯与进展状态词的点灯（`_STATUS_FILLS`）是两回事，配色在
+    `brand.LIGHT_FILLS`——合并的话，改一个状态词的颜色会顺手改掉这里。
+    """
+    rows = [_orow(1, light="red"), _orow(2, light="yellow"),
+            _orow(3, light="green"), _orow(4, light="gray")]
+    pres = Presentation(PU.build_special_overview_pptx(rows))
+    table = _tables(pres)[0][1].table
+    got = {}
+    for i in range(len(rows)):
+        cell = table.cell(2 + i, 3)          # 第 4 列＝风险
+        got[cell.text] = str(cell.fill.fore_color.rgb)
+    assert got == {"红": "FEF0F0", "黄": "FDF6EC",
+                   "绿": "F0F9EB", "未评估": "F4F4F5"}
+
+
+def test_special_overview_gray_reads_as_not_assessed():
+    """一条风险都没登记的那行写「未评估」，不是绿、也不是空白。"""
+    pres = Presentation(PU.build_special_overview_pptx([_orow(1, light="gray")]))
+    table = _tables(pres)[0][1].table
+    assert table.cell(2, 3).text == "未评估"
+    assert table.cell(2, 5).text == "未登记风险"
+
+
+def test_special_overview_says_how_many_risks_were_clipped():
+    """一格里塞不下的风险要写明「另 N 条」，而且那个数按**条**算不是按行算。
+
+    风险与措施接在同一行里就是为了这个：一条占两行的话，截断时会写成
+    "另 4 条"而其实只剩 2 条，那个数看着完全合理，没人会去核。
+    """
+    rows = [_orow(1, risks=[_orisk(f"风险 {k}：这是一条足够长的风险描述，"
+                                   f"长到一行放不下需要折行显示才够", "对应的措施也写得挺长")
+                            for k in range(12)])]
+    pres = Presentation(PU.build_special_overview_pptx(rows))
+    text = _tables(pres)[0][1].table.cell(2, 5).text
+    assert "另" in text and "条" in text, f"截断了却没说少了几条：{text!r}"
+    shown = sum(1 for ln in text.split("\n") if ln and ln[0].isdigit())
+    rest = int(text.split("另 ")[1].split(" 条")[0])
+    assert shown + rest == 12, f"露出 {shown} 条 + 另 {rest} 条 ≠ 12 条"
+
+
+def test_special_overview_reports_manual_lights_in_the_subtitle():
+    """有人工拨过的灯就要说一句。
+
+    不说的话，这份材料把"人拍的板"摆成了"系统算出来的结论"，
+    而看的人分不出哪几行是哪种。
+    """
+    def _sub(pres):
+        texts = []
+        for shape in pres.slides[0].shapes:
+            if shape.has_text_frame:
+                texts.append(shape.text_frame.text)
+        return "\n".join(texts)
+
+    plain = Presentation(PU.build_special_overview_pptx([_orow(1)]))
+    assert "人工指定" not in _sub(plain), "一个都没人工拨过就别提这句"
+    mixed = Presentation(PU.build_special_overview_pptx(
+        [_orow(1), _orow(2, light="red", manual="red")]))
+    assert "其中 1 项的灯为人工指定" in _sub(mixed)
+
+
+def test_special_overview_empty_says_so():
+    pres = Presentation(PU.build_special_overview_pptx([]))
+    assert len(pres.slides) == 1
+    body = "\n".join(sh.text_frame.text for sh in pres.slides[0].shapes
+                     if sh.has_text_frame)
+    assert "还没有专项" in body
+
+
 def test_header_is_light_blue_with_dark_text_not_red_on_white():
     """一页里的红只留给标题。表头一红，整张表的重心就压在最上面一行。"""
     pres = Presentation(PU.build_customer_status_pptx([_machine(0)]))

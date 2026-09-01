@@ -331,3 +331,15 @@ def norm_special_light(v) -> str:
         return key
     raise ValueError(
         f"点灯「{v}」非法，应为 {'/'.join(SPECIAL_OVERVIEW_LIGHTS)} 之一，或留空＝自动")
+
+
+# 导出侧：一格点灯文字 → 颜色档位 key（颜色表在 brand.LIGHT_FILLS / LIGHT_TEXTS）。
+# 自由表格的点灯列与专项总览的风险灯**共用这一份**——两处各写一份的表现是
+# 同一盏灯在 Excel 里是绿的、在 PPT 里没颜色，而两份文件单独看都挺正常。
+_LIGHT_TEXT_TO_KEY = dict(GRID_LIGHT_COLORS)
+_LIGHT_TEXT_TO_KEY.update({v: k for k, v in SPECIAL_OVERVIEW_LIGHT_LABELS.items()})
+
+
+def light_key_of(text) -> str:
+    """点灯文字 → red/yellow/green/gray；认不出返回 ""（那一格不着色）。"""
+    return _LIGHT_TEXT_TO_KEY.get(str(text or "").strip(), "")

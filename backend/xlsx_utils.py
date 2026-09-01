@@ -54,9 +54,10 @@ _STATUS_FILL = dict(brand.STATUS_FILLS)
 _thin = Side(style="thin", color=_BORDER_RGB)
 _BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 
-# 点灯列的底色/字色，与前端 RichGrid 及周报 HTML 的三档保持一致
-_LIGHT_FILL = {"red": "FEF0F0", "yellow": "FDF6EC", "green": "F0F9EB"}
-_LIGHT_FONT = {"red": "F56C6C", "yellow": "E6A23C", "green": "67C23A"}
+# 点灯列的底色/字色，与前端 RichGrid 及周报 HTML 的三档保持一致。
+# 表在 brand.py（PPT 那边也要用同一套），这里不再另写一份字面量。
+_LIGHT_FILL = dict(brand.LIGHT_FILLS)
+_LIGHT_FONT = dict(brand.LIGHT_TEXTS)
 
 # 分段图片 / 全景图的落盘根目录（与 routers/specials.py 的 UPLOAD_ROOT 同一处）
 UPLOAD_ROOT = pathlib.Path(__file__).resolve().parent / "uploads" / "specials"

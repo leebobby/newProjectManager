@@ -3,6 +3,7 @@
     <el-card shadow="never">
       <div class="toolbar">
         <el-button :icon="Refresh" @click="load">刷新</el-button>
+        <el-button :icon="Download" :loading="exporting" @click="onExport">导出 PPT</el-button>
         <el-checkbox v-model="includeInactive" @change="load">显示停用</el-checkbox>
         <el-checkbox v-model="expandAll">展开全部文字</el-checkbox>
         <span class="flex-1" />
@@ -149,8 +150,8 @@
 import { computed, reactive, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
-import { specialApi, apiError } from '../api'
+import { Download, Refresh } from '@element-plus/icons-vue'
+import { specialApi, apiError, downloadBlob } from '../api'
 
 // 四档灯。**与后端 enums.SPECIAL_OVERVIEW_LIGHT_LABELS 必须同步**：
 // 分叉的表现是页面上多出/少掉一档，而那一档的行会显示成空白。
@@ -215,6 +216,24 @@ async function saveLight() {
     if (![409, 423].includes(e?.response?.status)) ElMessage.error(apiError(e, '保存失败'))
   } finally {
     dialog.saving = false
+  }
+}
+
+const exporting = ref(false)
+
+async function onExport() {
+  exporting.value = true
+  try {
+    // 导出的口径跟着页面走：勾了「显示停用」，PPT 里也带上停用的那些，
+    // 否则会出现"页面 6 行、导出 5 行"，而两边看着都对
+    const resp = await specialApi.exportOverviewPptx(includeInactive.value)
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
+    downloadBlob(resp.data, `special-overview-${ts}.pptx`)
+    ElMessage.success('已导出')
+  } catch (e) {
+    ElMessage.error(apiError(e, '导出失败'))
+  } finally {
+    exporting.value = false
   }
 }
 

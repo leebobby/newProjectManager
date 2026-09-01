@@ -151,6 +151,17 @@ npm run test:e2e                                     # 冒烟：真开浏览器�
   `sid` 去解析，接口稳定返回 422，而报错只说「sid 不是整数」，没人会往路由顺序上想
   （同 `iteration_requirements` 的 `/duplicates`）。回归见
   [tests/test_special_overview.py](backend/tests/test_special_overview.py)。
+- `GET /overview.pptx` 导出 PPT（登录用户可导，与页面同一档读权限）。
+  **它直接复用 `overview()` 的返回值，不在导出里另查一遍库、也不另算一遍灯**——
+  分叉的表现是「页面 5 行、PPT 里 6 行」或者「页面是黄的、PPT 里是红的」，
+  而两边看着都对。`include_inactive` 跟着页面上的勾选走，同理。
+  这条路由**也要排在 `GET /{sid}` 前面**（`"overview.pptx"` 同样会被当成 sid）。
+  版式回归见 [tests/test_pptx_layout.py](backend/tests/test_pptx_layout.py)：
+  风险一格里塞不下时写「另 N 条」，而那个数按**条**算不是按行算——所以风险与措施
+  用「｜」接在同一行里，让"条"和"行"对得上；分开两行的话会写成"另 4 条"
+  而其实只剩 2 条，那个数看着完全合理，没人会去核。
+  副标题里如实报「其中 N 项的灯为人工指定」：不报的话，这份材料就把"人拍的板"
+  摆成了"系统算出来的结论"。
 
 **点灯四档，判定收口在 `specials._auto_light()`**，只看 `special_risks` 一处数据源：
 
@@ -754,9 +765,15 @@ DateTime 列有两类，**口径不同，别混**：
     改回染字色的话，6 个进展列全是同字号小字，得逐格读才分得出来。
   - 斑马纹（`_ZEBRA`）**压到几乎看不见**且跟着表头走蓝灰一系。模板里的表都在
     6 列以内，白底就够认行；产品需求表有 13~14 列，全白时眼睛横扫会串行。
-  - 专项/自由表格的**点灯列**（`GRID_LIGHT_COLORS` 那套红黄绿）是**另一回事**，
-    它是用户在页面上配的格式，必须与前端 `gridLight.js` 和周报 HTML 三处同款
-    ——不要顺手把它并到 `brand.STATUS_FILLS` 里。
+  - 点灯（自由表格的点灯列、专项总览的风险灯）是**另一回事**，它认的是用户自己
+    拨的灯而不是进展状态词，必须与前端 `gridLight.js` / `SpecialOverview.vue` 和
+    周报 HTML 同款——**不要并进 `brand.STATUS_FILLS`**：合并之后调一个状态词的
+    颜色会顺手改掉一堆和它无关的灯，而每一处单独看都还正常。
+    但它同样只有一份：色板在 `brand.LIGHT_FILLS` / `LIGHT_TEXTS`，取值→档位在
+    `enums.light_key_of()`，Excel（`xlsx_utils`）与 PPT（`pptx_utils` 的
+    `light_cols`）都从那儿取，**别在任一侧再写一份字面量**——那就又回到
+    「同一盏灯在两份文件里颜色不一样，而两份单独看都正常」。
+    回归见 `test_xlsx_style.py::test_ppt_and_excel_share_one_palette`。
   - 页脚三件套（口号 / 密级 / 页码）**每页都有，封面也有**：导出的表经常被截图
     贴进别的材料，落单的一张没有页码就找不回出处。不想要就把 `_FOOTER_BRAND` /
     `_FOOTER_SLOGAN` / `_FOOTER_MARK` 置空，页脚只剩分隔线与页码。

@@ -47,6 +47,22 @@ STATUS_TEXT = {
 # 点灯底色都是浅色，字一律用近黑；白字在黄底上等于没有。
 STATUS_ON_FILL_TEXT = "1F242E"
 
+# ─── 点灯：与 STATUS_FILLS 是**两回事**，不要合并 ──────────────────────────
+# STATUS_FILLS 认的是「已完成 / 进行中 / 已延期」这类**进展状态词**，是从文字里
+# 认出来的；下面这一套认的是用户自己拨的**灯**——自由表格的点灯列（RichGrid）
+# 与专项总览的风险灯。两者合并的话，调一个状态词的颜色会顺手改掉一堆和它无关
+# 的灯，而每一处单独看都还挺正常。
+#
+# 这一套的取值必须与**前端**同款（`utils/gridLight.js`、`SpecialOverview.vue`）
+# 以及周报 HTML 一致：同一盏灯在页面上是绿的、导出里没颜色，是最难被当成 bug
+# 报上来的那类问题。放在这里是因为 Excel（xlsx_utils）与 PPT（pptx_utils）都要用，
+# 各写一份字面量就又回到「同一批数据导出的两个文件是两个配色」。
+#
+# gray 只有专项总览用得上：「未评估」＝一条风险都没登记，算不出来。
+# 自由表格的点灯列没有这一档（认不出的取值不着色）。
+LIGHT_FILLS = {"red": "FEF0F0", "yellow": "FDF6EC", "green": "F0F9EB", "gray": "F4F4F5"}
+LIGHT_TEXTS = {"red": "F56C6C", "yellow": "E6A23C", "green": "67C23A", "gray": "909399"}
+
 
 def status_style(text):
     """一格文字的状态样式：(底色, 字色, 是否加粗)；不是状态词就 (None, None, False)。

@@ -68,6 +68,34 @@ def test_overview_is_not_parsed_as_sid(client, admin_headers):
     assert isinstance(r.json(), list)
 
 
+def test_overview_pptx_is_not_parsed_as_sid(client, admin_headers):
+    """`/overview.pptx` 同样必须排在 `/{sid}` 之前。"""
+    r = client.get("/api/specials/overview.pptx", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.content[:2] == b"PK", "返回的应该是个 pptx（zip）"
+    assert "attachment" in r.headers.get("content-disposition", "")
+
+
+def test_overview_pptx_uses_the_same_rows_as_the_page(client, admin_headers):
+    """导出的行数与页面一致，停用的同样默认不进。
+
+    导出里另查一遍库的话，两处的过滤迟早分叉——页面上 5 行、PPT 里 6 行，
+    而两边看着都对。
+    """
+    from pptx import Presentation
+    import io as _io
+
+    page_rows = _overview(client, admin_headers)
+    r = client.get("/api/specials/overview.pptx", headers=admin_headers)
+    pres = Presentation(_io.BytesIO(r.content))
+    body = 0
+    for slide in pres.slides:
+        for sh in slide.shapes:
+            if sh.has_table:
+                body += len(sh.table.rows) - 2      # 两行表头
+    assert body == len(page_rows)
+
+
 # ─── 六列的取数 ──────────────────────────────────────────────────────────
 
 

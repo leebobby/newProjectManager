@@ -16,7 +16,7 @@ from typing import List
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 import enums
@@ -340,6 +340,35 @@ def overview(
     rows = q.order_by(models.Special.sort_order, models.Special.id).all()
     today = date.today()
     return [_overview_row(i, sp, today) for i, sp in enumerate(rows, 1)]
+
+
+# 同 `/overview`：**必须排在 `GET /{sid}` 前面**，否则 "overview.pptx"
+# 会被当成 sid 去解析，接口稳定 422。
+@router.get("/overview.pptx")
+def export_overview_pptx(
+    request: Request,
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """专项总览导出 PPT（登录用户可导，与页面同一档读权限）。
+
+    **导出的行直接复用 `overview()` 的结果**，不在这儿另算一遍：
+    点灯与风险筛选各写一份的表现是"页面是黄的、PPT 里是红的"，而两边看着都对。
+    """
+    from pptx_utils import build_special_overview_pptx
+
+    rows = overview(include_inactive=include_inactive, db=db)
+    stream = build_special_overview_pptx(rows)
+    filename = f"special-overview-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pptx"
+    log_op(db, action="导出PPT", target="专项总览",
+           detail=f"rows={len(rows)}", user=current_user, request=request)
+    return StreamingResponse(
+        stream,
+        media_type=("application/vnd.openxmlformats-officedocument"
+                    ".presentationml.presentation"),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("", response_model=schemas.SpecialOut)

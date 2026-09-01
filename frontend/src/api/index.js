@@ -123,6 +123,8 @@ export const specialApi = {
   // 总览：七列全部由服务端从各专项自己的字段推出来，只有点灯能改
   overview: (include_inactive = false) => http.get('/specials/overview', { params: { include_inactive } }),
   setOverviewLight: (id, light, version) => http.put(`/specials/${id}/overview`, { light, version }),
+  exportOverviewPptx: (include_inactive = false) =>
+    http.get('/specials/overview.pptx', { responseType: 'blob', params: { include_inactive } }),
   updateContent: (id, data) => http.put(`/specials/${id}/content`, data),
   uploadPanorama: (id, file) => {
     const fd = new FormData()
