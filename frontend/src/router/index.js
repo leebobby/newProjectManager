@@ -110,6 +110,15 @@ const routes = [
     meta: { title: '专项管理', icon: 'Briefcase', specialsParent: true, group: '进度管理' },
   },
   {
+    // 总览排在 /specials/:id 前面即可——:id 限定了纯数字，两条路由本来就不会撞。
+    // hidden：它在侧栏里是「专项管理」下的一个二级项（App.vue 手写的那段），
+    // 不该再作为顶层菜单项出现一次。
+    path: '/specials/overview',
+    name: 'SpecialOverview',
+    component: () => import('../views/SpecialOverview.vue'),
+    meta: { title: '专项总览', hidden: true },
+  },
+  {
     path: '/specials/:id(\\d+)',
     name: 'SpecialDetail',
     component: () => import('../views/SpecialDetail.vue'),

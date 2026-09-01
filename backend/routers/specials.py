@@ -9,7 +9,7 @@ import json
 import pathlib
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from html.parser import HTMLParser
 from typing import List
@@ -27,6 +27,7 @@ from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
 from notify import dispatch
+from routers import _issue_source
 from routers._lookups import fill_user_fk
 
 router = APIRouter(prefix="/api/specials", tags=["specials"])
@@ -240,6 +241,107 @@ def list_specials(
     return q.order_by(models.Special.sort_order, models.Special.id).all()
 
 
+# ─── 专项总览 ──────────────────────────────────────────────────────────────
+# 一张跨专项的横表：一个专项一行，七列全部从各专项自己的字段推出来。
+# **「自动提取」是这张表存在的理由**——总览不该是第八个要人填的地方，
+# 填在详情页里的东西应该自己长到这儿来。所以除了点灯可以手工覆盖，
+# 其余六列在总览上都是只读的，一处录入入口都没有。
+
+
+def _auto_light(risks: List[models.SpecialRisk], today=None):
+    """按「风险和问题」分段推这个专项的灯，返回 (light, reason, open_n, overdue_n)。
+
+    只看一处数据源——risks 表里的行：
+
+        gray    一条风险行都没登记 → **未评估**，不是绿（见 enums 里的说明）
+        green   登记过，但全部已闭环
+        yellow  有未闭环的，但都还没过计划闭环时间
+        red     有未闭环的，且至少一条**已过**计划闭环时间
+
+    「超过」才算，当天到期不算——记成超期会让人白紧张一天（与
+    `_issue_source.is_overdue()` 同口径，日期解析直接共用 `parse_plan_date`，
+    两处各写一份的表现是同一个日期在两个页面上一个算超期一个不算）。
+
+    没填计划闭环时间的未闭环行**只顶到黄、不顶红**：那是「没排期」，
+    不是「排了没做到」。混成一档会让一批从来不填日期的专项长期挂红，
+    而红灯一多就没人看了，真红的那个反而淹掉。
+
+    刻意**不掺里程碑延期**：延期的里程碑确实是风险信号，但掺进来这盏灯就
+    再也说不清出处——页面写着红，风险表里一条超期都没有，没人查得动。
+    真要让里程碑影响这盏灯，正确做法是去风险表里登一行。
+    """
+    today = today or date.today()
+    if not risks:
+        return enums.SPECIAL_OVERVIEW_LIGHT_AUTO, "还没登记过风险行，算不出来", 0, 0
+    open_rows = [r for r in risks if (r.status or "open") == "open"]
+    if not open_rows:
+        return "green", f"{len(risks)} 条风险全部已闭环", 0, 0
+    overdue = [r for r in open_rows
+               if (d := _issue_source.parse_plan_date(r.planned_close_date))
+               and d < today]
+    if overdue:
+        return ("red",
+                f"{len(open_rows)} 条未闭环，其中 {len(overdue)} 条已过计划闭环时间",
+                len(open_rows), len(overdue))
+    return "yellow", f"{len(open_rows)} 条未闭环，均未到计划闭环时间", len(open_rows), 0
+
+
+def _overview_risk(r: models.SpecialRisk, today) -> schemas.SpecialOverviewRisk:
+    d = _issue_source.parse_plan_date(r.planned_close_date)
+    return schemas.SpecialOverviewRisk(
+        id=r.id,
+        content=_strip_html(r.content or ""),
+        progress=_strip_html(r.progress or ""),
+        owner=r.owner or "",
+        planned_close_date=r.planned_close_date or "",
+        overdue=bool(d and d < today),
+    )
+
+
+def _overview_row(seq: int, sp: models.Special, today) -> schemas.SpecialOverviewRow:
+    content = sp.content
+    risks = list(sp.risks or [])
+    auto, reason, open_n, overdue_n = _auto_light(risks, today)
+    manual = enums.norm_special_light(getattr(content, "overview_light", "") or "")
+    # 未闭环的排前面，其中超期的又排前面：一格里放不下几条，先露出来的
+    # 得是最该看的那几条（同 pptx_utils 的 clip_cols——截断可以，但要截对头）
+    open_rows = [r for r in risks if (r.status or "open") == "open"]
+    cells = sorted((_overview_risk(r, today) for r in open_rows),
+                   key=lambda x: (not x.overdue,))
+    return schemas.SpecialOverviewRow(
+        seq=seq, id=sp.id, name=sp.name, kind=sp.kind or "special",
+        kind_label=_kind_label(sp.kind), owner=sp.owner or "",
+        goal=_strip_html(getattr(content, "goal", "") or ""),
+        progress=_strip_html(getattr(content, "progress_summary", "") or ""),
+        risks=cells,
+        light=manual or auto, light_auto=auto, light_manual=manual,
+        light_reason=reason,
+        risk_total=len(risks), risk_open=open_n, risk_overdue=overdue_n,
+        version=int(getattr(content, "version", 0) or 0),
+    )
+
+
+# 必须排在 GET /{sid} **前面**：注册在后的话 "overview" 会被当成 sid 去解析，
+# 表现是这个接口稳定返回 422（同 iteration_requirements 的 /duplicates）。
+@router.get("/overview", response_model=List[schemas.SpecialOverviewRow])
+def overview(
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+):
+    """专项总览：各专项的目标 / 风险点灯 / 关键进展 / 关键风险和措施 / 责任人。
+
+    顺序与侧栏一致（sort_order, id）——总览与菜单对不上，人就得在两边来回找。
+    停用的专项默认不出现（同侧栏），要看得勾 include_inactive；
+    页面上把这个开关摆出来，免得"少了一个专项"没人说得清是被谁滤掉的。
+    """
+    q = db.query(models.Special)
+    if not include_inactive:
+        q = q.filter(models.Special.is_active.is_(True))
+    rows = q.order_by(models.Special.sort_order, models.Special.id).all()
+    today = date.today()
+    return [_overview_row(i, sp, today) for i, sp in enumerate(rows, 1)]
+
+
 @router.post("", response_model=schemas.SpecialOut)
 def create_special(
     payload: schemas.SpecialCreate,
@@ -366,6 +468,40 @@ def update_content(
     if data:
         _notify_special_change(db, special, summary=f"内容更新：{'、'.join(data.keys())}", actor=current_user)
     return content
+
+
+@router.put("/{sid}/overview", response_model=schemas.SpecialOverviewRow)
+def update_overview_light(
+    sid: int,
+    payload: schemas.SpecialOverviewLightUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """改某个专项的总览点灯（登录用户可写）。传空串＝清掉覆盖，回到自动。
+
+    权限落「登录用户」而不是 admin：这是协作编辑域的日常填报——每周看总览的
+    人就是该拨这盏灯的人，要 admin 代拨的话灯会一直停在上上周。
+    并发同 `PUT /content`：共用 content.version 这一个乐观锁（本来就是同一行），
+    他人正持编辑锁时返回 423。
+    """
+    special = _get_or_404(db, sid)
+    _require_not_locked_by_other(db, sid, current_user)
+    content = _ensure_content(db, special)
+    if content.version != payload.version:
+        raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    try:
+        light = enums.norm_special_light(payload.light)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    content.overview_light = light
+    content.version += 1
+    db.commit()
+    db.refresh(special)
+    log_op(db, action="修改", target=f"{_kind_label(special.kind)}总览点灯", target_id=sid,
+           detail=f"name={special.name} light={light or '自动'}",
+           user=current_user, request=request)
+    return _overview_row(0, special, date.today())
 
 
 @router.post("/{sid}/apply-template", response_model=schemas.SpecialContentOut)

@@ -290,3 +290,44 @@ GRID_FONTS = {
 GRID_FONT_SIZES = (12, 13, 14, 16, 18, 22)
 # 单元格底色候选（点灯列的着色优先于它）
 GRID_CELL_BG = ("", "#FFF7E6", "#FEF0F0", "#F0F9EB", "#ECF5FF", "#F4F4F5")
+
+# ─── 专项总览：风险点灯 ─────────────────────────────────────────────────────
+# 总览表里每个专项一盏灯。**四档，但只有三档能手工指定**：
+#   red / yellow / green  —— 人可以指定，也可以由 _auto_light 推出来
+#   gray（未评估）        —— 只可能是自动推出来的：这个专项一条风险行都没登记
+# 「一条风险都没登记」不能算绿：那是"还没人评过"，不是"评过、没风险"。
+# 记成绿的话，最该被追着去填风险的那几个专项，在总览上看着比谁都干净
+# （同 domains 的「超期未知」vs「无超期」：算不出来要如实说算不出来）。
+SPECIAL_OVERVIEW_LIGHTS = ("red", "yellow", "green")
+SPECIAL_OVERVIEW_LIGHT_AUTO = "gray"
+SPECIAL_OVERVIEW_LIGHT_LABELS = {
+    "red": "红", "yellow": "黄", "green": "绿", "gray": "未评估",
+}
+# 手工填灯时认的写法。前端下拉只给 red/yellow/green 三个 key，这张表是给
+# 将来可能的导入/接口直填留的余地——不要在这里加 gray。
+_LIGHT_ALIASES = {
+    "红": "red", "红灯": "red", "R": "red",
+    "黄": "yellow", "黄灯": "yellow", "Y": "yellow",
+    "绿": "green", "绿灯": "green", "G": "green",
+}
+
+
+def norm_special_light(v) -> str:
+    """总览点灯的手工覆盖值。**空是合法取值**，含义是「回到自动」。
+
+    因此不走 `_norm_choice`：后者把空当作"不修改"或"落默认值"，
+    而这里空既不是不修改、也不该有默认——清空就是清空
+    （同 `norm_domain_risk_level()` 的取舍）。
+    """
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    if s in SPECIAL_OVERVIEW_LIGHTS:
+        return s
+    key = _LIGHT_ALIASES.get(s) or _LIGHT_ALIASES.get(s.upper())
+    if key:
+        return key
+    raise ValueError(
+        f"点灯「{v}」非法，应为 {'/'.join(SPECIAL_OVERVIEW_LIGHTS)} 之一，或留空＝自动")

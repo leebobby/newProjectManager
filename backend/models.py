@@ -887,6 +887,10 @@ class SpecialContent(Base):
     #   {"template_id":3,"template_name":"...","sections":{"goal":{"title":"...","enabled":false}}}
     # 空对象＝全用默认标题、全部启用（老数据行为不变）。解析见 special_layout.py
     section_config_json = Column(Text, default="{}")
+    # 专项总览的风险点灯**手工覆盖**：空＝按规则自动推（见 specials._auto_light）。
+    # 存 key 不存中文（red/yellow/green），理由同 GRID_FONTS：页面要色板、
+    # 导出要另一套色，各查各的表。自动档没有单独取值——覆盖清掉就回到自动。
+    overview_light = Column(String(16), default="", comment="总览点灯手工覆盖，空=自动")
     version = Column(Integer, nullable=False, default=0, comment="乐观锁")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

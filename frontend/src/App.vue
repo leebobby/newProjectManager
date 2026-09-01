@@ -31,6 +31,12 @@
                 <el-icon><component :is="r.meta.icon" /></el-icon>
                 <span>{{ r.meta.title }}</span>
               </template>
+              <!-- 总览对所有登录用户可见：它只读各专项已有的字段，
+                   而「专项配置」是主数据维护，仍然只给 admin -->
+              <el-menu-item index="/specials/overview">
+                <el-icon><DataLine /></el-icon>
+                <template #title>总览</template>
+              </el-menu-item>
               <el-menu-item v-if="auth.isAdmin.value" :index="r.path">
                 <el-icon><Setting /></el-icon>
                 <template #title>专项配置</template>

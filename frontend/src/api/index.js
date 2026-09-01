@@ -120,6 +120,9 @@ export const specialApi = {
   update: (id, data) => http.put(`/specials/${id}`, data),
   remove: (id) => http.delete(`/specials/${id}`),
   detail: (id) => http.get(`/specials/${id}`),
+  // 总览：七列全部由服务端从各专项自己的字段推出来，只有点灯能改
+  overview: (include_inactive = false) => http.get('/specials/overview', { params: { include_inactive } }),
+  setOverviewLight: (id, light, version) => http.put(`/specials/${id}/overview`, { light, version }),
   updateContent: (id, data) => http.put(`/specials/${id}/content`, data),
   uploadPanorama: (id, file) => {
     const fd = new FormData()
