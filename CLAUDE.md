@@ -34,6 +34,16 @@ npm run test:e2e                                     # 冒烟：真开浏览器�
 装依赖用 `npm ci` 不用 `npm install`：前者严格按 `package-lock.json` 装，
 后者会在锁文件与 `package.json` 不一致时顺手改锁文件，于是各人装出各人的依赖。
 
+**依赖分组是按「生产机要不要」分的，不是按「什么时候用」**：`vite` 与
+`@vitejs/plugin-vue` 在 `dependencies` 里——生产机每次升级都要跑一次 `vite build`，
+它们是构建的一部分；只有 `eslint` 与 `@playwright/test` 是 `devDependencies`。
+这样生产机可以 `npm ci --omit=dev`，跳过那两个**要 Node 20+** 的包
+（部署机是 Node 18，装它们只会刷一屏 `EBADENGINE`），构建照常。
+把 vite 放回 devDependencies 的话，`--omit=dev` 会连 vite 一起跳掉，
+表现是部署时 `vite: not found`。
+`@playwright/test` **钉死版本不留 `^`**：它的浏览器二进制是单独装的，
+版本一漂就和已装的浏览器构建号对不上，报「Executable doesn't exist」。
+
 **测试文件里不要在模块顶层 import 应用模块**（`routers.*` / `models` / `database`）。
 `conftest.py` 的 `client` 夹具靠 `os.chdir` 把 `sqlite:///./app.db` 指到临时目录，
 收集阶段的顶层 import 会赶在 chdir 之前把引擎连上仓库里的 `backend/app.db`，
