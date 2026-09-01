@@ -30,6 +30,7 @@
 作为补偿，响应里带一个 `unassigned`：同口径下还没填项目、因而没被计入的条数，
 前端据此提示去补，而不是让人对着一个偏小的数字纳闷。
 """
+from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -592,6 +593,110 @@ class GroupLoad(BaseModel):
     unassigned: int          # 该组名下没填项目、因而没被计入的条数（未按项目筛时恒为 0）
     changed: int             # 因标了「已变更」而整行排除的条数
     by_member: List[GroupMemberLoad]
+
+
+# ─── 问题单超期：各领域横向对比 ─────────────────────────────────────────────
+class OverdueRow(BaseModel):
+    """一个领域（PL 组）的超期情况。"""
+    group_id: Optional[int] = None       # 组名对不上主数据时为空（名单里有、组还没建）
+    group_name: str
+    # 「未归组」不是一个领域，是**责任人不在任何小组名单里**的那堆单——它和
+    # 「组名对不上主数据」（group_id 为空）是两回事，页面上要分开说，
+    # 否则会提示管理员去建一个根本不该存在的组。由服务端标出来，
+    # 免得前端再写一份 UNGROUPED_GROUP 字面量（那个字面量只该有一个）。
+    ungrouped: bool = False
+    total: int = 0                       # 该领域名下还开着的单
+    overdue: int = 0                     # 超过预计闭环时间仍未闭环
+    overdue_unknown: int = 0             # 没填预计闭环时间，算不出是否超期
+    # 分母是**填了预计闭环时间的条数**，不是 total：按 total 算的话，
+    # 一个 DTS 里压根没填日期的组会显示成 0%，看着比谁都干净。
+    overdue_rate: float = 0.0
+    oldest_overdue_days: int = 0         # 最久的一条超了多少天（没有超期的为 0）
+
+
+class OverdueOut(BaseModel):
+    """各领域的问题单超期横向对比。
+
+    数据源与领域总览完全同一份（`_issue_source.resolve_issue_source`），
+    口径也同一份（`_issue_source.overdue_stats`）——两处各写一份的表现是
+    同一个组在两个页面上超期数不一样，而两边看着都像对的。
+    """
+    available: bool = True
+    note: Optional[str] = None
+    source: str = ""
+    project: Optional[str] = None
+    stamp: Optional[str] = None
+    projects: List[schemas.DomainProjectOpt] = []   # 可选的采集项目，页面渲染选择器
+    total: int = 0
+    overdue: int = 0
+    overdue_unknown: int = 0
+    rows: List[OverdueRow] = []
+
+
+@router.get("/issue-overdue", response_model=OverdueOut)
+def issue_overdue(
+    project: Optional[str] = Query(None, description="问题单采集项目（不是需求上的项目）"),
+    db: Session = Depends(get_db),
+):
+    """各领域「超过预计闭环时间还没处理」的问题单横向对比。
+
+    **注意这里的 project 是问题单的采集项目（字符串，如 YLS3000），
+    与看板顶部的「度量项目」（roadmap_projects 的 FK）不是一回事**：问题单是按采集
+    项目分快照的，需求上的项目是另一套维度。混用的表现是选了项目却什么都没变。
+
+    合计由服务端给出：前端再加一遍的话，两端各加一次迟早对不上。
+    """
+    from routers.issues import UNGROUPED_GROUP
+
+    src = _issue_source.resolve_issue_source(db, project)
+    opts = _issue_source.issue_projects(db)
+    if src.rows is None:
+        return OverdueOut(available=False, note=src.note, source=src.source,
+                          project=src.project, projects=opts)
+
+    # 组名 → 组 id：快照行里存的是**组名字符串**（采集时按责任人名单归的组），
+    # 与 _issue_source.issue_rows_for_group 一样，组名与组编码都认。
+    name2id: dict = {}
+    for g in db.query(models.ResourceGroup).filter(models.ResourceGroup.kind == "pl").all():
+        for key in (g.name, g.code):
+            if key:
+                name2id.setdefault(key.strip(), g.id)
+
+    today = date.today()
+    buckets: dict = {}
+    for r in src.rows:
+        key = (r.get("group") or "").strip() or UNGROUPED_GROUP
+        buckets.setdefault(key, []).append(r)
+
+    rows: List[OverdueRow] = []
+    for name, rs in buckets.items():
+        overdue, unknown = _issue_source.overdue_stats(rs, today)
+        dated = len(rs) - unknown
+        oldest = 0
+        for r in rs:
+            d = _issue_source.parse_plan_date(r.get("estimated_close"))
+            if d and d < today:
+                oldest = max(oldest, (today - d).days)
+        rows.append(OverdueRow(
+            group_id=name2id.get(name),
+            group_name=name,
+            total=len(rs),
+            overdue=overdue,
+            overdue_unknown=unknown,
+            overdue_rate=round(overdue / dated, 3) if dated else 0.0,
+            oldest_overdue_days=oldest,
+            ungrouped=(name == UNGROUPED_GROUP),
+        ))
+    # 超期多的排前面；「未归组」固定排最后——它是待办清单不是一个领域
+    rows.sort(key=lambda r: (r.group_name == UNGROUPED_GROUP,
+                             -r.overdue, -r.total, r.group_name))
+
+    total_overdue, total_unknown = _issue_source.overdue_stats(src.rows, today)
+    return OverdueOut(
+        available=True, source=src.source, project=src.project, stamp=src.stamp,
+        projects=opts, total=len(src.rows),
+        overdue=total_overdue, overdue_unknown=total_unknown, rows=rows,
+    )
 
 
 @router.get("/group/{group_id}", response_model=GroupLoad)

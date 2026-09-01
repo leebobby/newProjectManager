@@ -1,0 +1,20 @@
+{
+  "_说明": "这份是模板。真正生效的是同目录下的 config.json —— 它属于部署实例的状态（本机绝对路径、本部署要采集的项目），不入版本库；缺失时后端回落到本文件，页面『配置』里保存一次就会生成 config.json。",
+  "current_stages": ["BFI", "岳麓山", "明场"],
+  "issue_report_path": "",
+  "issue_api_script_path": "",
+  "issue_api_projects": [],
+  "issue_snapshot_dir": "",
+  "issue_stat_departments": [],
+  "issue_groups": [],
+  "about_content": "岳麓山项目管理系统\n\n负责统一管理客户面状态、版本发布与迭代规划，让团队成员实时同步进度、关键问题与变更。\n\n维护：项目管理组",
+  "hero_badges": ["C00", "C10", "C20", "C10"],
+  "product_features": [],
+  "hw_issue_sources": ["设计缺陷", "来料问题"],
+  "hw_machine_cell_options": ["已清零", "未清零", "不涉及"],
+  "hw_machine_cell_colors": {
+    "已清零": "#67c23a",
+    "未清零": "#e6a23c",
+    "不涉及": "#909399"
+  }
+}

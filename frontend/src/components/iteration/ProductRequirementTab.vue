@@ -12,6 +12,8 @@
       />
     </el-tabs>
 
+    <RequirementDuplicateAlert :data="dupInfo" />
+
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openCreate">新增产品需求</el-button>
       <el-button :icon="Upload" type="warning" @click="openImport">批量导入</el-button>
@@ -407,7 +409,7 @@
 
       <div v-if="importResult" class="import-result">
         <el-alert
-          :title="`成功导入 ${importResult.created} 条`"
+          :title="importSummary"
           :type="importResult.errors?.length ? 'warning' : 'success'"
           :description="importResult.errors?.length ? importResult.errors.join('\n') : '无错误'"
           show-icon
@@ -441,6 +443,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import RequirementDuplicateAlert from './RequirementDuplicateAlert.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Download, Plus, Refresh, Setting, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { configApi, downloadBlob, productRequirementApi, userApi } from '../../api'
@@ -594,6 +597,17 @@ const importVisible = ref(false)
 const importing = ref(false)
 const importFile = ref(null)
 const importResult = ref(null)
+// 跳过的条数要和导入的条数摆在一起：只报"成功导入 N 条"的话，
+// 「导了 80 条只进了 60 条」看着就像丢数据，而少的那些其实是本来就有的
+const importSummary = computed(() => {
+  const d = importResult.value
+  if (!d) return ''
+  const parts = [`成功导入 ${d.created} 条`]
+  if (d.skipped) parts.push(`跳过重复 ${d.skipped} 条`)
+  // 跨迭代的那些是**导进来了**的，和"跳过"分开说，否则会被当成也没进
+  if (d.cross_iteration) parts.push(`其中 ${d.cross_iteration} 条别的迭代里也有，请确认`)
+  return parts.join('，')
+})
 const uploadRef = ref(null)
 
 function defaultForm() {
@@ -628,11 +642,25 @@ function defaultForm() {
   }
 }
 
+const dupInfo = ref(null)
+
+// 重复提示跟着列表一起刷新，但**不挡列表**：查重失败只是少一条提示，
+// 让整页加载失败就本末倒置了。
+async function loadDuplicates() {
+  try {
+    const { data } = await productRequirementApi.duplicates(props.iterationId)
+    dupInfo.value = data
+  } catch {
+    dupInfo.value = null
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     const { data } = await productRequirementApi.list(props.iterationId)
     list.value = data
+    loadDuplicates()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {
@@ -836,8 +864,12 @@ async function onSubmitImport() {
     const { data } = await productRequirementApi.importExcel(props.iterationId, importFile.value)
     importResult.value = data
     if (data.created > 0) {
-      ElMessage.success(`成功导入 ${data.created} 条`)
+      ElMessage.success(importSummary.value)
       load()
+    } else if (data.skipped > 0) {
+      // 「未导入任何数据」在整份表格都已录过时是句会引起误会的话——
+      // 看着像文件没读进去，其实是一条都不用再录了
+      ElMessage.warning(`这 ${data.skipped} 条本迭代里都已经有了，没有新增`)
     } else {
       ElMessage.warning('未导入任何数据')
     }

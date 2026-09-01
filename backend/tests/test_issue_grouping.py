@@ -170,3 +170,48 @@ def test_transfer_to_unlisted_owner_is_not_resolved(client, admin_headers, tmp_p
     assert d["dates"] == ["2026-05-02"]
     assert d["resolved"] == [0], "转手不是解决"
     assert d["created"] == [0]
+
+
+# ── ⑤ 归组的模糊匹配不许把一个更长的名字从中间切开 ──────────────────────────
+
+@pytest.mark.parametrize("owner, expected", [
+    ("张伟", "SE组"),                     # 名单里就是这么写的
+    ("张伟 00123456", "SE组"),            # DTS 常见：姓名 + 工号
+    ("张伟(zhangwei)", "SE组"),           # 姓名 + 英文名
+    ("张伟明", ""),                       # **不是张伟**：名单里没有他，就该报未归组
+    ("李伟", ""),
+])
+def test_group_match_does_not_cut_a_longer_name(ri, owner, expected):
+    """朴素子串包含会让「张伟」认走「张伟明」的单——名单里没有张伟明，他的单却被
+    安安静静记到张伟所在的组，组级负载和交叉表都偏一点，而两边看着都对。
+    """
+    assert ri._match_group(owner, [("SE组", ["张伟"])]) == expected
+
+
+def test_longer_name_still_matches_its_own_group(ri):
+    """两个名字互为前缀且各在一个组：各归各的，与名单顺序无关。"""
+    groups = [("SE组", ["张伟"]), ("测试组", ["张伟明"])]
+    assert ri._match_group("张伟明", groups) == "测试组"
+    assert ri._match_group("张伟", groups) == "SE组"
+    assert ri._match_group("张伟明", list(reversed(groups))) == "测试组"
+
+
+def test_group_match_is_still_two_way_and_case_insensitive(ri):
+    """名单可能写得比 DTS 长（带备注），也可能更短（DTS 带工号）——两个方向都要认。"""
+    assert ri._match_group("张伟", [("SE组", ["张伟(SE)"])]) == "SE组"
+    assert ri._match_group("ZhangWei 张伟", [("SE组", ["zhangwei"])]) == "SE组"
+
+
+def test_latin_account_is_not_cut_either(ri):
+    """西文同理：zhangwei 不能认走 zhangwei01——那多半是另一个人的账号。"""
+    assert ri._match_group("zhangwei01", [("SE组", ["zhangwei"])]) == ""
+    assert ri._match_group("zhangwei", [("SE组", ["zhangwei"])]) == "SE组"
+
+
+def test_near_miss_owner_shows_up_in_the_todo_list(cfg, ri):
+    """认不上就归「未归组」并进待办——名单不全是配置问题，不该表现成数据问题。"""
+    cfg(issue_groups=[{"name": "SE组", "members": "张伟"}])
+    out = ri._enrich_rows(None, _rows(("D1", "张伟明", "量检测软件部", "定位")))
+    assert len(out) == 1, "认不上也不能丢行（丢了就是下一次差分里的一笔假解决）"
+    assert out[0]["group"] == ri.UNGROUPED_GROUP
+    assert [u["owner"] for u in ri._ungrouped_owners(out)] == ["张伟明"]

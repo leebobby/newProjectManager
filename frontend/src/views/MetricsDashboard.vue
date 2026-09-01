@@ -18,7 +18,7 @@
         </span>
       </div>
 
-      <el-tabs v-model="active">
+      <el-tabs v-model="active" @tab-change="onTabChange">
         <!-- ============ 版本质量：口径＝整个版本，跨迭代 ============ -->
         <el-tab-pane label="版本质量" name="version">
           <div class="bar">
@@ -313,6 +313,113 @@
             </el-table-column>
           </el-table>
         </el-tab-pane>
+        <!-- ====== 问题单超期：各领域横向对比 ====== -->
+        <el-tab-pane label="问题单超期" name="overdue">
+          <div class="bar">
+            <span class="project-label">问题单项目</span>
+            <el-select v-model="overdueProject" style="width: 260px" @change="loadOverdue">
+              <el-option
+                v-for="p in overdue?.projects || []"
+                :key="p.project"
+                :value="p.project"
+                :label="p.latest_date ? `${p.project} · ${p.latest_date}` : `${p.project}（未采集）`"
+              />
+            </el-select>
+            <el-button :icon="Refresh" @click="loadOverdue">刷新</el-button>
+            <!-- 顶部那个「度量项目」是需求上的项目 FK，跟这里的采集项目不是一回事。
+                 不写明白的话，选了上面那个却什么都没变，看着像页面坏了。 -->
+            <span class="muted">
+              问题单按采集项目分快照，与顶部的「度量项目」不是同一个维度；
+              <template v-if="overdue?.stamp">数据为 {{ overdue.stamp }} 那次采集的快照</template>
+            </span>
+          </div>
+
+          <el-alert
+            v-if="overdue && !overdue.available"
+            type="info" show-icon :closable="false"
+            :title="overdue.note || '还没有问题单快照'"
+            description="到「问题单管理」里点一次「立即采集」之后这里就有数了。"
+          />
+
+          <template v-else-if="overdue">
+            <div class="metric-summary">
+              <div class="stat"><div class="label">在跟的单</div><div class="value primary">{{ overdue.total }}</div></div>
+              <div class="stat">
+                <div class="label">超期未处理</div>
+                <div class="value" :class="overdue.overdue ? 'danger' : ''">{{ overdue.overdue }}</div>
+              </div>
+              <div class="stat">
+                <div class="label">没填预计闭环时间</div>
+                <div class="value">{{ overdue.overdue_unknown }}</div>
+              </div>
+            </div>
+
+            <!-- 全都没填日期时说清楚"算不出"，别让人把 0 读成"一条都没超期" -->
+            <el-alert
+              v-if="overdue.total && overdue.overdue_unknown >= overdue.total"
+              type="warning" show-icon :closable="false"
+              title="这批单一条都没有「预计闭环时间」，超期数算不出来"
+              description="DTS 该字段为空，或采集脚本的 FIELD_MAPPING 里还没映射上；见部署指南 4.1 ⑤。"
+            />
+            <el-alert
+              v-else-if="overdue.overdue_unknown"
+              type="info" show-icon :closable="false"
+              :title="`另有 ${overdue.overdue_unknown} 条没填「预计闭环时间」，没有计入超期数`"
+            />
+
+            <el-table :data="overdue.rows" v-loading="overdueLoading" border stripe size="small">
+              <el-table-column prop="group_name" label="领域" min-width="160">
+                <template #default="{ row }">
+                  {{ row.group_name }}
+                  <!-- 「未归组」＝责任人不在任何名单里，跟"组还没建"是两回事：
+                       提示要指向补名单，而不是让人去建一个根本不该存在的组 -->
+                  <el-tooltip v-if="row.ungrouped" placement="top"
+                    content="这些单的责任人不在任何小组名单里；到「问题单管理 → 配置 → 未归组责任人」补上名单，它们就会归到各自的领域">
+                    <el-tag size="small" type="warning" effect="plain">名单缺人</el-tag>
+                  </el-tooltip>
+                  <el-tooltip v-else-if="row.group_id === null" placement="top"
+                    content="名单里有这个组名，但组织架构里还没建这个 PL 组">
+                    <el-tag size="small" type="info" effect="plain">未建组</el-tag>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
+              <el-table-column prop="total" label="在跟的单" width="100" align="center" />
+              <el-table-column label="超期未处理" width="120" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="row.overdue" type="danger" size="small">{{ row.overdue }}</el-tag>
+                  <span v-else-if="row.overdue_unknown >= row.total" class="muted">算不出</span>
+                  <span v-else class="muted">0</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="超期占比" min-width="180">
+                <template #default="{ row }">
+                  <!-- 用颜色而不是 status="exception"：后者把百分比换成一个 ✗ 图标，
+                       而这一列的重点恰恰是那个数 -->
+                  <el-progress
+                    v-if="row.total > row.overdue_unknown"
+                    :percentage="Math.round(row.overdue_rate * 100)"
+                    :stroke-width="12"
+                    :color="row.overdue_rate >= 0.3 ? '#f56c6c' : '#e6a23c'"
+                  />
+                  <span v-else class="muted">没有可比的基数</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="最久超了" width="110" align="center">
+                <template #default="{ row }">
+                  <span v-if="row.oldest_overdue_days" :class="{ danger: row.oldest_overdue_days >= 30 }">
+                    {{ row.oldest_overdue_days }} 天
+                  </span>
+                  <span v-else class="muted">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="没填计划时间" width="120" align="center">
+                <template #default="{ row }">
+                  <span :class="{ muted: !row.overdue_unknown }">{{ row.overdue_unknown }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </el-tab-pane>
       </el-tabs>
     </el-card>
   </div>
@@ -323,13 +430,34 @@ import { computed, defineComponent, h, onMounted, ref } from 'vue'
 import { ElAlert, ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import {
-  annualIterationApi, majorVersionApi, metricsApi, resourceGroupApi, roadmapApi,
+  annualIterationApi, apiError, majorVersionApi, metricsApi, resourceGroupApi, roadmapApi,
 } from '../api'
 import DomainQualityTable from '../components/metrics/DomainQualityTable.vue'
 
 const active = ref('version')
 
 const pct = (v) => `${Math.round((v || 0) * 100)}%`
+
+// ── 问题单超期：各领域横向对比 ────────────────────────────────
+// 数据源与口径都与领域管理共用一份（后端 _issue_source），两处各写一份的表现是
+// 同一个组在两个页面上超期数不一样，而两边看着都像对的。
+const overdue = ref(null)
+const overdueLoading = ref(false)
+const overdueProject = ref('')
+
+async function loadOverdue() {
+  overdueLoading.value = true
+  try {
+    const { data } = await metricsApi.issueOverdue(overdueProject.value)
+    overdue.value = data
+    // 首次进来由服务端挑一个有快照的项目，回填到选择器里
+    if (!overdueProject.value && data.project) overdueProject.value = data.project
+  } catch (e) {
+    ElMessage.error(apiError(e, '加载超期统计失败'))
+  } finally {
+    overdueLoading.value = false
+  }
+}
 
 // 有两种行会被排除在统计之外：标了「已变更」的（本轮不做了，后端 _split_changed）、
 // 按项目筛时没填项目的（后端 _split_by_project）。这条提示是那两个口径的配套：
@@ -541,6 +669,11 @@ async function loadGroup() {
 // 调试版本看板搬到「版本管理 → 现场调试版本」了：它是按客户×月统计的，
 // 和这里的三个（版本 / 领域 / 组）不是一个维度，混在一起正是"看板有点乱"的来源之一。
 
+// 切到「问题单超期」才去读快照：那份明细在文件里，没人看的时候不该白读一遍
+function onTabChange(name) {
+  if (name === 'overdue' && !overdue.value) loadOverdue()
+}
+
 onMounted(async () => {
   // 项目下拉先到位：loadYears() 会顺带拉当月迭代的数字，晚了就得再算一遍
   await loadProjects()
@@ -578,6 +711,8 @@ onMounted(async () => {
 .stat .value { font-size: 24px; font-weight: 600; color: #303133; }
 .stat .value.primary { color: #409eff; }
 .stat .value.danger { color: #f56c6c; }
+/* 超期天数用同一套红：30 天以上的单独标出来——2 条超 200 天比 5 条超 2 天更该先看 */
+.danger { color: #f56c6c; font-weight: 600; }
 .block-title { font-weight: 600; color: #303133; }
 /* 「按领域」表上方那一行：标题 + 口径说明 + 问题单来源选择挤在一行，窄屏时换行不错位 */
 .block-head {

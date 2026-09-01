@@ -85,6 +85,31 @@ def resolve_iteration_version_id(db: Session, value: Optional[str]) -> Optional[
     return None
 
 
+def resolve_release_version_id(db: Session, value: Optional[str]) -> Optional[int]:
+    """字符串版本号 → **版本**（release_versions）id，即 C10SPC101 这一层。
+
+    与 `resolve_iteration_version_id()` 是两个方向：那个由细到粗落到构建，这个落到版本。
+    填错层的后果是下拉里选的和存的不是一回事，而页面上看着都对。
+
+    认两种写法：版本号本身，以及**构建号**（C10SPC101B001 → 它所属的版本）。
+    后者不是猜——构建挂在哪个版本是库里的事实；老数据里把构建号填进"计划合入版本"
+    的情况不少，认上去比留空强。再粗就不认了：大版本是号段，它下面可能有好几个版本，
+    挑哪个都是瞎猜。落空返回 None，留给「数据对账」事后补。
+    """
+    if not value:
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    rv = db.query(models.ReleaseVersion).filter(models.ReleaseVersion.version_no == s).first()
+    if rv:
+        return rv.id
+    iv = db.query(models.IterationVersion).filter(models.IterationVersion.version_no == s).first()
+    if iv and iv.release_version_id:
+        return iv.release_version_id
+    return None
+
+
 def resolve_project_id(db: Session, value: Optional[str]) -> Optional[int]:
     """项目名 → roadmap_projects.id。只做完全匹配。
 
@@ -125,6 +150,12 @@ def fill_version_fk(db: Session, data: dict, str_field: str, fk_field: str) -> N
         return
     if str_field in data and data.get(str_field):
         data[fk_field] = resolve_iteration_version_id(db, data[str_field])
+
+
+def fill_release_version_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
+    """同 fill_version_fk，但落到**版本**这一层（release_versions）。"""
+    if str_field in data and fk_field not in data:
+        data[fk_field] = resolve_release_version_id(db, data.get(str_field))
 
 
 def fill_project_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:

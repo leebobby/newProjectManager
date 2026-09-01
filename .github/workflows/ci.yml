@@ -1,0 +1,89 @@
+# 提交前的自动检查。四件事，各挡一类已经真实发生过的事故：
+#
+# - pytest      口径与并发那一堆约定（CLAUDE.md 里写的那些）只有测试守得住
+# - eslint      漏 import / 拼错变量：vite build 不做 no-undef 检查，照样能打出包，
+#               而运行时那一页会白屏、并且此后整个前端都不再渲染
+# - vite build  依赖装得上、产物出得来；npm ci 走 lockfile，保证和线上装的是同一批版本
+# - 冒烟        真开一个浏览器把侧栏每一页点一遍。前三条全绿也可能是"包打得出来、
+#               点不开"——上面那次白屏就是 build 绿、后端 197 个测试也绿
+#
+# 三个 job 并行，互不阻塞：后端挂了不该看不到前端的结论，反之亦然。
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  backend:
+    name: 后端测试
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 与部署指南第 2 章要求的运行时版本保持一致
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      # 在 backend 目录下跑：conftest 的 client 夹具靠 os.chdir 把 sqlite:///./app.db
+      # 指到临时目录，换个工作目录会连到别的库
+      - run: python -m pytest tests -q
+
+  frontend:
+    name: 前端检查与构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # npm ci 而不是 npm install：前者严格按 lockfile 装，装不上就失败；
+      # 后者会在 lockfile 与 package.json 不一致时"顺手"改 lockfile，
+      # 于是 CI 跑的和线上装的悄悄变成两套依赖
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  smoke:
+    name: 冒烟（真开个浏览器点一遍）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      # 只装 chromium：三个内核都装要多花几分钟，而这里验的是"页面渲染得出来"，
+      # 不是跨浏览器兼容性
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      # playwright.config.js 里的 webServer 会自己把后端和前端拉起来、跑完关掉。
+      # 后端用一个全新的 app.db（create_all + seed 自动生成），不依赖任何现成数据
+      - run: npm run test:e2e
+        working-directory: frontend
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7

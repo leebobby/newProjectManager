@@ -130,10 +130,21 @@
 
               <el-tab-pane label="原始数据" name="raw">
                 <div class="raw-bar">
-                  <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索标题/编号/责任人/小组" style="width: 320px" />
+                  <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索标题/编号/责任人/小组" style="width: 280px" />
+                  <!-- 只列这份快照里真有单的组，条数写在标签上：点进去看到多少条就写多少条 -->
+                  <el-select v-model="filterGroup" clearable placeholder="按小组" size="small"
+                    style="width: 190px" :persistent="false">
+                    <el-option v-for="g in groupOptions" :key="g.name" :value="g.name"
+                      :label="`${g.name} (${g.count})`" />
+                  </el-select>
+                  <el-radio-group v-model="trackFilter" size="small">
+                    <el-radio-button label="">全部</el-radio-button>
+                    <el-radio-button label="tracked">已跟踪</el-radio-button>
+                    <el-radio-button label="untracked">未跟踪</el-radio-button>
+                  </el-radio-group>
                   <span class="muted">共 {{ filtered.length }} 条</span>
                 </div>
-                <IssueRawTable :data="filtered" max-height="520" />
+                <IssueRawTable :data="filtered" max-height="520" :tracks="trackMap" @track="openTrack" />
               </el-tab-pane>
             </el-tabs>
           </el-card>
@@ -234,19 +245,86 @@
       </el-tab-pane>
     </el-tabs>
 
+    <!-- 跟踪编辑。**不做成行内直接编辑**：一份快照几百上千条单，
+         每行挂三个下拉会把页面拖垮（同 CLAUDE.md「大表格里别每行放控件」）。 -->
+    <el-dialog v-model="trackVisible" title="问题单跟踪" width="620px" append-to-body>
+      <div v-if="trackRow" class="track-head">
+        <div class="track-id">{{ trackRow.issue_id }}</div>
+        <div class="track-title">{{ trackRow.title }}</div>
+        <div class="muted">
+          {{ trackRow.owner || '—' }} · {{ trackRow.group || '未归组' }}
+          <template v-if="trackRow.version"> · DTS 版本信息：{{ trackRow.version }}</template>
+        </div>
+      </div>
+      <el-form label-width="112px" label-position="right" style="margin-top: 12px">
+        <el-form-item label="合入状态">
+          <el-select v-model="trackForm.merge_status" style="width: 200px" :persistent="false">
+            <el-option v-for="s in MERGE_STATUSES" :key="s" :value="s" :label="s" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="计划合入版本">
+          <el-select
+            v-model="trackForm.plan_version"
+            filterable
+            allow-create
+            clearable
+            default-first-option
+            placeholder="选择或手敲版本号"
+            style="width: 100%"
+            :persistent="false"
+          >
+            <el-option v-for="v in releaseVersions" :key="v.id" :value="v.version_no"
+              :label="v.title ? `${v.version_no} · ${v.title}` : v.version_no" />
+          </el-select>
+          <div class="cfg-hint">
+            排期的粒度是「版本」（C10SPC101 这一层）。
+            <template v-if="hiddenReleasedCount">
+              已隐去 {{ hiddenReleasedCount }} 个已发布的版本——发出去的合不进东西了；
+              确实要填的话直接手敲版本号。
+            </template>
+          </div>
+        </el-form-item>
+        <el-form-item label="实际合入构建">
+          <el-select
+            v-model="trackForm.merged_build"
+            filterable
+            allow-create
+            clearable
+            default-first-option
+            placeholder="合完之后再填，选择或手敲构建号"
+            style="width: 100%"
+            :persistent="false"
+          >
+            <el-option v-for="v in iterationVersions" :key="v.id" :value="v.version_no"
+              :label="v.release_version_no ? `${v.version_no}（${v.release_version_no}）` : v.version_no" />
+          </el-select>
+          <div class="cfg-hint">记的是已经发生的事，所以已发布的构建照常可选。</div>
+        </el-form-item>
+        <el-form-item label="进展">
+          <el-input v-model="trackForm.progress" type="textarea" :rows="4"
+            placeholder="定位到哪了、卡在什么上、什么时候能合" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="trackVisible = false">取消</el-button>
+        <el-button type="primary" :loading="trackSaving" @click="saveTrack">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer v-model="drillVisible" :title="drillTitle" size="72%" direction="rtl">
       <div class="muted" style="margin-bottom: 8px">共 {{ drillRows.length }} 条</div>
-      <IssueRawTable :data="drillRows" max-height="calc(100vh - 150px)" />
+      <IssueRawTable :data="drillRows" max-height="calc(100vh - 150px)"
+        :tracks="trackMap" @track="openTrack" />
     </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import { ElButton, ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import { downloadBlob, issueApi } from '../api'
+import { apiError, downloadBlob, issueApi, issueTrackApi, majorVersionApi } from '../api'
 import { auth } from '../store/auth'
 
 const props = defineProps({
@@ -288,9 +366,15 @@ const StatsTable = defineComponent({
 
 // ── 内联子组件：问题单原始表格 ─────────────────────
 const IssueRawTable = defineComponent({
-  props: { data: Array, maxHeight: [String, Number] },
-  setup(p) {
+  props: { data: Array, maxHeight: [String, Number], tracks: Object },
+  emits: ['track'],
+  setup(p, { emit }) {
     const sevType = (s) => (s === '严重' ? 'danger' : s === '一般' ? 'warning' : 'info')
+    // 跟踪信息按缺陷编号并进来。**不改 row 本身**：raw 是快照明细，
+    // 往上写字段会让"这一列是采集来的还是我们填的"分不清。
+    const track = (row) => (p.tracks || {})[row.issue_id] || null
+    const mergeType = (s) => (s === '已合入' ? 'success' : s === '开发中' ? 'warning'
+      : s === '不合入' ? 'info' : s === '分析中' ? 'primary' : 'info')
     return () => h(ElTable, {
       data: p.data || [], border: true, stripe: true, size: 'small', maxHeight: p.maxHeight,
     }, {
@@ -300,6 +384,30 @@ const IssueRawTable = defineComponent({
         h(ElTableColumn, { prop: 'title', label: '标题', minWidth: 240, showOverflowTooltip: true }),
         h(ElTableColumn, { prop: 'owner', label: '当前责任人', width: 100 }),
         h(ElTableColumn, { prop: 'group', label: '所属小组', width: 130 }),
+        // 跟踪四列用**分组表头**圈起来，并排在小组后面：一是这几列是我们自己填的、
+        // 不来自 DTS，混在采集列里分不清谁是事实谁是我们的判断；二是排到表尾的话
+        // 十几列宽的表要横着拉到底才看得见，而这正是天天要填的那几格。
+        h(ElTableColumn, { label: '跟踪（本系统记录）', align: 'center' }, {
+          default: () => [
+            h(ElTableColumn, { label: '合入状态', width: 96, align: 'center' }, {
+              default: ({ row }) => {
+                const t = track(row)
+                return t?.merge_status
+                  ? h(ElTag, { type: mergeType(t.merge_status), size: 'small' }, () => t.merge_status)
+                  : h('span', { class: 'num-zero' }, '—')
+              },
+            }),
+            h(ElTableColumn, { label: '计划合入版本', width: 132, showOverflowTooltip: true }, {
+              default: ({ row }) => track(row)?.plan_version || h('span', { class: 'num-zero' }, '—'),
+            }),
+            h(ElTableColumn, { label: '实际合入构建', width: 142, showOverflowTooltip: true }, {
+              default: ({ row }) => track(row)?.merged_build || h('span', { class: 'num-zero' }, '—'),
+            }),
+            h(ElTableColumn, { label: '进展说明', minWidth: 180, showOverflowTooltip: true }, {
+              default: ({ row }) => track(row)?.progress || h('span', { class: 'num-zero' }, '—'),
+            }),
+          ],
+        }),
         h(ElTableColumn, { prop: 'department', label: '责任人部门', width: 150, showOverflowTooltip: true }),
         h(ElTableColumn, { prop: 'customer', label: '客户面', width: 110 }),
         h(ElTableColumn, { prop: 'feature', label: '特性', width: 110, showOverflowTooltip: true }),
@@ -308,6 +416,12 @@ const IssueRawTable = defineComponent({
         h(ElTableColumn, { prop: 'progress', label: '进展', width: 90 }),
         h(ElTableColumn, { prop: 'severity', label: '严重程度', width: 90, align: 'center' }, {
           default: ({ row }) => h(ElTag, { type: sevType(row.severity), size: 'small' }, () => row.severity || '—'),
+        }),
+        h(ElTableColumn, { label: '操作', width: 82, fixed: 'right', align: 'center' }, {
+          default: ({ row }) => h(ElButton, {
+            size: 'small', link: true, type: 'primary',
+            onClick: () => emit('track', row),
+          }, () => (track(row) ? '编辑跟踪' : '跟踪')),
         }),
       ],
     })
@@ -545,13 +659,103 @@ function onSubTabChange() { renderActive() }
 watch(statsView, () => nextTick(() => Object.values(inst).forEach((c) => c.resize())))
 
 // ── 原始数据搜索 & 钻取 ──────────────────────────
+// 小组下拉只列**这份快照里真有单的组**：把配置里所有组铺出来，点进去大半是空的。
+const groupOptions = computed(() => {
+  const seen = new Map()
+  raw.value.forEach((r) => {
+    const g = (r.group || '').trim() || '未归组'
+    seen.set(g, (seen.get(g) || 0) + 1)
+  })
+  return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }))
+})
+
 const filtered = computed(() => {
   const kw = search.value.trim().toLowerCase()
-  if (!kw) return raw.value
-  return raw.value.filter((r) =>
-    [r.title, r.issue_id, r.owner, r.group, r.department, r.customer].some((v) => (v || '').toLowerCase().includes(kw)),
-  )
+  const g = filterGroup.value
+  const tf = trackFilter.value
+  return raw.value.filter((r) => {
+    if (g && ((r.group || '').trim() || '未归组') !== g) return false
+    if (tf) {
+      const has = !!trackMap.value[r.issue_id]
+      if (tf === 'tracked' && !has) return false
+      if (tf === 'untracked' && has) return false
+    }
+    if (!kw) return true
+    return [r.title, r.issue_id, r.owner, r.group, r.department, r.customer]
+      .some((v) => (v || '').toLowerCase().includes(kw))
+  })
 })
+
+// ── 跟踪编辑 ──────────────────────────────────────
+const trackVisible = ref(false)
+const trackSaving = ref(false)
+const trackRow = ref(null)
+const trackForm = ref({ merge_status: '未开始', progress: '', plan_version: '', merged_build: '' })
+const MERGE_STATUSES = ['未开始', '分析中', '开发中', '已合入', '不合入']
+const releaseVersions = ref([])
+const iterationVersions = ref([])
+const hiddenReleasedCount = ref(0)
+
+async function loadVersionOptions() {
+  if (releaseVersions.value.length || iterationVersions.value.length) return
+  try {
+    const [{ data: rvs }, { data: ivs }] = await Promise.all([
+      majorVersionApi.allReleaseVersions(),
+      majorVersionApi.allIterationVersions(),
+    ])
+    // 「计划合入版本」滤掉已发布的：合入是往还没发的版本里合，已经发出去的合不进东西。
+    // 但**要把隐去的条数说出来**——只滤不报的表现是"这个版本怎么选不到了"，
+    // 而没人说得清少的是哪些（同 CustomerDetailPanel 的做法）。
+    releaseVersions.value = rvs.filter((v) => !v.released)
+    hiddenReleasedCount.value = rvs.length - releaseVersions.value.length
+    // 「实际合入构建」**不滤**：它记的是已经发生的事，已发布的构建正是要选的那些。
+    iterationVersions.value = ivs
+  } catch (e) {
+    console.error('[问题单] 版本下拉加载失败', e)
+  }
+}
+
+function openTrack(row) {
+  trackRow.value = row
+  const t = trackMap.value[row.issue_id]
+  trackForm.value = {
+    merge_status: t?.merge_status || '未开始',
+    progress: t?.progress || '',
+    plan_version: t?.plan_version || '',
+    merged_build: t?.merged_build || '',
+  }
+  trackVisible.value = true
+  loadVersionOptions()
+}
+
+async function saveTrack() {
+  const row = trackRow.value
+  if (!row) return
+  trackSaving.value = true
+  try {
+    const cur = trackMap.value[row.issue_id]
+    const { data } = await issueTrackApi.save({
+      project: props.project,
+      issue_id: row.issue_id,
+      owner_group: (row.group || '').trim(),
+      // clearable 的 el-select 清空后是 undefined，会被 JSON.stringify 整个丢掉，
+      // 后端按"没传＝不修改"处理——表现是"清空保存，一刷新又回来了"。折成空串。
+      merge_status: trackForm.value.merge_status || '未开始',
+      progress: trackForm.value.progress || '',
+      plan_version: trackForm.value.plan_version || '',
+      merged_build: trackForm.value.merged_build || '',
+      version: cur?.version,
+    })
+    trackMap.value = { ...trackMap.value, [data.issue_id]: data }
+    trackVisible.value = false
+    ElMessage.success('已保存')
+  } catch (e) {
+    // 409 已由 api 拦截器弹过一次，这里只补别的情况
+    if (e.response?.status !== 409) ElMessage.error(apiError(e, '保存失败'))
+  } finally {
+    trackSaving.value = false
+  }
+}
 
 const drillVisible = ref(false)
 const drillTitle = ref('')
@@ -703,11 +907,31 @@ async function loadSnapshots() {
   }
 }
 
+// ── 跟踪（进展 + 合入计划）────────────────────────────
+// 跟踪记录按缺陷编号存，与快照解耦：今天填的，明天的快照里照样看得到。
+const trackMap = ref({})
+const trackFilter = ref('')       // '' 全部 / tracked 已跟踪 / untracked 未跟踪
+const filterGroup = ref('')
+
+async function loadTracks() {
+  try {
+    const { data } = await issueTrackApi.list(props.project)
+    const m = {}
+    data.forEach((t) => { m[t.issue_id] = t })
+    trackMap.value = m
+  } catch (e) {
+    // 跟踪拉不到只是少几列，别让整屏问题单跟着一起失败
+    console.error('[问题单] 跟踪记录加载失败', e)
+    trackMap.value = {}
+  }
+}
+
 async function loadDetail() {
   if (!selDate.value) return
   try {
     const { data } = await issueApi.snapshotDetail(props.project, selDate.value)
     detail.value = data
+    loadTracks()
     await nextTick()
     if (topTab.value === 'snapshot' && subTab.value === 'stats') renderSnapshotCharts()
   } catch (e) {
@@ -741,6 +965,7 @@ function onResize() { Object.values(inst).forEach((c) => c.resize()) }
 
 watch(() => props.project, () => {
   detail.value = null
+  trackMap.value = {}
   trend.value = null
   flow.value = null
   logs.value = []
@@ -809,6 +1034,11 @@ onUnmounted(() => {
 .chart-lg { width: 100%; height: 380px; margin-top: 8px; }
 
 .raw-bar { display: flex; align-items: center; gap: 12px; margin: 8px 0 10px; }
+.raw-bar .muted { margin-left: auto; }
+.track-head { padding: 10px 12px; background: var(--el-fill-color-light); border-radius: 4px; }
+.track-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: var(--el-text-color-secondary); }
+.track-title { font-weight: 600; margin: 2px 0 4px; line-height: 1.5; }
+.cfg-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.6; margin-top: 2px; }
 
 /* 数字链接（StatsTable 子组件渲染，需穿透） */
 :deep(.num-link) {

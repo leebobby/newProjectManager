@@ -1461,6 +1461,12 @@ class DomainIssueSummary(BaseModel):
     target_score: Optional[float] = None  # 管理员设定的加权分目标
     over_total: bool = False       # 数量超目标
     over_score: bool = False       # 加权分超目标
+    # 超过「预计闭环时间」还没处理的条数。在快照里 ＝ 还没处理（关闭/撤销在采集时
+    # 就剔掉了），与「解决＝从快照里消失」同一套口径。
+    overdue: int = 0
+    # 没填预计闭环时间、因而算不出是否超期的条数。**必须一起报**：DTS 那列是选填的，
+    # 没接上时全库都空，此时「超期 0」会被读成"一条都没超期"，而实际是算不出来。
+    overdue_unknown: int = 0
 
 
 class DomainProjectOpt(BaseModel):
@@ -1862,3 +1868,42 @@ class BusinessTripDashboardOut(BaseModel):
     by_domain: List[TripDimStat] = []     # 区间内按领域（支撑人所属 PL 组）
     by_project: List[TripDimStat] = []    # 区间内按支撑项目
     by_mode: List[TripDimStat] = []       # 区间内按支撑方式（现场/线上）
+
+
+# ===== 问题单跟踪（进展 + 合入计划）=====
+# 问题单本身不入库（明细在快照文件里），所以这是一张按「项目 + 缺陷编号」独立存的表，
+# 与快照解耦——今天填的进展，明天的快照里照样看得到。见 models.IssueTrack。
+class IssueTrackUpsert(BaseModel):
+    project: str
+    issue_id: str
+    owner_group: Optional[str] = ""
+    merge_status: Optional[str] = None
+    progress: Optional[str] = None
+    plan_version: Optional[str] = None
+    merged_build: Optional[str] = None
+    # 乐观锁：第一次填这条单时库里还没有行，所以可以不传（None ＝ 新建）。
+    # 已有行时必须带上从接口拿到的 version，不然拦不住"两个人同时改一条"。
+    version: Optional[int] = None
+
+    @field_validator("merge_status")
+    @classmethod
+    def _v_merge_status(cls, v):
+        return enums.norm_issue_merge_status(v, partial=True)
+
+
+class IssueTrackOut(BaseModel):
+    id: int
+    project: str
+    issue_id: str
+    owner_group: Optional[str] = ""
+    merge_status: Optional[str] = ""
+    progress: Optional[str] = ""
+    plan_version: Optional[str] = ""
+    plan_version_id: Optional[int] = None
+    merged_build: Optional[str] = ""
+    merged_build_id: Optional[int] = None
+    updated_by: Optional[str] = ""
+    version: int
+    updated_at: Optional[LocalDT] = None
+
+    model_config = ConfigDict(from_attributes=True)

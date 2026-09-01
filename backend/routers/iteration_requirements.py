@@ -20,6 +20,9 @@ from notify import dispatch
 from routers._lookups import (
     fill_group_fk, fill_user_fk, fill_version_fk, project_name_map, resolve_project_id,
 )
+from routers._req_dedup import (
+    dedup_key, duplicate_message, find_duplicate, scan_duplicates,
+)
 
 router = APIRouter(prefix="/api/iteration-requirements", tags=["iteration-requirements"])
 
@@ -89,6 +92,22 @@ def list_by_version(
     return [_out(i, pmap) for i in items]
 
 
+@router.get("/duplicates")
+def list_duplicates(
+    iteration_id: int = Query(..., description="目标迭代 ID"),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(get_current_user),
+):
+    """本迭代里录重了的需求——**只报不拦**，给页面顶部那条提示用。
+
+    两类都报：同一迭代内的重复（判重是后加的，存量数据里的重复不会自己消失），
+    以及**同一条需求在别的迭代里也录过**。后者不是错——本轮没做完、下个月接着排
+    是正常的——但也可能是上个月已经录过、这个月又录了一条，两者从数据上分不出来。
+    所以摆出来让人自己判断，而不是替人决定。
+    """
+    return scan_duplicates(db, models.IterationRequirement, iteration_id)
+
+
 @router.post("", response_model=schemas.IterationRequirementOut)
 def create_item(
     payload: schemas.IterationRequirementCreate,
@@ -103,6 +122,11 @@ def create_item(
     )
     if not parent:
         raise HTTPException(status_code=404, detail="所属迭代不存在")
+    # 同一迭代里已经有这条需求就别再录一条（判重口径见 routers/_req_dedup.py）
+    dup = find_duplicate(db, models.IterationRequirement, payload.iteration_id,
+                         payload.req_no, payload.title)
+    if dup is not None:
+        raise HTTPException(status_code=409, detail=duplicate_message(dup))
     # 序号自动取当前最大值+1（如果调用方没传或传 0）
     data = payload.model_dump()
     if not data.get("seq"):
@@ -144,6 +168,16 @@ def update_item(
         raise HTTPException(status_code=409, detail="数据已被他人修改，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    # 编辑也能造出重复（把编号改成另一行的），所以这里同样要判——
+    # 用改完之后的值去比，并把自己排除掉
+    if "req_no" in changes or "title" in changes:
+        dup = find_duplicate(
+            db, models.IterationRequirement, item.iteration_id,
+            changes.get("req_no", item.req_no), changes.get("title", item.title),
+            exclude_id=item.id,
+        )
+        if dup is not None:
+            raise HTTPException(status_code=409, detail=duplicate_message(dup))
     # 字符串改写时同步刷新 FK；若调用方显式传了 FK 字段，尊重它
     fill_user_fk(db, changes, "owner", "owner_user_id")
     fill_group_fk(db, changes, "owner_group", "group_id")
@@ -298,8 +332,28 @@ async def import_from_excel(
     )
 
     created = 0
+    skipped = 0
     errors: List[str] = []
     pending = []
+    # 判重用的已有键：一次查完，别在循环里逐行查库（一份表格几百行）
+    existing_keys = {}
+    for row in (db.query(models.IterationRequirement)
+                .filter(models.IterationRequirement.iteration_id == iteration_id).all()):
+        k = dedup_key(row.req_no, row.title)
+        if k is not None:
+            existing_keys.setdefault(k, row)
+    seen_in_file = {}
+    # 别的迭代里已经有的同一条需求：**不拦**（本轮没做完、下个月接着排是正常的），
+    # 但要提一句——它也可能是"上个月录过、这个月又录了一条"，两者从数据上分不出来。
+    other_iter_rows = {}
+    for row in (db.query(models.IterationRequirement)
+                .filter(models.IterationRequirement.iteration_id != iteration_id).all()):
+        k = dedup_key(row.req_no, row.title)
+        if k is not None:
+            other_iter_rows.setdefault(k, row)
+    iter_labels = {i.id: f"{i.year}-{i.month:02d}"
+                   for i in db.query(models.AnnualIteration).all()}
+    cross_iteration = 0
 
     for r_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
         # 跳过完全空行 / 提示行（首列以"提示"开头）
@@ -324,6 +378,29 @@ async def import_from_excel(
         if not title:
             errors.append(f"第 {r_idx} 行：缺少需求标题，已跳过")
             continue
+
+        # 重复的行**跳过而不是报错**：一次导入里混着几条已录过的很正常（补录时
+        # 常常把整张表重新导一遍），当成错误会让人以为整份表格有问题。但要如实
+        # 报出来——只跳不报的表现是「导入 80 条只进了 60 条」，而没人说得清少的是哪些。
+        key = dedup_key(data.get("req_no"), title)
+        if key is not None:
+            if key in existing_keys:
+                skipped += 1
+                errors.append(f"第 {r_idx} 行：{duplicate_message(existing_keys[key], '本迭代里已有')}"
+                              "本行已跳过")
+                continue
+            if key in seen_in_file:
+                skipped += 1
+                errors.append(f"第 {r_idx} 行：与本文件第 {seen_in_file[key]} 行重复，已跳过")
+                continue
+            seen_in_file[key] = r_idx
+            hit = other_iter_rows.get(key)
+            if hit is not None:
+                cross_iteration += 1
+                errors.append(
+                    f"第 {r_idx} 行：「{iter_labels.get(hit.iteration_id, hit.iteration_id)}」"
+                    f"的迭代里也有这条（序号 {hit.seq or '-'}），已按新需求导入，请确认是否重复"
+                )
 
         # 校验枚举
         progress_fields = [
@@ -365,6 +442,8 @@ async def import_from_excel(
     db.commit()
 
     log_op(db, action="导入", target="迭代需求", target_id=iteration_id,
-           detail=f"created={created} errors={len(errors)} file={file.filename or ''}",
+           detail=f"created={created} skipped={skipped} cross={cross_iteration} "
+                  f"errors={len(errors)} file={file.filename or ''}",
            user=current_user, request=request)
-    return {"created": created, "errors": errors}
+    return {"created": created, "skipped": skipped,
+            "cross_iteration": cross_iteration, "errors": errors}

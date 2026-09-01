@@ -256,6 +256,7 @@ def _issue_summary_from_rows(rows: List[dict], src: "_IssueSource",
             score += _SEVERITY_WEIGHTS.get(sev, 0.0)
     score = round(score, 1)
     total = len(rows)
+    overdue, overdue_unknown = _issue_source.overdue_stats(rows)
     t_total = target.target_total if target else None
     t_score = target.target_score if target else None
     return schemas.DomainIssueSummary(
@@ -265,6 +266,7 @@ def _issue_summary_from_rows(rows: List[dict], src: "_IssueSource",
         target_total=t_total, target_score=t_score,
         over_total=bool(t_total is not None and total > t_total),
         over_score=bool(t_score is not None and score > t_score),
+        overdue=overdue, overdue_unknown=overdue_unknown,
     )
 
 
@@ -422,15 +424,23 @@ def list_group_requirements(
 def list_group_issues(
     group_id: int,
     project: Optional[str] = Query(None, description="问题单项目/版本，与总览口径一致"),
+    overdue: bool = Query(False, description="只看超过预计闭环时间还没处理的"),
     db: Session = Depends(get_db),
 ):
-    """下钻：该领域名下的问题单原始行（口径与总览同一个数据源）。"""
+    """下钻：该领域名下的问题单原始行（口径与总览同一个数据源）。
+
+    `overdue=true` 时只留超期未处理的那些——总览里那个数字点得进来，
+    否则「超期 8 条」只是个数字，没人说得清是哪 8 条。
+    """
     g = _require_pl_group(db, group_id)
     src = _resolve_issue_source(db, project)
     if src.rows is None:
         return {"available": False, "note": src.note, "rows": []}
+    rows = _issue_rows_for_group(src.rows, g)
+    if overdue:
+        rows = [r for r in rows if _issue_source.is_overdue(r)]
     return {"available": True, "file_mtime": src.stamp, "source": src.source,
-            "project": src.project, "rows": _issue_rows_for_group(src.rows, g)}
+            "project": src.project, "rows": rows}
 
 
 @router.put("/{group_id}/content", response_model=schemas.DomainRowOut)

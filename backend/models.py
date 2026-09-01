@@ -1306,6 +1306,51 @@ class IssueSnapshotStat(Base):
     count = Column(Integer, nullable=False, default=0)
 
 
+class IssueTrack(Base):
+    """问题单的跟踪记录：进展说明 + 合入计划。
+
+    **为什么单独一张表**：问题单本身不入库——每天采集回来的明细落文件、只有维度
+    数字入库（见 IssueSnapshot）。所以跟踪记录以「采集项目 + 缺陷编号」为键单独存，
+    与快照彻底解耦：今天填的进展，明天、后天的快照里照样看得到，直到这单在 DTS 里
+    被关闭/撤销、从快照里消失为止。反过来若把它挂在某一天的快照行上，第二天重新
+    采集就等于全丢了，而页面上只会表现成"昨天填的怎么没了"。
+
+    合入计划**两层都记**：
+    - `plan_version_id` → 版本（release_versions，C10SPC101 这一层）＝**计划**合到哪个版本，
+      这是排期时说得出来的粒度，也是客户面/度量看板说话的粒度；
+    - `merged_build_id` → 迭代版本（iteration_versions，C10SPC101B001）＝**实际**落在哪个构建，
+      合完之后才填得出来。
+    两个都留字符串快照（`plan_version` / `merged_build`），FK 反查不中时前端回退到它
+    （见 CLAUDE.md「主数据与 FK 反查」）。
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "issue_tracks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project = Column(String(64), nullable=False, index=True, comment="采集项目，如 YLS3000")
+    issue_id = Column(String(64), nullable=False, index=True, comment="DTS 缺陷业务编号")
+    owner_group = Column(String(64), default="", comment="填写时的所属小组（展示快照）")
+
+    merge_status = Column(String(16), default="未开始", comment="合入状态，见 enums.ISSUE_MERGE_STATUSES")
+    progress = Column(Text, default="", comment="进展说明")
+
+    plan_version = Column(String(64), default="", comment="计划合入版本（展示快照）")
+    plan_version_id = Column(Integer, ForeignKey("release_versions.id", ondelete="SET NULL"),
+                             nullable=True, index=True, comment="计划合入版本 FK（版本层）")
+    merged_build = Column(String(64), default="", comment="实际合入构建（展示快照）")
+    merged_build_id = Column(Integer, ForeignKey("iteration_versions.id", ondelete="SET NULL"),
+                             nullable=True, index=True, comment="实际合入构建 FK（迭代版本层）")
+
+    updated_by = Column(String(64), default="", comment="最后修改人（展示用）")
+    version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("project", "issue_id", name="uq_issue_track_project_issue"),
+    )
+
+
 class IssueSnapshotFlow(Base):
     """每日「新增 / 解决」的差分结果（一次快照一行）。
 
