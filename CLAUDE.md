@@ -1,7 +1,7 @@
 # 开发约定
 
 本文件是 **岳麓山项目管理系统** 的工程约定索引，供在本仓库上开发的人（和 AI 助手）在动手前
-对齐口径。业务功能说明见 [README.md](README.md)，部署与运维见 [doc/部署指南.md](doc/部署指南.md)。
+对齐口径。业务功能说明见 [README.md](README.md)，部署与运维见 [doc/部署指南.md](doc/部署指南.md)（一次性的版本升级步骤在附册 [doc/升级历史.md](doc/升级历史.md)）。
 
 > 本文件是若干 router 注释里「见 CLAUDE.md『Write-permission principle』」的落点。
 
