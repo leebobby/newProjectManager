@@ -1113,7 +1113,8 @@ def _milestone_lines(milestones: list) -> List[str]:
     out = []
     for m in milestones:
         st = _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))
-        out.append(f"  · {m.get('name', '')}  {m.get('date', '')}  [{st}]")
+        day = special_layout.milestone_date_text(m.get("date"))
+        out.append(f"  · {m.get('name', '')}  {day}  [{st}]")
     return out
 
 
@@ -1282,7 +1283,7 @@ def _milestone_table(milestones: list) -> str:
     """里程碑 → HTML 表格（内置计划与自定义里程碑分段共用）。空清单返回空串＝整段跳过。"""
     if not milestones:
         return ""
-    rows = [[m.get("name", ""), m.get("date", ""),
+    rows = [[m.get("name", ""), special_layout.milestone_date_text(m.get("date")),
              _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))]
             for m in milestones]
     return _build_table(["里程碑", "日期", "状态"], rows)

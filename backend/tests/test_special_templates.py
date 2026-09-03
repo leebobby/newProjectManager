@@ -256,9 +256,12 @@ def test_export_and_report_follow_layout(client, admin_headers, solution_tpl):
     assert resp.status_code == 200
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(resp.content))
-    # 自定义表格走独立工作表，页签按分段序号命名 → 页签顺序＝页面分段顺序
-    assert wb.sheetnames == ["专项", "3.测试详细进展和点灯"], wb.sheetnames
-    heads = [str(c[0].value) for c in wb["专项"].iter_rows(max_col=1) if c[0].value]
+    # **一个专项只导出一张表**：自定义表格内联在对应章节下，不再另开页签
+    assert wb.sheetnames == ["专项"], wb.sheetnames
+    ws = wb["专项"]
+    heads = [str(c[0].value) for c in ws.iter_rows(max_col=1) if c[0].value]
+    assert any(str(c.value) == "冒烟测试" for row in ws.iter_rows() for c in row), \
+        "自定义表格的内容应该就在主表里"
     assert "一、解决方案专项目标" in heads
     assert "二、整体进展和关键风险" in heads
     assert "三、测试详细进展和点灯" in heads

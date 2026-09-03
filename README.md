@@ -23,7 +23,7 @@
 │   │   └── versions/            0001_baseline … 0008_special_section_config
 │   ├── special_layout.py        专项详情页「版式」解析（分段顺序/标题/启停 + 模板套用）
 │   ├── xlsx_io.py               清单类 Excel 导出的统一外观（style_header + beautify）
-│   ├── xlsx_utils.py            专项/攻关的单页图文混排 Excel 导出
+│   ├── xlsx_utils.py            专项/攻关的图文混排 Excel 导出（一个专项一张表）
 │   ├── pptx_utils.py            PPT 导出工具
 │   ├── config.json              运维可调项（阶段下拉 / 报表路径 / 采集配置 / 硬件清零选项…）
 │   ├── requirements.txt

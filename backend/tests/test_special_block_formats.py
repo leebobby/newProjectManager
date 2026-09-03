@@ -134,9 +134,9 @@ def test_cell_format_reaches_report_html(client, admin_headers, sid):
 def test_cell_format_reaches_xlsx(client, admin_headers, sid):
     _put_blocks(client, admin_headers, sid, [_fmt_grid()])
     wb = _xlsx(client, admin_headers, sid)
-    # 自定义表格走独立工作表
-    sheet = next(n for n in wb.sheetnames if "验收标准" in n)
-    ws = wb[sheet]
+    # 自定义表格**内联在主表里**：一个专项只导出一张表
+    assert len(wb.sheetnames) == 1, wb.sheetnames
+    ws = wb.active
     cell = next(c for row in ws.iter_rows() for c in row if c.value == "端到端联调")
 
     assert cell.font.name == "宋体"
@@ -160,7 +160,7 @@ def test_illegal_font_and_size_are_dropped_not_rendered(client, admin_headers, s
     assert "url(x)" not in eml, "字色没做校验就拼进了 style"
 
     wb = _xlsx(client, admin_headers, sid)
-    ws = wb[next(n for n in wb.sheetnames if "验收标准" in n)]
+    ws = wb.active
     cell = next(c for row in ws.iter_rows() for c in row if c.value == "端到端联调")
     assert cell.font.name == "微软雅黑" and cell.font.size == 10
 

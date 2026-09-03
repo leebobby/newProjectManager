@@ -3,10 +3,16 @@
 依赖：openpyxl
 
 设计要点（解决"导出很乱"）：
-- 全表统一 6 列（A–F）网格，列宽固定且合理；
-- 标题 / 章节 / 叙述段落统一横跨 A–F 合并，表格按"逻辑列→物理列合并"对齐；
-- 里程碑这种窄表通过合并映射到 6 列，避免落在过窄的列里串味；
-- 单元格统一自动换行 + 按内容估算行高，长文本不再溢出/挤压。
+- **一个专项导出成一张表**：所有分段（含自定义自由表格）按页面顺序往下排。
+  以前自由表格被丢到独立工作表、主表只留一行"→ 见工作表「X」"，一份周报打开
+  是四五个页签，顺序和上下文全断在那行指引上；
+- 全表统一 **36 列等宽窄网格**，每张表按「列宽比例」合并到这张网格上——
+  列宽一样宽之后，6 列的事务表与 5~8 列的自由表格才能并存而谁都不变形；
+- 标题 / 章节 / 叙述段落横跨整幅合并；**合并区的样式只认左上角那一格**
+  （保存时别的格子上的会被丢掉，openpyxl 再把左上角的边框铺到合并区四周），
+  所以边框/底色都写在那一格上，见 `_frame()`；
+- 单元格统一自动换行 + 按内容估算行高，长文本不再溢出/挤压；
+- 打印按横向、缩放到一页宽，不然 36 列会被从中间劈成左右两叠。
 
 配色取自 [brand.py](brand.py)，与 PPT / 清单类 Excel **同一套**：
 红只用在报告主标题上（底下压一条细红线），章节行走中灰，表头走浅蓝灰，
@@ -38,9 +44,17 @@ _BORDER_RGB = brand.BORDER
 
 _FONT = "微软雅黑"
 
-# 6 列网格列宽（字符单位）
-_COL_WIDTHS = [6, 36, 30, 12, 14, 10]
-_NCOL = len(_COL_WIDTHS)
+# ─── 物理列网格 ────────────────────────────────────────────────────────────
+# **36 个等宽窄列**（每列 3 字符 ≈ 26px），所有表格按「列宽比例」合并到这张网格上。
+# 原来是 6 个宽窄不一的列（[6,36,30,12,14,10]），于是自由表格（5~8 列、列宽各异）
+# 塞不进来，只能丢到独立工作表里，一个专项导出成好几个页签。列宽一样宽之后，
+# 6 列的事务表、3 列的里程碑表、8 列的自由表格可以并存在同一张表上而谁都不变形——
+# 代价只是列标从 A~F 变成 A~AJ，而这份东西是给人看的报告，不是给人填的表。
+# **列宽传比例、不传字符数**（同 pptx_utils 的 col_ratios）：加一列、改一个标题
+# 就再也对不上，是历史上几张表宽度各不相同的原因。
+_NCOL = 36
+_BASE_W = 3.0
+_SHEET_PX = 930          # 36 列大致占的像素宽，图片按它缩放/换行，别甩出表外
 
 _MS_STATUS_LABEL = {
     "planning": "未开始", "in_progress": "进行中", "done": "已完成", "delayed": "已延期",
@@ -52,7 +66,67 @@ _STATUS_FONT = dict(brand.STATUS_TEXT)
 _STATUS_FILL = dict(brand.STATUS_FILLS)
 
 _thin = Side(style="thin", color=_BORDER_RGB)
+_MEDIUM = Side(style="medium", color=_BORDER_RGB)
 _BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+# 事务/风险表的六列比例，与改造前的字符列宽 [6,36,30,12,14,10] 等价
+_SIX_RATIOS = [6, 36, 30, 12, 14, 10]
+
+
+def _spans_from_ratios(ratios, ncol: int = _NCOL):
+    """列宽比例 → 每个逻辑列在物理网格里的 (起列, 止列)。
+
+    归一化到正好铺满 ncol 列：差额补在**最宽的那列**上，比例走形最小。
+    逻辑列比物理列还多时 1:1 摊开（此时表已经宽到没法再讲比例了）。
+    """
+    vals = [max(float(x or 0), 0.0) for x in ratios]
+    n = len(vals)
+    if n == 0:
+        return []
+    if n >= ncol:
+        return [(i + 1, i + 1) for i in range(n)]
+    total = sum(vals) or float(n)
+    widths = [max(1, int(round(v / total * ncol))) for v in vals]
+    while sum(widths) < ncol:
+        widths[max(range(n), key=lambda k: widths[k])] += 1
+    while sum(widths) > ncol:
+        i = max(range(n), key=lambda k: widths[k])
+        if widths[i] <= 1:
+            break
+        widths[i] -= 1
+    spans, c = [], 1
+    for w in widths:
+        spans.append((c, c + w - 1))
+        c += w
+    return spans
+
+
+def _with_sides(border, **sides):
+    return Border(left=sides.get("left", border.left), right=sides.get("right", border.right),
+                  top=sides.get("top", border.top), bottom=sides.get("bottom", border.bottom))
+
+
+def _frame(ws, r1, r2, spans):
+    """给一块表（r1..r2 行、spans 给出的逻辑列）**外圈**压一道粗一点的边。
+
+    边框**只能设在合并区左上角那一格上**：保存时 openpyxl 只留左上角的样式，
+    再把它的边框铺到整个合并区四周，写在别的格子上的会被安静地丢掉——
+    看着像设了、存下来没有。这也是"导出的表没有好看的边框"的来源之一。
+    """
+    if r2 < r1 or not spans:
+        return
+    left_c, right_c = spans[0][0], spans[-1][0]
+    for r in range(r1, r2 + 1):
+        cell = ws.cell(row=r, column=left_c)
+        cell.border = _with_sides(cell.border, left=_MEDIUM)
+        cell = ws.cell(row=r, column=right_c)
+        cell.border = _with_sides(cell.border, right=_MEDIUM)
+    for (c1, _c2) in spans:
+        cell = ws.cell(row=r1, column=c1)
+        cell.border = _with_sides(cell.border, top=_MEDIUM)
+        cell = ws.cell(row=r2, column=c1)
+        cell.border = _with_sides(cell.border, bottom=_MEDIUM)
+
 
 # 点灯列的底色/字色，与前端 RichGrid 及周报 HTML 的三档保持一致。
 # 表在 brand.py（PPT 那边也要用同一套），这里不再另写一份字面量。
@@ -90,6 +164,16 @@ def _cell_lines(text: str, capacity: int) -> int:
     for seg in str(text or "").split("\n"):
         lines += max(1, math.ceil(_disp_w(seg) / cap))
     return max(1, lines)
+
+
+def _rows_for_px(height_px: float) -> int:
+    """图片占多少行。
+
+    Excel 里图片是浮在格子上的、不占行——不预留就直接压住下一段的标题。
+    默认行高 15 磅 ＝ **20px**（原来按 18px 算还另加 2 行，一张图后面能空出
+    半屏白，看着像"这一段没导出来"）。多留一行做与下一段的间距。
+    """
+    return max(4, math.ceil(float(height_px or 0) / 20.0) + 1)
 
 
 def _hex_to_rgb6(color: str, default: str = "262626") -> str:
@@ -196,103 +280,146 @@ def _text_wh(draw, text: str, font):
     return box[2] - box[0], box[3] - box[1]
 
 
-def _wrap_by_width(draw, text: str, font, max_w: int):
-    lines, cur = [], ""
-    for ch in str(text or ""):
-        if ch == "\n":
-            lines.append(cur)
-            cur = ""
-            continue
-        w, _ = _text_wh(draw, cur + ch, font)
-        if w > max_w and cur:
-            lines.append(cur)
-            cur = ch
+_LATIN_RUN = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/'+-]*")
+
+
+def _break_tokens(s: str):
+    """把一行切成「可断点」词元：西文/数字连成一串算一个词元，其余逐字。"""
+    toks, i, n = [], 0, len(s)
+    while i < n:
+        m = _LATIN_RUN.match(s, i)
+        if m:
+            toks.append(m.group(0))
+            i = m.end()
         else:
-            cur += ch
-    if cur:
-        lines.append(cur)
-    return lines or [""]
+            toks.append(s[i])
+            i += 1
+    return toks
+
+
+def _wrap_by_width(draw, text: str, font, max_w: int):
+    """按显示宽度折行，**西文单词整体不拆**。
+
+    原来是逐字符折行：中文看不出问题，英文一眼就是坏的——"Alpha 版本发布 Release"
+    会断成「Releas / e」。只有单个词本身就装不下一行时才从中间劈开。
+    """
+    out = []
+    for raw in str(text or "").split("\n"):
+        cur = ""
+        for tok in _break_tokens(raw):
+            if cur and _text_wh(draw, cur + tok, font)[0] > max_w:
+                out.append(cur)
+                cur = tok if tok.strip() else ""
+            else:
+                cur += tok
+            while _text_wh(draw, cur, font)[0] > max_w and len(cur) > 1:
+                k = len(cur) - 1
+                while k > 1 and _text_wh(draw, cur[:k], font)[0] > max_w:
+                    k -= 1
+                out.append(cur[:k])
+                cur = cur[k:]
+        out.append(cur)
+    return [ln for ln in out if ln != ""] or [""]
+
+
+def _ms_date_text(raw) -> str:
+    """轴上的日期文字：归一交给 special_layout（周报也用同一份），空值写「未定」。"""
+    return special_layout.milestone_date_text(raw) or "未定"
 
 
 def _render_milestone_image(milestones):
-    """把里程碑画成横向时间轴 PNG，返回 PIL.Image；PIL 不可用/出错时返回 None（调用方退回表格）。"""
+    """把里程碑画成横向时间轴 PNG，返回 PIL.Image；PIL 不可用/出错时返回 None（调用方退回表格）。
+
+    两条硬规则，都是"看着不像坏了"的那类问题：
+    - **槽宽由最长的那一格算出来**，不是写死的 175px。写死的话长名字/长日期直接
+      压到隔壁节点上，而图能生成、能打开，只是读不出哪个日期是谁的。
+    - **超过表宽就换行摆**，不是把图一路加宽。Excel 里图片不跟着列走，
+      画到 3000px 宽就是横着甩出表格外面老远，打印出来更是没边。
+    """
     if not milestones:
         return None
     try:
         from PIL import Image, ImageDraw
 
-        n = len(milestones)
-        margin = 90
-        spacing = 175
-        width = max(760, margin * 2 + (n - 1) * spacing)
-        height = 250
-        baseline_y = 78
-        node_w = min(spacing - 16, 160)
-
-        f_name = _load_pil_font(16, bold=True)
-        f_date = _load_pil_font(13)
-        f_legend = _load_pil_font(13)
+        f_name = _load_pil_font(15, bold=True)
+        f_date = _load_pil_font(12)
+        f_legend = _load_pil_font(12)
         if not (f_name and f_date and f_legend):
             return None  # 没有可用中文字体 → 退回表格，避免方块乱码
+
+        probe = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+        names = [str(m.get("name") or "") for m in milestones]
+        dates = [_ms_date_text(m.get("date")) for m in milestones]
+        n = len(milestones)
+
+        # 槽宽：先让日期能一行放下（日期不该折行），再夹在 [150, 240] 之间
+        date_w = max([_text_wh(probe, d, f_date)[0] for d in dates] + [70])
+        slot = max(150, min(240, date_w + 26))
+        name_w = slot - 14
+
+        name_lines = [_wrap_by_width(probe, s, f_name, name_w) for s in names]
+        date_lines = [_wrap_by_width(probe, s, f_date, slot - 8) for s in dates]
+        lh_n = _text_wh(probe, "中", f_name)[1] + 4
+        lh_d = _text_wh(probe, "中", f_date)[1] + 3
+        name_h = max(len(x) for x in name_lines) * lh_n
+        date_h = max(len(x) for x in date_lines) * lh_d
+
+        side = 30
+        cols = max(1, int((_SHEET_PX - side * 2) // slot))
+        n_rows = math.ceil(n / cols)
+        cols = math.ceil(n / n_rows)          # 均衡：6 个点不要摆成 5 + 1
+        row_h = name_h + 20 + date_h + 26
+        top = 12
+        legend_h = 32
+        width = side * 2 + cols * slot
+        height = top + n_rows * row_h + legend_h
 
         img = Image.new("RGB", (width, height), "white")
         d = ImageDraw.Draw(img)
 
-        # 轴线
-        d.line([(margin, baseline_y), (width - margin, baseline_y)], fill=(220, 223, 230), width=3)
-
         def node_x(i):
-            if n == 1:
-                return width // 2
-            return margin + i * spacing
+            return side + slot * (i % cols) + slot / 2
+
+        def baseline_y(i):
+            return top + (i // cols) * row_h + name_h + 14
+
+        # 轴线：每行一段，从该行第一个节点画到最后一个
+        for r in range(n_rows):
+            first, last = r * cols, min(n, (r + 1) * cols) - 1
+            y = baseline_y(first)
+            d.line([(node_x(first) - slot * 0.36, y), (node_x(last) + slot * 0.36, y)],
+                   fill=(220, 223, 230), width=3)
 
         for i, m in enumerate(milestones):
-            x = node_x(i)
-            status = m.get("status", "planning")
-            rgb = _MS_DOT_RGB.get(status, _MS_DOT_RGB["planning"])
-            # 名称（轴线上方，自动换行，加粗）
-            name_lines = _wrap_by_width(d, m.get("name", ""), f_name, node_w)
-            ny = baseline_y - 18
-            for ln in reversed(name_lines):
+            x, y = node_x(i), baseline_y(i)
+            rgb = _MS_DOT_RGB.get(m.get("status", "planning"), _MS_DOT_RGB["planning"])
+            # 名称（轴线上方，底对齐到轴线，加粗）
+            ny = y - 16
+            for ln in reversed(name_lines[i]):
                 w, h = _text_wh(d, ln, f_name)
                 d.text((x - w / 2, ny - h), ln, font=f_name, fill=(48, 49, 51))
-                ny -= h + 3
+                ny -= lh_n
             # 节点圆点（外圈白 + 彩色实心）
-            r = 9
-            d.ellipse([x - r - 2, baseline_y - r - 2, x + r + 2, baseline_y + r + 2], fill=(255, 255, 255))
-            d.ellipse([x - r, baseline_y - r, x + r, baseline_y + r], fill=rgb)
+            r0 = 8
+            d.ellipse([x - r0 - 2, y - r0 - 2, x + r0 + 2, y + r0 + 2], fill=(255, 255, 255))
+            d.ellipse([x - r0, y - r0, x + r0, y + r0], fill=rgb)
             # 日期（轴线下方）
-            date = m.get("date", "") or "未定"
-            w, h = _text_wh(d, date, f_date)
-            d.text((x - w / 2, baseline_y + 16), date, font=f_date, fill=(144, 147, 153))
+            dy = y + 14
+            for ln in date_lines[i]:
+                w, _h = _text_wh(d, ln, f_date)
+                d.text((x - w / 2, dy), ln, font=f_date, fill=(144, 147, 153))
+                dy += lh_d
 
         # 图例
-        lx = margin
-        ly = height - 34
+        lx, ly = side, height - legend_h + 8
         for status, label in _MS_LEGEND:
-            rgb = _MS_DOT_RGB[status]
-            d.ellipse([lx, ly + 3, lx + 11, ly + 14], fill=rgb)
+            d.ellipse([lx, ly + 3, lx + 11, ly + 14], fill=_MS_DOT_RGB[status])
             d.text((lx + 16, ly), label, font=f_legend, fill=(96, 98, 102))
-            tw, _ = _text_wh(d, label, f_legend)
-            lx += 16 + tw + 26
+            lx += 16 + _text_wh(d, label, f_legend)[0] + 26
 
         return img
     except Exception:
         return None
-
-
-# ─── 附加自由表格（RichGrid）→ 独立工作表 ──────────────────────────
-
-def _safe_sheet_name(name: str, used: set) -> str:
-    base = re.sub(r"[\[\]\:\*\?\/\\]", " ", str(name or "")).strip() or "附加表格"
-    base = base[:28]
-    cand = base
-    k = 2
-    while cand in used or not cand:
-        cand = f"{base[:25]}-{k}"
-        k += 1
-    used.add(cand)
-    return cand
 
 
 def build_special_xlsx(special) -> io.BytesIO:
@@ -304,8 +431,16 @@ def build_special_xlsx(special) -> io.BytesIO:
     ws.title = label
     ws.sheet_view.showGridLines = False
 
-    for i, w in enumerate(_COL_WIDTHS, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    for i in range(1, _NCOL + 1):
+        ws.column_dimensions[get_column_letter(i)].width = _BASE_W
+    # 打印版式：横向、按宽度缩放到一页宽。不设的话默认纵向 A4，一份 36 列的报告
+    # 打出来被从中间劈成左右两叠，而在屏幕上看是好的。
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_margins.left = ws.page_margins.right = 0.3
+    ws.page_margins.top = ws.page_margins.bottom = 0.4
 
     # pending＝已经排到但还没落笔的章节标题，见 _flush_section
     state = {"row": 1, "pending": None}
@@ -351,9 +486,11 @@ def build_special_xlsx(special) -> io.BytesIO:
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=_NCOL)
         c = ws.cell(row=r, column=1, value=text)
         c.font = Font(name=_FONT, size=11, color="262626")
-        c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+        c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True,
+                                indent=1)
         c.border = _BORDER
-        cap = sum(_COL_WIDTHS) - 2
+        _frame(ws, r, r, [(1, _NCOL)])
+        cap = int(_NCOL * _BASE_W) - 4
         ws.row_dimensions[r].height = max(20, min(260, _cell_lines(text, cap) * 16 + 4))
         state["row"] += 1
 
@@ -374,10 +511,10 @@ def build_special_xlsx(special) -> io.BytesIO:
         _flush_section()
         center = set(center_cols or [])
         # 列容量（字符单位）
-        caps = [sum(_COL_WIDTHS[c1 - 1:c2]) for (c1, c2) in col_specs]
+        caps = [(c2 - c1 + 1) * _BASE_W for (c1, c2) in col_specs]
 
         # 表头
-        r = state["row"]
+        top_row = r = state["row"]
         for j, (c1, c2) in enumerate(col_specs):
             if c2 > c1:
                 ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
@@ -420,6 +557,7 @@ def build_special_xlsx(special) -> io.BytesIO:
                         cell.fill = PatternFill("solid", fgColor=cell_fill)
             ws.row_dimensions[r].height = max(18, min(160, max_lines * 15 + 3))
             state["row"] += 1
+        _frame(ws, top_row, state["row"] - 1, col_specs)
 
     # ===== 标题区：红字标题 + 灰副标题 + 一条细红线 =====
     # 不再用深红横幅压顶。横幅一铺，整份周报里最抢眼的是那两条红，
@@ -432,8 +570,8 @@ def build_special_xlsx(special) -> io.BytesIO:
     gap()
 
     kept_images = []  # 持有 BytesIO 引用直到 wb.save，避免被 GC
-    # 6 列等分映射（序号/内容/进展/责任人/闭环/状态）
-    six = [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6)]
+    # 事务/风险表：序号 / 内容 / 进展 / 责任人 / 闭环 / 状态
+    six = _spans_from_ratios(_SIX_RATIOS)
 
     def render_milestones(milestones=None):
         """内置「计划」与自定义里程碑分段共用：两者只是取数不同，画法必须一样。"""
@@ -449,16 +587,20 @@ def build_special_xlsx(special) -> io.BytesIO:
             bio = io.BytesIO()
             ms_img.save(bio, format="PNG")
             bio.seek(0)
-            ws.add_image(XLImage(bio), f"A{r}")
+            xi = XLImage(bio)
+            if xi.width and xi.width > _SHEET_PX:      # 超宽就整体缩到表宽内
+                ratio = _SHEET_PX / float(xi.width)
+                xi.width = int(xi.width * ratio)
+                xi.height = int(xi.height * ratio)
+            ws.add_image(xi, f"A{r}")
             kept_images.append(bio)
-            # 预留行高（默认行高约 18px），让后续章节不与图片重叠
-            state["row"] += max(8, math.ceil(ms_img.height / 18) + 2)
+            state["row"] += _rows_for_px(xi.height or ms_img.height)
         else:
             # PIL 不可用：退回表格形式
-            rows = [[m.get("name", ""), m.get("date", ""),
+            rows = [[m.get("name", ""), _ms_date_text(m.get("date")),
                      _MS_STATUS_LABEL.get(m.get("status", "planning"), m.get("status", ""))]
                     for m in milestones]
-            table([(1, 3), (4, 4), (5, 6)], ["里程碑", "日期", "状态"], rows,
+            table(_spans_from_ratios([3, 1, 1]), ["里程碑", "日期", "状态"], rows,
                   status_col=2, center_cols={1, 2})
         return True
 
@@ -482,7 +624,114 @@ def build_special_xlsx(special) -> io.BytesIO:
         if not rows:
             return False
         ncol = max(len(headers), max(len(r) for r in rows))
-        table(_partition_cols(ncol), headers or [""] * ncol, rows)
+        table(_spans_from_ratios([1] * ncol), headers or [""] * ncol, rows)
+        return True
+
+    def render_grid(block):
+        """自定义表格（RichGrid）**内联进主表**，不再丢到独立工作表。
+
+        列宽按 colWidths 的**比例**映射到 36 列物理网格上（同 pptx_utils 的 col_ratios），
+        于是 5 列的表和 8 列的表可以并存在同一张表里而谁都不被压变形。
+        单元格自带的字体/字号/字色/底色与点灯列原样带过来——那是用户在页面上一格
+        一格调出来的，导出里丢掉等于"格式功能不能用"。
+        """
+        raw_headers = block.get("headers") or []
+        raw_rows = block.get("rows") or []
+        col_types = block.get("colTypes") or []
+        if not _grid_cells(block)[1]:
+            return False
+
+        hdrs = []
+        for h in raw_headers:
+            if isinstance(h, dict):
+                hdrs.append({**h, "text": str(h.get("text", "")),
+                             "colspan": max(1, int(h.get("colspan") or 1)),
+                             "align": h.get("align") or "center"})
+            else:
+                hdrs.append({"text": str(h), "colspan": 1, "align": "center"})
+        body_cols = sum(h["colspan"] for h in hdrs)
+        if body_cols <= 0:
+            body_cols = max((len(r) for r in raw_rows if isinstance(r, list)), default=0)
+            hdrs = [{"text": f"列{i + 1}", "colspan": 1, "align": "center"}
+                    for i in range(body_cols)]
+        if not body_cols:
+            return False
+
+        col_widths = block.get("colWidths") or []
+
+        def _px(i, default=130.0):
+            if i < len(col_widths):
+                try:
+                    return max(20.0, float(col_widths[i]))
+                except (TypeError, ValueError):
+                    return default
+            return default
+
+        spans = _spans_from_ratios([_px(i) for i in range(body_cols)])
+        caps = [(c2 - c1 + 1) * _BASE_W for (c1, c2) in spans]
+
+        _flush_section()
+        top_row = r = state["row"]
+        col = 0
+        for h in hdrs:
+            last = min(col + h["colspan"], body_cols) - 1
+            c1, c2 = spans[col][0], spans[last][1]
+            if c2 > c1:
+                ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+            hf = _cell_font_spec(h)
+            for cc in range(c1, c2 + 1):
+                cell = ws.cell(row=r, column=cc, value=h["text"] if cc == c1 else None)
+                cell.fill = PatternFill("solid", fgColor=_HEADER_BG)
+                # 表头恒为浅蓝灰底黑字粗体：只跟随字体与字号，字色/底色不跟
+                cell.font = Font(name=hf["name"], bold=True, color=brand.HEADER_TEXT,
+                                 size=hf["size"], italic=hf["italic"],
+                                 underline=hf["underline"])
+                cell.alignment = Alignment(horizontal=h["align"], vertical="center",
+                                           wrap_text=True)
+                cell.border = _BORDER
+            col = last + 1
+        ws.row_dimensions[r].height = 20
+        state["row"] += 1
+
+        for i, row in enumerate(raw_rows):
+            cells = row if isinstance(row, list) else []
+            r = state["row"]
+            zebra = (i % 2 == 1)
+            max_lines = 1
+            for j, (c1, c2) in enumerate(spans):
+                cd = cells[j] if j < len(cells) else None
+                if isinstance(cd, dict):
+                    text = str(cd.get("text", ""))
+                    align = cd.get("align") or "left"
+                else:
+                    text = "" if cd is None else str(cd)
+                    align = "left"
+                    cd = {}
+                fmt = _cell_font_spec(cd)
+                max_lines = max(max_lines, _cell_lines(text, caps[j]))
+                # 点灯列：取值命中红/黄/绿则整格上底色 + 同色粗体，与页面和周报一致
+                light = (enums.GRID_LIGHT_COLORS.get(text.strip())
+                         if j < len(col_types) and col_types[j] == "light" else None)
+                if c2 > c1:
+                    ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+                for cc in range(c1, c2 + 1):
+                    cell = ws.cell(row=r, column=cc, value=text if cc == c1 else None)
+                    cell.font = Font(name=fmt["name"], size=fmt["size"],
+                                     color=_LIGHT_FONT[light] if light else fmt["color"],
+                                     bold=bool(light) or fmt["bold"],
+                                     italic=fmt["italic"], underline=fmt["underline"])
+                    cell.alignment = Alignment(horizontal="center" if light else align,
+                                               vertical="center", wrap_text=True)
+                    cell.border = _BORDER
+                    if light:
+                        cell.fill = PatternFill("solid", fgColor=_LIGHT_FILL[light])
+                    elif fmt["bg"]:
+                        cell.fill = PatternFill("solid", fgColor=fmt["bg"])
+                    elif zebra:
+                        cell.fill = PatternFill("solid", fgColor=_ZEBRA)
+            ws.row_dimensions[r].height = max(18, min(180, max_lines * 15 + 3))
+            state["row"] += 1
+        _frame(ws, top_row, state["row"] - 1, spans)
         return True
 
     def render_block_images(block):
@@ -501,29 +750,19 @@ def build_special_xlsx(special) -> io.BytesIO:
         return bool(items)
 
     # ===== 各分段按「版式」顺序输出 =====
-    # 标题与顺序全部来自 special_layout；自定义表格因列宽差异过大仍走独立工作表，
-    # 但页签按分段序号命名，主表在对应位置留一行指引，顺序不丢。
-    used_names = {ws.title}
-    grid_sheets = []          # [(序号, 标题, grid)] 主表遍历完再建，保证页签顺序
+    # 标题与顺序全部来自 special_layout。**一个专项导出成一张表**：自定义表格以前
+    # 因为列宽对不上被丢到独立工作表、主表只留一行"→ 见工作表「X」"，一份周报打开
+    # 是四五个页签，而顺序、章节号、上下文全断在那一行指引上。现在物理列改成 36 个
+    # 等宽窄列，自由表格按比例合并进来，所有分段回到同一张表上按顺序往下排。
     n = 0
     for sec in special_layout.resolve_sections(special):
         n += 1
         title = f"{_cn_index(n)}、{sec.title}"
-        if sec.is_custom and sec.kind == "grid":
-            headers, rows = _grid_cells(sec.block)
-            if not rows:
-                n -= 1
-                continue
-            sheet_name = _safe_sheet_name(f"{n}.{sec.title}", used_names)
-            grid_sheets.append((sheet_name, sec.title, sec.block))
-            section(title)
-            narrative(f"→ 见工作表「{sheet_name}」（{len(rows)} 行）")
-            gap()
-            continue
-
         section(title)
         ok = True
-        if sec.is_custom and sec.kind == "text":
+        if sec.is_custom and sec.kind == "grid":
+            ok = render_grid(sec.block)
+        elif sec.is_custom and sec.kind == "text":
             body = _strip_html(sec.block.get("html") or "")
             ok = bool(body.strip())
             if ok:
@@ -562,9 +801,6 @@ def build_special_xlsx(special) -> io.BytesIO:
             n -= 1
             continue
         gap()
-
-    for sheet_name, sec_title, grid in grid_sheets:
-        _render_extra_grid_sheet(wb, grid, sheet_name, sec_title)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -606,19 +842,6 @@ def _grid_cells(block: dict):
     return headers, [r for r in rows if any(x.strip() for x in r)]
 
 
-def _partition_cols(ncol: int):
-    """ncol 个逻辑列摊到主表的 6 个物理列上；超过 6 列则 1:1 直接展开。"""
-    if ncol >= _NCOL:
-        return [(i + 1, i + 1) for i in range(ncol)]
-    base, extra = divmod(_NCOL, ncol)
-    spans, c = [], 1
-    for i in range(ncol):
-        w = base + (1 if i < extra else 0)
-        spans.append((c, c + w - 1))
-        c += w
-    return spans
-
-
 def _place_image(ws, state, path) -> bool:
     """把磁盘上的图片放到当前行并预留行高；放不进去（SVG/缺 PIL/文件丢失）返回 False。"""
     try:
@@ -629,14 +852,14 @@ def _place_image(ws, state, path) -> bool:
     except Exception:
         return False
     try:
-        max_w = 700.0
+        max_w = float(_SHEET_PX)
         if img.width and img.width > max_w:
             ratio = max_w / float(img.width)
             img.width = int(img.width * ratio)
             img.height = int(img.height * ratio)
         r = state["row"]
         ws.add_image(img, f"A{r}")
-        state["row"] += max(6, math.ceil((img.height or 200) / 18) + 2)
+        state["row"] += _rows_for_px(img.height or 200)
         return True
     except Exception:
         return False
@@ -667,123 +890,3 @@ def _cell_font_spec(cell: dict) -> dict:
         "underline": "single" if cell.get("underline") else None,
         "bg": _hex_to_rgb6(bg, "") if bg in enums.GRID_CELL_BG and bg else "",
     }
-
-
-def _render_extra_grid_sheet(wb, grid, sheet_name, title):
-    """把一个 RichGrid（{title, headers, rows, colWidths}）渲染成独立工作表。
-
-    - 表头按 colspan 合并、**加粗**、华为红底白字；
-    - 正文单元格保留对齐（left/center）与字体颜色；点灯列（colTypes=light）按取值上底色；
-    - 列宽来自 colWidths（px → Excel 字符宽，约 px/7）。
-    兼容旧格式：headers 为 str[]、rows 为 str[][]。
-
-    独立工作表而非内联进主表：主表列宽是为叙述段和 6 列事务表定的
-    （[6,36,30,12,14,10]），把一张 5~8 列、列宽各异的自由表格塞进去必然被压变形。
-    页签名由调用方按分段序号给出，故工作表顺序与页面分段顺序一致。
-    """
-    raw_headers = grid.get("headers") or []
-    rows = grid.get("rows") or []
-    col_types = grid.get("colTypes") or []
-
-    hdrs = []
-    for h in raw_headers:
-        if isinstance(h, dict):
-            hdrs.append({
-                **h,
-                "text": str(h.get("text", "")),
-                "colspan": max(1, int(h.get("colspan", 1) or 1)),
-                "align": h.get("align") or "center",
-            })
-        else:
-            hdrs.append({"text": str(h), "colspan": 1, "align": "center"})
-
-    body_cols = sum(h["colspan"] for h in hdrs)
-    if body_cols <= 0:
-        body_cols = max((len(r) for r in rows if isinstance(r, list)), default=1)
-        hdrs = [{"text": f"列{i + 1}", "colspan": 1, "align": "center"} for i in range(body_cols)]
-
-    ws = wb.create_sheet(title=sheet_name)
-    ws.sheet_view.showGridLines = False
-
-    col_widths = grid.get("colWidths") or []
-
-    def _px(i, default=130):
-        if i < len(col_widths):
-            try:
-                return float(col_widths[i])
-            except (TypeError, ValueError):
-                return default
-        return default
-
-    for c in range(1, body_cols + 1):
-        ws.column_dimensions[get_column_letter(c)].width = max(6, round(_px(c - 1) / 7.0, 1))
-
-    r = 1
-    # 标题：红字 + 底下一条细红线（同专项周报，不用横幅）
-    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=body_cols)
-    tc = ws.cell(row=r, column=1, value=title)
-    tc.font = Font(name=_FONT, bold=True, size=13, color=_BRAND)
-    tc.alignment = Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[r].height = 22
-    r += 1
-    for cc in range(1, body_cols + 1):
-        ws.cell(row=r, column=cc).fill = PatternFill("solid", fgColor=_BRAND)
-    ws.row_dimensions[r].height = 3
-    r += 1
-
-    # 表头（按 colspan 合并、加粗）
-    col = 1
-    for h in hdrs:
-        c1, c2 = col, col + h["colspan"] - 1
-        if c2 > c1:
-            ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
-        for cc in range(c1, c2 + 1):
-            cell = ws.cell(row=r, column=cc, value=h["text"] if cc == c1 else None)
-            cell.fill = PatternFill("solid", fgColor=_HEADER_BG)
-            # 表头恒为浅蓝灰底黑字粗体：只让它跟随字体与字号，字色/底色不跟
-            hf = _cell_font_spec(h)
-            cell.font = Font(name=hf["name"], bold=True, color=brand.HEADER_TEXT, size=hf["size"],
-                             italic=hf["italic"], underline=hf["underline"])
-            cell.alignment = Alignment(horizontal=h["align"], vertical="center", wrap_text=True)
-            cell.border = _BORDER
-        col = c2 + 1
-    ws.row_dimensions[r].height = 20
-    r += 1
-
-    # 数据行
-    for i, row in enumerate(rows):
-        cells = row if isinstance(row, list) else []
-        zebra = (i % 2 == 1)
-        max_lines = 1
-        for c in range(1, body_cols + 1):
-            cd = cells[c - 1] if c - 1 < len(cells) else None
-            if isinstance(cd, dict):
-                text = str(cd.get("text", ""))
-                align = cd.get("align") or "left"
-            else:
-                text = "" if cd is None else str(cd)
-                align = "left"
-                cd = {}
-            fmt = _cell_font_spec(cd)
-            cap = max(4, int(_px(c - 1) / 7))
-            max_lines = max(max_lines, _cell_lines(text, cap))
-            # 点灯列：取值命中红/黄/绿则整格上底色 + 同色粗体，与页面和周报一致
-            light = None
-            if c - 1 < len(col_types) and col_types[c - 1] == "light":
-                light = enums.GRID_LIGHT_COLORS.get(text.strip())
-            cell = ws.cell(row=r, column=c, value=text)
-            cell.font = Font(name=fmt["name"], size=fmt["size"],
-                             color=_LIGHT_FONT[light] if light else fmt["color"],
-                             bold=bool(light) or fmt["bold"],
-                             italic=fmt["italic"], underline=fmt["underline"])
-            cell.alignment = Alignment(horizontal="center" if light else align,
-                                       vertical="center", wrap_text=True)
-            cell.border = _BORDER
-            if light:
-                cell.fill = PatternFill("solid", fgColor=_LIGHT_FILL[light])
-            elif fmt["bg"]:
-                cell.fill = PatternFill("solid", fgColor=fmt["bg"])
-            elif zebra:
-                cell.fill = PatternFill("solid", fgColor=_ZEBRA)
-        ws.row_dimensions[r].height = max(18, min(180, max_lines * 15 + 3))
-        r += 1

@@ -22,6 +22,7 @@ from typing import Any, List, Optional
 
 from enums import (GRID_COL_TYPES, GRID_LIGHT_DEFAULT_OPTIONS,
                    SPECIAL_SECTION_KEYS, SPECIAL_SECTIONS)
+from timeutil import parse_plan_date
 
 # 内置分段 key -> 内容形态，导出/周报按此分派渲染方式
 _BUILTIN_KIND = {s["key"]: s["kind"] for s in SPECIAL_SECTIONS}
@@ -46,6 +47,23 @@ def loads(raw: Any, default):
     except (ValueError, TypeError):
         return default
     return val if isinstance(val, type(default)) else default
+
+
+def milestone_date_text(raw) -> str:
+    """里程碑日期 → 统一的 YYYY-MM-DD（Excel 导出与周报共用这一份）。
+
+    这一列在库里是自由字符串，"2026-05-20T00:00:00"、"2026/7/1"、13 位毫秒时间戳
+    都真实存在过：原样摆出来一个太长、一个和别人对不齐，而每一个单独看都"没错"。
+    解析走 `timeutil.parse_plan_date()`——**全系统只有这一份日期解析**
+    （问题单的「预计闭环时间」也走它）；在这儿另写一份的表现是同一个日期
+    在两个出口上认得不一样。认不出来的**原样留着**而不是丢掉：
+    那多半是「6月中旬」这种人写的话。
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    d = parse_plan_date(s)
+    return d.strftime("%Y-%m-%d") if d else s
 
 
 @dataclass

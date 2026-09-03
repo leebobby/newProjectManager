@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 import models
 import schemas
 from routers.config import _load as _load_config
+from timeutil import parse_plan_date  # noqa: F401  实现在 timeutil，见下方注释
 
 # 问题单加权分值：致命10 严重3 一般1 提示0.1（未列出的级别记 0 分，仍计入数量）。
 # 领域总览与度量看板共用——两处各写一份，同一批单在两个页面上会得出不同的分数。
@@ -32,38 +33,10 @@ def weighted_score(rows: List[dict]) -> float:
 
 
 # ─── 超期未处理 ────────────────────────────────────────────────────────────
-# 「预计闭环时间」（DTS 的 planCloseTime）是自由格式的字符串：不同来源见过
-# 2026-09-15、2026/9/15、2026-09-15 00:00:00、13 位毫秒时间戳。**认不出来的一律
-# 算"没填"而不是算"没超期"**——后者会把一批读不懂的日期悄悄记成达标，数字看着还挺好。
-_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m-%d %H:%M:%S",
-                 "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y年%m月%d日")
-
-
-def parse_plan_date(value) -> Optional[date]:
-    """把「预计闭环时间」解析成日期；认不出返回 None。"""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    s = str(value).strip()
-    if not s:
-        return None
-    # 纯数字：秒 / 毫秒时间戳
-    if s.isdigit() and len(s) in (10, 13):
-        try:
-            return datetime.fromtimestamp(int(s) / (1000 if len(s) == 13 else 1)).date()
-        except (ValueError, OSError, OverflowError):
-            return None
-    head = s.replace("T", " ").split(" ")[0] if " " in s or "T" in s else s
-    for fmt in _DATE_FORMATS:
-        for cand in (s, head):
-            try:
-                return datetime.strptime(cand, fmt).date()
-            except ValueError:
-                continue
-    return None
+# 日期解析的**实现**在 timeutil.parse_plan_date（那边不依赖 models/database，
+# 于是 special_layout / xlsx_utils 这些不该拖起 ORM 的模块也能直接用）。
+# 这里原样再导出：全系统仍然只有这一份实现，既有的
+# `_issue_source.parse_plan_date(...)` 调用点与文档引用都不用改。
 
 
 def is_overdue(row: dict, today: Optional[date] = None) -> bool:

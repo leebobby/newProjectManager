@@ -153,8 +153,11 @@ def test_special_report_lights_only_the_status_cell():
     """
     ws = _special_sheet()
     row = next(r for r in range(1, 20) if str(ws.cell(r, 1).value) == "1")
-    lit = [c for c in range(1, 7)
+    # 每个逻辑列在 36 列物理网格上占一段合并区，样式只落在左上角那一格
+    lit = [c for c in range(1, xlsx_utils._NCOL + 1)
            if _rgb(ws.cell(row, c).fill.fgColor) in brand.STATUS_FILLS.values()]
     assert len(lit) == 1, "只有状态格该点灯"
+    assert lit[0] == xlsx_utils._spans_from_ratios(xlsx_utils._SIX_RATIOS)[-1][0], \
+        "点灯的应该是最后一列（状态）"
     assert str(ws.cell(row, lit[0]).value) == "进行中"
     assert _rgb(ws.cell(row, lit[0]).fill.fgColor) == "FFD966"
