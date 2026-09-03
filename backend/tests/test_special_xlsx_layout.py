@@ -200,25 +200,72 @@ def test_image_reserves_rows_matching_its_height():
 
 
 # ─── 边框 ─────────────────────────────────────────────────────────────────
-def test_merged_block_border_is_written_on_the_anchor_cell():
-    """合并区的边框**只能设在左上角那一格**上。
+# 这一节**必须读 xlsx 的原始 XML**，不能拿 openpyxl 读回来的对象验证：
+# 它的 reader 会自己把合并区左上角的边框铺到四周，于是读回来看着是完整的框、
+# 而文件里只有左上角那一格——Excel 打开就是「每段后面一条小短线、右边没有框」。
+def _raw_borders(sp):
+    """{行号: {列字母: {"left"/"right"/"top"/"bottom": 线型或 None}}}，直接解自文件。"""
+    import re
+    import zipfile
 
-    保存时 openpyxl 只留左上角的样式、再把它的边框铺到合并区四周；设在别的
-    格子上的会被安静地丢掉——看着像设了、存下来没有，页面上就是"半个框"。
+    z = zipfile.ZipFile(xlsx_utils.build_special_xlsx(sp))
+    sheet = z.read("xl/worksheets/sheet1.xml").decode()
+    styles = z.read("xl/styles.xml").decode()
+    xfs = re.search(r'<cellXfs count="\d+">(.*?)</cellXfs>', styles, re.S).group(1)
+    xf_border = [int(m or 0) for m in re.findall(r'<xf [^>]*borderId="(\d+)"', xfs)]
+    blocks = re.findall(
+        r"<border[ >].*?</border>|<border/>",
+        re.search(r'<borders count="\d+">(.*?)</borders>', styles, re.S).group(1), re.S)
+
+    def sides(idx):
+        b = blocks[idx]
+        out = {}
+        for side in ("left", "right", "top", "bottom"):
+            m = re.search(r'<%s style="(\w+)"' % side, b)
+            out[side] = m.group(1) if m else None
+        return out
+
+    rows = {}
+    for row_xml in re.finditer(r'<row r="(\d+)"[^>]*>(.*?)</row>', sheet, re.S):
+        rows[int(row_xml.group(1))] = {
+            col: sides(xf_border[int(sid or 0)])
+            for col, sid in re.findall(r'<c r="([A-Z]+)\d+"(?: s="(\d+)")?',
+                                       row_xml.group(2))}
+    return rows
+
+
+def test_merged_rows_are_written_cell_by_cell():
+    """整幅合并的行（章节标题、正文段落）在文件里必须有 36 个格子。
+
+    只写左上角那一格的话，Excel 画出来的框只在 A 列那么宽处露出一小截
+    ——就是"每个段落后面一条小短线"，而外框整个是没有的。
     """
-    ws = _sheet(_special()).active
-    row = next(r for r in range(1, 30) if str(ws.cell(r, 1).value or "").startswith("目标"))
-    anchor = ws.cell(row, 1)
-    for side in ("left", "right", "top", "bottom"):
-        assert getattr(anchor.border, side).style == "medium", f"{side} 边没画上"
-    # 中间那些格子不该有竖线，否则整段正文被切成一条条
-    assert ws.cell(row, xlsx_utils._NCOL // 2).border.left.style is None
+    rows = _raw_borders(_special())
+    written = {r: c for r, c in rows.items() if c}
+    assert written, "一行都没写？"
+    for rown, cells in written.items():
+        assert len(cells) == xlsx_utils._NCOL, f"第 {rown} 行只写了 {len(cells)} 格"
 
 
-def test_table_block_gets_an_outer_frame():
-    """表格整块有一圈外框：表头、数据、外框三层才分得出"这是一张表"。"""
-    ws = _sheet(_special()).active
-    head_row = next(r for r in range(1, 40) if str(ws.cell(r, 1).value) == "序号")
-    assert ws.cell(head_row, 1).border.top.style == "medium"
-    last = max(r for r in range(head_row, 60) if str(ws.cell(r, 1).value or "").strip())
-    assert ws.cell(last, 1).border.bottom.style == "medium"
+def test_every_section_has_a_complete_outer_frame():
+    """每个分段（标题行 + 内容）压一个完整外框，四条边都要真的落在文件里。"""
+    rows = _raw_borders(_special())
+    last = "A" * 0 or _col_letter(xlsx_utils._NCOL)
+    tops = [r for r, c in sorted(rows.items())
+            if c and all(c[col]["top"] == "medium" for col in ("A", "R", last))]
+    assert tops, "分段顶边没铺满整幅"
+    top = tops[0]
+    assert rows[top]["A"]["left"] == "medium", "左边没有"
+    assert rows[top][last]["right"] == "medium", "**右边没有**——只写左上角时就是这个症状"
+    bottoms = [r for r in sorted(rows) if r > top and rows[r]
+               and all(v["bottom"] == "medium" for v in rows[r].values())]
+    assert bottoms, "分段底边没铺满整幅"
+    bot = bottoms[0]
+    for r in range(top, bot + 1):
+        assert rows[r]["A"]["left"] == "medium" and rows[r][last]["right"] == "medium", \
+            f"第 {r} 行的左右边断了"
+
+
+def _col_letter(n):
+    from openpyxl.utils import get_column_letter
+    return get_column_letter(n)

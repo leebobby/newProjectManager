@@ -8,9 +8,9 @@
   是四五个页签，顺序和上下文全断在那行指引上；
 - 全表统一 **36 列等宽窄网格**，每张表按「列宽比例」合并到这张网格上——
   列宽一样宽之后，6 列的事务表与 5~8 列的自由表格才能并存而谁都不变形；
-- 标题 / 章节 / 叙述段落横跨整幅合并；**合并区的样式只认左上角那一格**
-  （保存时别的格子上的会被丢掉，openpyxl 再把左上角的边框铺到合并区四周），
-  所以边框/底色都写在那一格上，见 `_frame()`；
+- 标题 / 章节 / 叙述段落横跨整幅合并，但样式**逐格写**：xlsx 文件里合并区只留
+  左上角那一格，而 Excel 画合并区的边框是按边上每一格取的——只写左上角，
+  那道线就只在 A 列那么宽处露出一小截，右边整个没有。见 `_frame()`；
 - 单元格统一自动换行 + 按内容估算行高，长文本不再溢出/挤压；
 - 打印按横向、缩放到一页宽，不然 36 列会被从中间劈成左右两叠。
 
@@ -106,26 +106,28 @@ def _with_sides(border, **sides):
                   top=sides.get("top", border.top), bottom=sides.get("bottom", border.bottom))
 
 
-def _frame(ws, r1, r2, spans):
-    """给一块表（r1..r2 行、spans 给出的逻辑列）**外圈**压一道粗一点的边。
+def _frame(ws, r1, r2, c1: int = 1, c2: int = _NCOL):
+    """给 r1..r2 行、c1..c2 列这一块**外圈**压一道粗边。
 
-    边框**只能设在合并区左上角那一格上**：保存时 openpyxl 只留左上角的样式，
-    再把它的边框铺到整个合并区四周，写在别的格子上的会被安静地丢掉——
-    看着像设了、存下来没有。这也是"导出的表没有好看的边框"的来源之一。
+    **必须逐格写在真正的边上**，不能只写合并区的左上角：xlsx 文件里合并区
+    只留左上角那一格，而 Excel 画合并区的边框是**按边上每一格**取的——只写
+    左上角，那道线就只在 A 列那么宽的地方露出一小截（"每段后面一条小短线"），
+    右边则整个没有（"外框没有"）。
+
+    **不要用 openpyxl 读回来的样子验证这件事**：它的 reader 会自己把左上角的
+    边框铺到合并区四周，于是读回来看着是完整的框，而文件里根本没有。
+    要验就解开 xlsx 数 `<c>` 标签，见 tests/test_special_xlsx_layout.py。
     """
-    if r2 < r1 or not spans:
+    if r2 < r1 or c2 < c1:
         return
-    left_c, right_c = spans[0][0], spans[-1][0]
+    for c in range(c1, c2 + 1):
+        for r, side in ((r1, "top"), (r2, "bottom")):
+            cell = ws.cell(row=r, column=c)
+            cell.border = _with_sides(cell.border, **{side: _MEDIUM})
     for r in range(r1, r2 + 1):
-        cell = ws.cell(row=r, column=left_c)
-        cell.border = _with_sides(cell.border, left=_MEDIUM)
-        cell = ws.cell(row=r, column=right_c)
-        cell.border = _with_sides(cell.border, right=_MEDIUM)
-    for (c1, _c2) in spans:
-        cell = ws.cell(row=r1, column=c1)
-        cell.border = _with_sides(cell.border, top=_MEDIUM)
-        cell = ws.cell(row=r2, column=c1)
-        cell.border = _with_sides(cell.border, bottom=_MEDIUM)
+        for c, side in ((c1, "left"), (c2, "right")):
+            cell = ws.cell(row=r, column=c)
+            cell.border = _with_sides(cell.border, **{side: _MEDIUM})
 
 
 # 点灯列的底色/字色，与前端 RichGrid 及周报 HTML 的三档保持一致。
@@ -453,9 +455,15 @@ def build_special_xlsx(special) -> io.BytesIO:
              align="left", height=20, italic=False, wrap=True):
         r = state["row"]
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=_NCOL)
-        c = ws.cell(row=r, column=1, value=text)
-        c.font = Font(name=_FONT, bold=bold, size=size, color=font_color, italic=italic)
-        c.alignment = Alignment(horizontal=align, vertical="center", wrap_text=wrap)
+        ws.cell(row=r, column=1, value=text)
+        font_ = Font(name=_FONT, bold=bold, size=size, color=font_color, italic=italic)
+        align_ = Alignment(horizontal=align, vertical="center", wrap_text=wrap)
+        # 整幅合并的行一律**逐格写**：文件里合并区只留左上角那一格，只写它的话
+        # 后面再往这一行加边框就只能露出 A 列那么宽的一小截（见 _frame）
+        for cc in range(1, _NCOL + 1):
+            cell = ws.cell(row=r, column=cc)
+            cell.font = font_
+            cell.alignment = align_
         if fill:
             _fill(r, 1, _NCOL, fill)
         ws.row_dimensions[r].height = height
@@ -485,11 +493,15 @@ def build_special_xlsx(special) -> io.BytesIO:
         text = text or "—"
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=_NCOL)
         c = ws.cell(row=r, column=1, value=text)
-        c.font = Font(name=_FONT, size=11, color="262626")
-        c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True,
-                                indent=1)
-        c.border = _BORDER
-        _frame(ws, r, r, [(1, _NCOL)])
+        font = Font(name=_FONT, size=11, color="262626")
+        align = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
+        # **逐格写**：合并区在文件里只有左上角那一格，只给它上样式的话
+        # Excel 那道框只在 A 列那么宽处露出一小截（见 _frame 的说明）
+        for cc in range(1, _NCOL + 1):
+            cell = ws.cell(row=r, column=cc)
+            cell.font = font
+            cell.alignment = align
+            cell.border = _BORDER
         cap = int(_NCOL * _BASE_W) - 4
         ws.row_dimensions[r].height = max(20, min(260, _cell_lines(text, cap) * 16 + 4))
         state["row"] += 1
@@ -514,7 +526,7 @@ def build_special_xlsx(special) -> io.BytesIO:
         caps = [(c2 - c1 + 1) * _BASE_W for (c1, c2) in col_specs]
 
         # 表头
-        top_row = r = state["row"]
+        r = state["row"]
         for j, (c1, c2) in enumerate(col_specs):
             if c2 > c1:
                 ws.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
@@ -557,7 +569,6 @@ def build_special_xlsx(special) -> io.BytesIO:
                         cell.fill = PatternFill("solid", fgColor=cell_fill)
             ws.row_dimensions[r].height = max(18, min(160, max_lines * 15 + 3))
             state["row"] += 1
-        _frame(ws, top_row, state["row"] - 1, col_specs)
 
     # ===== 标题区：红字标题 + 灰副标题 + 一条细红线 =====
     # 不再用深红横幅压顶。横幅一铺，整份周报里最抢眼的是那两条红，
@@ -671,7 +682,7 @@ def build_special_xlsx(special) -> io.BytesIO:
         caps = [(c2 - c1 + 1) * _BASE_W for (c1, c2) in spans]
 
         _flush_section()
-        top_row = r = state["row"]
+        r = state["row"]
         col = 0
         for h in hdrs:
             last = min(col + h["colspan"], body_cols) - 1
@@ -731,7 +742,6 @@ def build_special_xlsx(special) -> io.BytesIO:
                         cell.fill = PatternFill("solid", fgColor=_ZEBRA)
             ws.row_dimensions[r].height = max(18, min(180, max_lines * 15 + 3))
             state["row"] += 1
-        _frame(ws, top_row, state["row"] - 1, spans)
         return True
 
     def render_block_images(block):
@@ -758,6 +768,8 @@ def build_special_xlsx(special) -> io.BytesIO:
     for sec in special_layout.resolve_sections(special):
         n += 1
         title = f"{_cn_index(n)}、{sec.title}"
+        # 章节标题行还没落笔（见 _flush_section），但它就落在这一行
+        sec_top = state["row"]
         section(title)
         ok = True
         if sec.is_custom and sec.kind == "grid":
@@ -800,6 +812,9 @@ def build_special_xlsx(special) -> io.BytesIO:
             state["pending"] = None
             n -= 1
             continue
+        # **整个分段（标题行 + 内容）压一个外框**：章节标题、正文、表格三层里
+        # 只有表格自带细网格，没有外框时整页看着是一堆浮着的横条。
+        _frame(ws, sec_top, state["row"] - 1)
         gap()
 
     buf = io.BytesIO()
