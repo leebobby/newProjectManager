@@ -12,6 +12,7 @@ from migrate import ensure_schema
 from routers import annual_iterations, iteration_product_requirements, iteration_requirements
 from routers import auth as auth_router
 from routers import config as config_router
+from routers import archives as archives_router, history as history_router
 from routers import business_trips, customer_custom_req, customer_extra, customer_issues, customer_status, customers, debug_versions, domains, handbook, hardware_issues, issue_tracks, issues, key_features, licenses, major_versions, mapping, metrics, notifications, op_logs, project_formation, resource_groups, roadmap, sow, special_templates, specials, stakeholders, system as system_router, users
 
 # 先做轻量迁移（给老库加列），再 create_all 补齐缺失的表，
@@ -67,6 +68,8 @@ app.include_router(domains.router, dependencies=authed)
 app.include_router(project_formation.router, dependencies=authed)
 app.include_router(business_trips.router, dependencies=authed)
 app.include_router(system_router.router, dependencies=authed)
+app.include_router(history_router.router, dependencies=authed)
+app.include_router(archives_router.router, dependencies=authed)
 
 # 用户管理 / 操作日志：路由内部已挂 require_admin
 app.include_router(users.router)

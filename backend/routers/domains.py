@@ -26,6 +26,7 @@ import schemas
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
+import revisions
 from routers import _issue_source, _req_scope
 from routers._lookups import project_name_map
 from routers.config import _load as _load_config
@@ -465,6 +466,7 @@ def update_domain_content(
     elif content.version != payload.version:
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
 
+    before = revisions.snapshot(content)
     changed = []
     if payload.recent_work is not None:
         content.recent_work = _sanitize_rich(payload.recent_work)
@@ -485,6 +487,7 @@ def update_domain_content(
         changed.append("risks")
 
     content.version += 1
+    revisions.record(db, content, before, user=current_user)
     db.commit()
     db.refresh(content)
     log_op(db, action="修改", target="领域内容", target_id=group_id,
@@ -615,9 +618,11 @@ def update_domain_risk(
     changes.pop("version", None)
     if changes.get("progress") is not None:
         changes["progress"] = _sanitize_rich(changes["progress"])
+    before = revisions.snapshot(obj)
     for k, v in changes.items():
         setattr(obj, k, v)
     obj.version += 1
+    revisions.record(db, obj, before, user=current_user)
     db.commit()
     db.refresh(obj)
     log_op(db, action="修改", target="领域事务/风险", target_id=obj.id,
@@ -635,6 +640,7 @@ def delete_domain_risk(
     obj = db.query(models.DomainRisk).filter(models.DomainRisk.id == rid).first()
     if not obj:
         raise HTTPException(404, "Not found")
+    revisions.record_delete(db, obj, user=current_user)
     db.delete(obj)
     db.commit()
     log_op(db, action="删除", target="领域事务/风险", target_id=rid,
@@ -818,9 +824,11 @@ def update_legacy_issue(
     if "participants" in changes:
         ids = changes.pop("participants") or []
         obj.participants_json = json.dumps([int(x) for x in ids])
+    before = revisions.snapshot(obj)
     for k, v in changes.items():
         setattr(obj, k, v)
     obj.version += 1
+    revisions.record(db, obj, before, user=current_user)
     db.commit()
     db.refresh(obj)
     log_op(db, action="修改", target="领域遗留问题", target_id=obj.id,
@@ -839,6 +847,7 @@ def delete_legacy_issue(
     obj = db.query(models.DomainLegacyIssue).filter(models.DomainLegacyIssue.id == lid).first()
     if not obj:
         raise HTTPException(404, "Not found")
+    revisions.record_delete(db, obj, user=current_user)
     db.delete(obj)
     db.commit()
     log_op(db, action="删除", target="领域遗留问题", target_id=lid,

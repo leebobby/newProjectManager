@@ -562,6 +562,31 @@ export const roadmapApi = {
   removeMilestone: (id) => http.delete(`/roadmap/milestones/${id}`),
 }
 
+// 修订历史（只读——能改的历史就不是历史了，服务端也没有写接口）
+export const historyApi = {
+  // scope 形如 special:12 / domain:3 / customer:7 / hardware:0；
+  // 也可按行查（entity + entity_id）。至少要给一个，否则服务端 400。
+  list: (params) => http.get('/history', { params }),
+  // 某一行在某个时刻的样子。at 传**本地时间**，服务端自己换算成 UTC 去比。
+  at: (entity, entity_id, at) => http.get('/history/at', { params: { entity, entity_id, at } }),
+  // 实体 / 列名对照由服务端给，前端不要再存一份（加一列时总有一处会漏）
+  entities: () => http.get('/history/entities'),
+}
+
+// 整页存档（每周自动 + 手工）
+export const archiveApi = {
+  kinds: () => http.get('/archives/kinds'),
+  targets: (kind) => http.get('/archives/targets', { params: { kind } }),
+  list: (params) => http.get('/archives', { params }),
+  get: (id) => http.get(`/archives/${id}`),
+  // 回看用的 HTML 由服务端渲染：专项走的就是周报那一份，另写一套必然分叉。
+  // 走 axios 而不是把 URL 塞进 iframe 的 src——接口要带 token，iframe 发不出请求头，
+  // 表现是存档页一片空白而控制台里是 401。拿到 HTML 后用 srcdoc 挂进去。
+  view: (id) => http.get(`/archives/${id}/view`, { responseType: 'text' }),
+  create: (kind, ref_id) => http.post('/archives', { kind, ref_id }),
+  remove: (id) => http.delete(`/archives/${id}`),
+}
+
 export function downloadBlob(blob, filename) {
   const url = window.URL.createObjectURL(blob)
   const a = document.createElement('a')

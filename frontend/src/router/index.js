@@ -103,6 +103,13 @@ const routes = [
     meta: { title: '项目一本通', icon: 'Notebook', group: '知识管理' },
   },
   {
+    path: '/archives',
+    name: 'ArchiveBrowser',
+    component: () => import('../views/ArchiveBrowser.vue'),
+    // 读权限对所有登录用户开放（删存档才限 admin，页面内自查 + 服务端独立校验）
+    meta: { title: '历史存档', icon: 'Collection', group: '知识管理' },
+  },
+  {
     path: '/specials',
     name: 'SpecialList',
     // 路由本身不需要 requireAdmin（页面内自查），让左侧菜单的"专项管理"分组对普通用户也可见

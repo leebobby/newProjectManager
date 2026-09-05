@@ -22,6 +22,7 @@ from auth import get_current_user, require_admin
 from database import get_db
 from notify import dispatch
 from op_log import log_op
+import revisions
 from routers._lookups import fill_group_fk, fill_user_fk
 
 # 批量导入列：(表头, 模型字段, 是否必填)。machine_id/battlefield 用于定位机台，非模型列。
@@ -242,6 +243,7 @@ def update_item(
     if item.version != payload.version:
         raise HTTPException(status_code=409, detail="数据已被他人修改，请刷新后重试")
 
+    before = revisions.snapshot(item)
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
     # 责任领域：若前端只改了文本快照，反查 PL 组 FK
@@ -261,6 +263,7 @@ def update_item(
             item.closed_at = ""
 
     item.version += 1
+    revisions.record(db, item, before, user=current_user)
     db.commit()
     db.refresh(item)
 
@@ -284,6 +287,7 @@ def delete_item(
     if not item:
         raise HTTPException(status_code=404, detail="Not found")
     snapshot = f"kind={item.kind} desc={(item.description or '')[:40]}"
+    revisions.record_delete(db, item, user=current_admin)
     db.delete(item)
     db.commit()
     log_op(db, action="删除", target="客户面问题", target_id=item_id,

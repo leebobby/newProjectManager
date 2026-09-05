@@ -26,6 +26,9 @@
             :loading="extraSaving || formationSaving"
             @click="toggleEdit"
           >{{ editBtnLabel }}</el-button>
+          <HistoryActions :scope="`special:${route.params.id}`" kind="special"
+                          :ref-id="Number(route.params.id)"
+                          :title="`${label}：${special.name || ''}`" />
           <el-button size="small" :icon="Download" @click="onExportXlsx">导出 Excel</el-button>
           <el-button size="small" type="primary" :icon="Message" @click="openReportDialog">发周报</el-button>
         </div>
@@ -489,6 +492,7 @@ import { checkStorageOrWarn } from '../store/storage'
 import EditableText from '../components/EditableText.vue'
 import MilestoneTimeline from '../components/MilestoneTimeline.vue'
 import FormationGrid from '../components/FormationGrid.vue'
+import HistoryActions from '../components/HistoryActions.vue'
 import RichGrid from '../components/RichGrid.vue'
 import RichTextEditor from '../components/RichTextEditor.vue'
 import SubscribeButton from '../components/SubscribeButton.vue'

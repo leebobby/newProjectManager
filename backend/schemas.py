@@ -1957,3 +1957,74 @@ class IssueTrackOut(BaseModel):
     updated_at: Optional[LocalDT] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ─── 修订历史 / 整页存档 ──────────────────────────────────────────────────────
+
+class FieldRevisionOut(BaseModel):
+    id: int
+    entity: str
+    entity_label: str          # 实体中文名，前端不再各存一份对照表
+    entity_id: int
+    entity_title: str = ""     # 改动时那一行的首句；行被删掉后仍认得出是哪一条
+    scope_key: str = ""
+    field: str = ""
+    field_label: str = ""
+    old_value: str = ""
+    new_value: str = ""
+    # 出口再清洗一遍的 HTML：留痕里存的是**当时库里那个值**，而入口清洗是后加的，
+    # 老数据没洗过（见 CLAUDE.md「富文本：入口清洗，出口也清洗」）。
+    # 前端拿 *_html 直接渲染，不要自己去 v-html 那两个原始值。
+    old_html: str = ""
+    new_html: str = ""
+    action: str = "update"
+    username: str = ""
+    created_at: LocalDT
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FieldRevisionPage(BaseModel):
+    total: int
+    items: List[FieldRevisionOut]
+
+
+class RowAtOut(BaseModel):
+    """某一行在某个时刻的样子。"""
+    entity: str
+    entity_id: int
+    at: str
+    exists: bool = True        # 行现在还在不在；不在时 fields 为空，去看删除记录
+    fields: List[dict] = []    # [{field, label, value}]，按登记表顺序
+
+
+class PageSnapshotOut(BaseModel):
+    id: int
+    kind: str
+    kind_label: str
+    ref_id: int
+    label: str                 # 存档日 YYYY-MM-DD（本地，不做时区转换）
+    title: str = ""
+    reason: str = "weekly"
+    created_by: str = ""
+    created_at: LocalDT
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PageSnapshotDetail(PageSnapshotOut):
+    payload: dict = {}
+
+
+class PageSnapshotTarget(BaseModel):
+    """存档浏览页的左侧清单：有档的对象各一行。"""
+    kind: str
+    ref_id: int
+    title: str = ""
+    count: int = 0
+    latest: str = ""           # 最近一份档的存档日
+
+
+class PageSnapshotCreate(BaseModel):
+    kind: str
+    ref_id: int = 0

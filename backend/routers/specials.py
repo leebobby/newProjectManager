@@ -12,7 +12,7 @@ import uuid
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from html.parser import HTMLParser
-from typing import List
+from typing import List, Optional
 from urllib.parse import quote as url_quote
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Request, UploadFile
@@ -26,6 +26,7 @@ import special_layout
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
+import revisions
 from notify import dispatch
 from routers import _issue_source
 from routers._lookups import fill_user_fk
@@ -486,9 +487,11 @@ def update_content(
     _sanitize_rich_fields(data)
     if "extra_grids_json" in data:
         data["extra_grids_json"] = _sanitize_blocks_json(data["extra_grids_json"])
+    before = revisions.snapshot(content)
     for k, v in data.items():
         setattr(content, k, v)
     content.version += 1
+    revisions.record(db, content, before, user=current_user)
     db.commit()
     db.refresh(content)
     log_op(db, action="修改", target=f"{_kind_label(special.kind)}内容", target_id=sid,
@@ -523,8 +526,10 @@ def update_overview_light(
         light = enums.norm_special_light(payload.light)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    before = revisions.snapshot(content)
     content.overview_light = light
     content.version += 1
+    revisions.record(db, content, before, user=current_user)
     db.commit()
     db.refresh(special)
     log_op(db, action="修改", target=f"{_kind_label(special.kind)}总览点灯", target_id=sid,
@@ -793,8 +798,10 @@ def _update_item(
     data = payload.model_dump(exclude_unset=True)
     _sanitize_rich_fields(data)
     fill_user_fk(db, data, "owner", "owner_user_id")
+    before = revisions.snapshot(item)
     for k, v in data.items():
         setattr(item, k, v)
+    revisions.record(db, item, before, user=user)
     db.commit()
     db.refresh(item)
     log_op(db, action="修改", target=_action_target(kind), target_id=item.id,
@@ -824,6 +831,7 @@ def _delete_item(
         raise HTTPException(404, "条目不存在")
     _require_not_locked_by_other(db, item.special_id, user)
     snapshot = f"special_id={item.special_id} content={(item.content or '')[:60]}"
+    revisions.record_delete(db, item, user=user)
     db.delete(item)
     db.commit()
     log_op(db, action="删除", target=_action_target(kind), target_id=item_id,
@@ -1511,10 +1519,16 @@ def _attach_image(sid: int, stored: str, images: list):
     return cid
 
 
-def _render_report_html(special: models.Special):
-    """返回 (html, inline_images)：图片以 cid: 引用，附件由调用方挂到邮件上。"""
+def _render_report_html(special: models.Special, *, today: Optional[str] = None,
+                        heading: Optional[str] = None):
+    """返回 (html, inline_images)：图片以 cid: 引用，附件由调用方挂到邮件上。
+
+    `today` / `heading` 是给整页存档回看用的（archives.py）：存档要显示的是
+    **存档那天**的日期与「存档」字样，默认值一动不动就是原来的周报。
+    另写一份存档渲染的表现是「加了一种分段，页面和周报里都有、存档里没有」。
+    """
     label = _kind_label(special.kind)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = today or datetime.now().strftime("%Y-%m-%d")
 
     images: List[dict] = []
     sections: List[str] = []
@@ -1538,7 +1552,8 @@ def _render_report_html(special: models.Special):
         # 标题条
         f'<div style="background:linear-gradient(135deg,#4073BA 0%,#2D4A6B 100%);'
         f'color:#fff;padding:18px 24px;">'
-        f'<div style="font-size:20px;font-weight:600;">【{_e(label)}周报】{_e(special.name)}</div>'
+        f'<div style="font-size:20px;font-weight:600;">'
+        f'{_e(heading) if heading else f"【{_e(label)}周报】{_e(special.name)}"}</div>'
         f'<div style="margin-top:6px;font-size:13px;opacity:.9;">'
         f'责任人：{_e(special.owner or "-")} &nbsp;|&nbsp; '
         f'报告日期：{today}'

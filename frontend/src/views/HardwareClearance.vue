@@ -22,6 +22,7 @@
             <el-button size="small" :icon="Upload" :loading="importing">导入</el-button>
           </el-upload>
           <el-button size="small" :icon="Download" :loading="exporting" @click="onExport">导出</el-button>
+          <HistoryActions scope="hardware:0" kind="hardware" :ref-id="0" title="硬件问题清零" />
           <el-button v-if="isAdmin" size="small" :icon="Setting" @click="openConfig">配置</el-button>
         </div>
       </div>
@@ -142,6 +143,7 @@ import { Bottom, Delete, Document, Download, EditPen, Plus, Search, Setting, Top
 import { configApi, customerStatusApi, downloadBlob, hardwareIssueApi, resourceGroupApi, userApi } from '../api'
 import { auth } from '../store/auth'
 import { naturalCompare } from '../utils/format'
+import HistoryActions from '../components/HistoryActions.vue'
 
 const props = defineProps({
   // 从客户总览"硬件清零"格跳过来时，聚焦到某台机台（machine_status_id）

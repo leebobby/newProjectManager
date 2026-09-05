@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text,
-                        UniqueConstraint)
+from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String,
+                        Text, UniqueConstraint)
 from sqlalchemy.orm import relationship
 
 from database import Base
@@ -1405,3 +1405,80 @@ class IssueCollectLog(Base):
     error = Column(Text, default="", comment="失败原因（含脚本 stderr 尾部）")
     started_at = Column(DateTime, default=datetime.utcnow, index=True)
     finished_at = Column(DateTime)
+
+
+class FieldRevision(Base):
+    """协作编辑字段的**修订留痕**：一次保存里改动的每个字段各存一条。
+
+    与 operation_logs 的分工是两个问题，不要合并：
+    `op_log` 答「谁在什么时候动过这一条」（审计），这张表答「那会儿写的是什么」（回看）。
+    合成一张的话，`detail` 里就得塞几 KB 富文本——审计页本来是按人按时间扫的，
+    被正文撑爆之后就没人看了；而反过来按字段翻历史又得去解析那段摘要。
+
+    只记**改动**，不记新增：行的 `created_at` 已经说明了"那时它还不存在"，
+    再补一条 create 记录只是把每张表的历史都掺进一半噪声。
+    删除记一条（`action="delete"`、`field=""`、`old_value`＝整行 JSON）——
+    误删掉的是别人跟了几周的进展，"删之前长什么样"是这张表最该答的问题之一。
+
+    `scope_key`（`special:12` / `domain:3` / `customer:7` / `hardware:0`）是为了
+    「这个对象的全部历史」能一次查完：不然翻一个专项的历史要按 content / task / risk
+    分三次查再在前端并排序，而分页会立刻失真。
+
+    新表由 create_all 自动建（见 CLAUDE.md「数据库结构变更」：整张新表走 create_all）。
+    """
+    __tablename__ = "field_revisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity = Column(String(32), nullable=False, index=True,
+                    comment="实体类型，取值见 revisions.TRACKED")
+    entity_id = Column(Integer, nullable=False, index=True, comment="该实体的行主键")
+    scope_key = Column(String(48), nullable=False, default="", index=True,
+                       comment="归属对象，如 special:12；用于「这个对象的全部历史」")
+    entity_title = Column(String(128), default="",
+                          comment="改动时该行的名称/首句（冗余）；行被删掉后仍认得出是哪一条")
+    field = Column(String(48), nullable=False, default="", comment="列名；删除记录为空串")
+    old_value = Column(Text, default="", comment="改之前的值（删除时是整行 JSON）")
+    new_value = Column(Text, default="", comment="改之后的值")
+    action = Column(String(8), nullable=False, default="update", comment="update / delete")
+    user_id = Column(Integer, nullable=True, index=True)
+    username = Column(String(64), default="", comment="冗余存，用户改名/停用后仍看得出是谁")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("ix_field_rev_entity_row", "entity", "entity_id", "created_at"),
+        Index("ix_field_rev_scope_time", "scope_key", "created_at"),
+    )
+
+
+class PageSnapshot(Base):
+    """整页存档：把某个对象**当时那一整页**的数据原样存一份，每周自动 + 可手工。
+
+    与 field_revisions 是两种"回头看"，都要留着：
+    修订历史答「这一格之前写的是什么」（连续、精确到每次保存）；
+    这张表答「那一周整页长什么样」（离散，但一眼能看到全貌，且不受行增删影响——
+    按修订历史重建一张表要把创建时间与删除记录一起算，重建错了没人看得出来）。
+
+    payload_json 存的就是**当时详情接口返回的那个结构**，回看时喂给同一套渲染，
+    存档与页面才不会长得不一样。title 冗余当时的名称：对象改名后，
+    存档列表里还得认得出这份档是谁的。
+
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "page_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(16), nullable=False, index=True,
+                  comment="页面类型，取值见 archives.BUILDERS")
+    ref_id = Column(Integer, nullable=False, default=0, index=True,
+                    comment="对象主键；全局单页（如硬件清零）固定 0")
+    label = Column(String(10), nullable=False, index=True, comment="存档日 YYYY-MM-DD（本地）")
+    title = Column(String(256), default="", comment="存档时的对象名称（冗余，改名后仍认得出）")
+    payload_json = Column(Text, default="{}", comment="当时整页数据的 JSON")
+    reason = Column(String(16), default="weekly", comment="weekly（定时）/ manual（手工）")
+    created_by = Column(String(64), default="", comment="手工存档的操作人；定时为空")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        # 同一对象同一天只留一份：定时任务重跑、手工再存一次都覆盖而不是堆一摞
+        UniqueConstraint("kind", "ref_id", "label", name="uq_page_snapshot_kind_ref_label"),
+    )

@@ -15,7 +15,9 @@
 │   ├── auth.py                  bcrypt 哈希 + JWT + get_current_user / require_admin
 │   ├── op_log.py                操作日志写入（异常吞掉不影响主流程）
 │   ├── notify.py                站内通知分发 dispatch / broadcast（与 op_log 是两条独立路径）
-│   ├── scheduler.py             APScheduler：DDL 临期扫描 + 每日问题单快照采集
+│   ├── revisions.py             修订留痕：哪些实体哪些列留痕收口在 TRACKED（改前/改后各存一份）
+│   ├── archives.py              整页存档：payload 构造 + 回看渲染（专项复用周报那一份）
+│   ├── scheduler.py             APScheduler：DDL 临期扫描 + 每日问题单快照采集 + 每周整页存档
 │   ├── migrate.py               ⚠ 已冻结的加列迁移（历史老库兼容，勿再追加）
 │   ├── automigrate.py           启动时自动 alembic upgrade head（失败只记日志）
 │   ├── alembic/                 结构变更的正式通道（改名/删列/改类型/加约束/数据回填）
@@ -193,6 +195,7 @@ npm run dev
 | 组织管理 | 干系人管理 | `/stakeholders` | 登录用户（写 admin） | 项目组沟通地图 + 战场沟通矩阵 + **项目阵型**（阵型图上传 / 工时名单，支持 Excel 导入导出） |
 | 组织管理 | 组织架构 | `/resource-groups` | 仅 admin | 部门 / PL 组两级资源组主数据；组长挂 users，删除前拦截仍有成员或子组的组 |
 | 知识管理 | 项目一本通 | `/handbook` | 登录用户（写 admin） | 自定义分类，条目支持外链或上传文件，普通用户只读 + 下载；顶部关键字搜索 |
+| 知识管理 | 历史存档 | `/archives` | 登录用户（删除 admin） | 按「类型 → 对象 → 存档日」翻回去看某一天整页长什么样。每周一 07:00 自动给每个专项 / 领域 / 客户面 / 硬件清零各存一份，页面上也能随时「存一份档」（同天覆盖）。专项的回看直接用周报那一份渲染，不会出现"页面上有、存档里没有" |
 | 系统管理 | 数据对账 | `/data-mapping` | 仅 admin | 把历史字符串字段批量绑定到主数据：客户对账（battlefield → customer_id）、人员对账（姓名/工号 → users），支持自动回填 / 手动指定 / 一键建档 |
 | 系统管理 | 用户管理 | `/users` | 仅 admin | 增删用户、改角色、禁用、重置密码；也用于维护「纯人员档案」（`can_login=false`）与 PL 组归属 |
 | 系统管理 | 操作日志 | `/op-logs` | 仅 admin | 登录与关键写操作审计；可按用户/动作/对象/时间范围/关键字分页查询 |
@@ -283,6 +286,14 @@ npm run dev
 
 **v0.26.0 之后**（依据 `alembic/versions/0004`–`0007` 与现有代码）
 
+- **回头看：修订历史 + 整页存档**（两张新表由 `create_all` 自动建，无迁移）：
+  页面上的进展是原地覆盖的，改掉之后就回不去了——`operation_logs` 只记「谁在什么时候
+  动过这条」，没记内容。现在补两条路：
+  **修订历史**（`field_revisions`）在专项 / 领域 / 客户面的进展类字段上每改一次留一份
+  改前改后，页面「修订历史」按钮里翻，留痕与改动同一个事务（被乐观锁挡下的保存不留痕）；
+  **整页存档**（`page_snapshots`）每周一 07:00 自动给每个专项 / 领域 / 客户面 / 硬件清零
+  各存一份整页，也可随时手工存（同天覆盖），在「知识管理 → 历史存档」翻。
+  自由表格这类大块 JSON 不进修订历史（一次保存几十 KB），靠整页存档回看。
 - **客户面问题条目实体化**（Alembic `0004` / `0005`）：`customer_status.recent_focus` /
   `key_issues` 的 JSON 清单提升为实体表 `customer_issues`，一表三类（`issue` / `task` /
   `demand`），补齐责任人 / 责任领域 / 重要程度 / 提出与计划解决时间 / 进展 / 分类专项；
