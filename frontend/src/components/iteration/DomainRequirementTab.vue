@@ -48,6 +48,21 @@
           :label="`${u.full_name || u.username}${u.emp_no ? ' (' + u.emp_no + ')' : ''}`"
         />
       </el-select>
+      <el-select
+        v-model="versionTab"
+        placeholder="按计划交付版本筛选"
+        clearable
+        filterable
+        size="small"
+        style="width: 240px"
+      >
+        <el-option
+          v-for="v in versionOptions"
+          :key="v.key"
+          :value="v.value"
+          :label="`${v.label} (${v.count})`"
+        />
+      </el-select>
       <el-checkbox v-model="hideChanged" size="small">隐藏已变更</el-checkbox>
       <span class="tip">
         共 {{ filteredList.length }}/{{ list.length }} 条<template v-if="changedCount">，
@@ -495,6 +510,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Refresh, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { downloadBlob, iterationRequirementApi, resourceGroupApi, userApi } from '../../api'
 import EditSelectCell from '../EditSelectCell.vue'
+import { buildVersionOptions, matchPlannedVersion } from '../../utils/plannedVersion'
 
 // 项目标签的两个特殊页签。「未指定」必须是一个**显式**页签：
 // 没填项目的行正是最该被找出来补录的那批，混在「全部」里就永远没人去补。
@@ -508,12 +524,20 @@ const props = defineProps({
   // 当前项目标签，由 IterationDetail 持有：产品需求 / 领域需求两个 Tab 共用一个选择，
   // 来回切的时候不会各自记一份，看着像"切回来筛选自己变了"。
   projectScope: { type: String, default: 'all' },   // 值同 ALL，defineProps 里只能写字面量
+  // 计划交付版本同理由 IterationDetail 持有：两个 Tab 筛的是同一个维度（都是
+  // 需求行上的 planned_version），各记一份的表现是"切回来筛选自己变了"。
+  versionScope: { type: String, default: '' },
 })
-const emit = defineEmits(['update:projectScope'])
+const emit = defineEmits(['update:projectScope', 'update:versionScope'])
 
 const projectTab = computed({
   get: () => props.projectScope,
   set: (v) => emit('update:projectScope', v),
+})
+
+const versionTab = computed({
+  get: () => props.versionScope,
+  set: (v) => emit('update:versionScope', v || ''),
 })
 
 const PROGRESS_COLS = [
@@ -596,15 +620,30 @@ const projectTabs = computed(() => {
 
 const changedCount = computed(() => list.value.filter(isChangedRow).length)
 
+// 除「项目标签」与「计划交付版本」外的筛选。抽成函数是因为版本下拉的条数要按
+// 「除版本外都已生效」的结果算——拿 baseList 算的话，选中一个版本之后其它选项
+// 的条数全变成 0（自己把自己滤掉了），看着像那些版本一条需求都没有。
+function passesCommonFilters(r) {
+  if (hideChanged.value && isChangedRow(r)) return false
+  if (filterOwnerId.value && r.owner_user_id !== filterOwnerId.value) return false
+  if (filterGroupId.value && r.group_id !== filterGroupId.value) return false
+  return true
+}
+
 // baseList＝除「项目标签」外的所有筛选都生效后的结果。分两步是为了让标签上的
 // 条数与点进去看到的行数永远一致（标签算的就是 baseList 按项目的分布）。
 const baseList = computed(() =>
-  list.value.filter((r) => {
-    if (hideChanged.value && isChangedRow(r)) return false
-    if (filterOwnerId.value && r.owner_user_id !== filterOwnerId.value) return false
-    if (filterGroupId.value && r.group_id !== filterGroupId.value) return false
-    return true
-  })
+  list.value.filter((r) => passesCommonFilters(r) && matchPlannedVersion(r, versionTab.value))
+)
+
+// 版本下拉的选项与条数：按当前项目标签 + 其它筛选后的那批行算，
+// 选了哪个标签就看那个标签下的分布，否则「下拉写 12、点进去 3 条」。
+const versionOptions = computed(() =>
+  buildVersionOptions(
+    filterByProject(list.value.filter(passesCommonFilters), projectTab.value),
+    props.versionGroups,
+    versionTab.value
+  )
 )
 
 const filteredList = computed(() => filterByProject(baseList.value, projectTab.value))

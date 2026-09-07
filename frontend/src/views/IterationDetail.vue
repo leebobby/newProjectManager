@@ -26,6 +26,7 @@
             :version-groups="versionGroups"
             :projects="projects"
             v-model:project-scope="projectScope"
+            v-model:version-scope="versionScope"
             @vue:mounted="productMounted = true"
           />
         </el-tab-pane>
@@ -36,6 +37,7 @@
             :version-groups="versionGroups"
             :projects="projects"
             v-model:project-scope="projectScope"
+            v-model:version-scope="versionScope"
             @vue:mounted="domainMounted = true"
           />
         </el-tab-pane>
@@ -69,6 +71,9 @@ const activeTab = ref('product')
 // 项目标签放在这里而不是各自的 Tab 里：产品/领域两张表共用一个项目选择，
 // 来回切标签页时筛选跟着走，否则会以为"切回来筛选自己变了"。
 const projectScope = ref('all')
+// 计划交付版本同理放在这里：两个 Tab 筛的是同一个维度（需求行上的 planned_version），
+// 各记一份的表现是"切回来筛选自己变了"。空串＝不筛。
+const versionScope = ref('')
 const productMounted = ref(false)
 const domainMounted = ref(false)
 
