@@ -114,6 +114,23 @@ export const handbookApi = {
   download: (id) => http.get(`/handbook/items/${id}/download`, { responseType: 'blob' }),
 }
 
+// WBS：一份 WBS 挂在专项或机台调试上，树按 parent_id 分层，层数不限。
+// 写操作一律回**整份详情**（树 + 汇总），前端不自己拼——汇总口径只有服务端一份，
+// 前端再算一遍迟早对不上。
+export const wbsApi = {
+  listPlans: () => http.get('/wbs/plans'),
+  createPlan: (data) => http.post('/wbs/plans', data),
+  detail: (id) => http.get(`/wbs/plans/${id}`),
+  updatePlan: (id, data) => http.put(`/wbs/plans/${id}`, data),
+  removePlan: (id) => http.delete(`/wbs/plans/${id}`),
+  applyTemplate: (id) => http.post(`/wbs/plans/${id}/apply-template`),
+  addItem: (planId, data) => http.post(`/wbs/plans/${planId}/items`, data),
+  updateItem: (id, data) => http.put(`/wbs/items/${id}`, data),
+  removeItem: (id) => http.delete(`/wbs/items/${id}`),
+  reorder: (planId, parent_id, ids) => http.post(`/wbs/plans/${planId}/reorder`, { parent_id, ids }),
+  move: (id, new_parent_id, version) => http.post(`/wbs/items/${id}/move`, { new_parent_id, version }),
+}
+
 export const specialApi = {
   list: (include_inactive = false) => http.get('/specials', { params: { include_inactive } }),
   create: (data) => http.post('/specials', data),

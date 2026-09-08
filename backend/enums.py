@@ -19,6 +19,31 @@ PROGRESS_DEFAULT = "未开始"
 # 后者会让一条已经不做的需求继续把平均完成度往下拽，看着像团队没干活。
 PROGRESS_CHANGED = "已变更"
 
+# WBS 里「这一行不进统计」的两档。「已变更」＝本轮不做了，「不涉及」＝这台/这个特性
+# 用不上——两者都不该把工期和完成度算进去，但**行要留着**（那是计划的一部分，
+# 也是别人回头看"为什么没做"的唯一线索）。
+# 与迭代需求的 is_changed_row() 是两回事：那边判的是六个进展子项，这边就是状态本身。
+WBS_UNCOUNTED_STATUSES = ("已变更", "不涉及")
+
+# 新建 WBS 时可一键生成的标准调试分组。**只是录入期的便利**，生成完就与它脱钩
+# （同专项模板：改这份清单不影响已经建好的 WBS）。
+WBS_DEFAULT_TEMPLATE = (
+    "调试准备", "标定与参数整定", "功能验证", "性能与稳定性", "问题闭环", "交付与固化",
+)
+
+# WBS 挂在哪：专项 或 机台调试（customer_status 那一行＝客户+机台编号）。
+WBS_KINDS = ("special", "machine")
+WBS_KIND_LABELS = {"special": "专项", "machine": "机台调试"}
+
+
+def norm_wbs_kind(v):
+    """WBS 归属类型。空/非法一律报错——归属是这份 WBS 的身份，落不了默认值。"""
+    s = str(v or "").strip()
+    if s in WBS_KINDS:
+        return s
+    raise ValueError(f"WBS 归属类型「{v}」非法，应为 {'/'.join(WBS_KINDS)} 之一")
+
+
 
 def is_changed_row(row, progress_fields) -> bool:
     """任一进展子项标了「已变更」就算整行已变更。

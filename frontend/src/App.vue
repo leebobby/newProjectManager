@@ -56,6 +56,29 @@
               </el-menu-item>
             </el-sub-menu>
 
+            <!-- WBS：动态二级菜单，一份 WBS 一条（同专项管理）。
+                 一份都没有时不铺子菜单，点父项进列表页去新建 -->
+            <el-sub-menu v-else-if="r.meta.wbsParent && wbs.list.length > 0" :index="r.path">
+              <template #title>
+                <el-icon><component :is="r.meta.icon" /></el-icon>
+                <span>{{ r.meta.title }}</span>
+              </template>
+              <el-menu-item :index="r.path">
+                <el-icon><DataLine /></el-icon>
+                <template #title>全部 WBS</template>
+              </el-menu-item>
+              <el-menu-item v-for="w in wbs.list" :key="w.id" :index="'/wbs/' + w.id">
+                <el-icon><Aim /></el-icon>
+                <template #title>
+                  <el-tag size="small" :type="w.kind === 'machine' ? 'warning' : 'info'"
+                          effect="plain" style="margin-right: 6px">
+                    {{ w.kind_label }}
+                  </el-tag>
+                  {{ w.name }}
+                </template>
+              </el-menu-item>
+            </el-sub-menu>
+
             <!-- 客户面状态：二级菜单（总览 + 客户管理） -->
             <el-sub-menu
               v-else-if="r.meta.customersParent"
@@ -75,6 +98,8 @@
               </el-menu-item>
             </el-sub-menu>
 
+            <!-- 一份 WBS 都没有时落到这里，渲染成普通菜单项：把整个入口藏掉的话，
+                 新建 WBS 的地方就没了（专项那边是 admin 才有建的入口，情况不同） -->
             <el-menu-item v-else-if="!r.meta.specialsParent" :index="r.path">
               <el-icon><component :is="r.meta.icon" /></el-icon>
               <template #title>{{ r.meta.title }}</template>
@@ -158,6 +183,7 @@ import { authApi } from './api'
 import { auth, installCrossTabAuth } from './store/auth'
 import { startIdleWatcher } from './store/idleWatcher'
 import { specials, reloadSpecials, clearSpecials } from './store/specials'
+import { wbs, reloadWbs, clearWbs } from './store/wbs'
 import NotificationBell from './components/NotificationBell.vue'
 import NotificationMarquee from './components/NotificationMarquee.vue'
 
@@ -169,9 +195,10 @@ function toggleSidebar() {
 
 const route = useRoute()
 const router = useRouter()
-
 // 侧边栏分组顺序；未列出的分组不会渲染
-const GROUP_ORDER = ['概览', '客户面管理', '进度管理', '质量管理', '组织管理', '知识管理', '系统管理']
+// 侧栏分组的顺序与**全集**。这里漏写一个分组名，那一组的页面在侧栏里直接消失，
+// 而路由还在、直接敲地址也进得去——最难发现的那类。改 meta.group 时对照着改这里。
+const GROUP_ORDER = ['概览', '计划管理', '客户面管理', '进度管理', '质量管理', '组织管理', '知识管理', '系统管理']
 
 const menuGroups = computed(() => {
   const visible = router.options.routes.filter((r) => {
@@ -191,6 +218,10 @@ const currentTitle = computed(() => {
     const label = s.kind === 'assault' ? '攻关' : '专项'
     return `${label}：${s.name}`
   }
+  if (route.name === 'WbsDetail') {
+    const w = wbs.list.find(x => String(x.id) === String(route.params.id))
+    return w ? `WBS：${w.name}` : 'WBS 详情'
+  }
   return route.meta?.title || ''
 })
 
@@ -198,6 +229,9 @@ const currentTitle = computed(() => {
 const activeMenuPath = computed(() => {
   if (route.name === 'SpecialDetail') {
     return `/specials/${route.params.id}`
+  }
+  if (route.name === 'WbsDetail') {
+    return `/wbs/${route.params.id}`
   }
   if (route.name === 'CustomerDetail') {
     // 客户详情在二级菜单里没有独立条目，回落到"总览"项高亮
@@ -276,13 +310,13 @@ onMounted(() => {
       gotoLogin('idle')
     },
   })
-  if (auth.isLoggedIn.value) reloadSpecials()
+  if (auth.isLoggedIn.value) { reloadSpecials(); reloadWbs() }
 })
 
 // 登录状态变化时刷新 / 清空菜单数据
 watch(() => auth.isLoggedIn.value, (v) => {
-  if (v) reloadSpecials()
-  else clearSpecials()
+  if (v) { reloadSpecials(); reloadWbs() }
+  else { clearSpecials(); clearWbs() }
 })
 
 onBeforeUnmount(() => {

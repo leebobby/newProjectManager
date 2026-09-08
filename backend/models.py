@@ -1494,3 +1494,95 @@ class PageSnapshot(Base):
         # 同一对象同一天只留一份：定时任务重跑、手工再存一次都覆盖而不是堆一摞
         UniqueConstraint("kind", "ref_id", "label", name="uq_page_snapshot_kind_ref_label"),
     )
+
+
+class WbsPlan(Base):
+    """一份 WBS：挂在**一个专项**或**一台机台的调试**上，不挂版本。
+
+    为什么不挂版本：WBS 分解的是"这件事怎么干完"，而一个版本里同时跑着好几件事
+    （几个特性调试、几台机台的现场调试），挂版本就得把它们混在一棵树里，
+    "这段是谁的活"从数据上分不出来。挂到专项/机台上，一份 WBS 就是一件事。
+
+    与里程碑的分工：里程碑（roadmap_phases / roadmap_milestones）是项目级的粗粒度
+    计划，WBS 是把某一件事往下拆到能派活的粒度，**层数不限**（见 WbsItem）。
+
+    删除权限＝**仅 admin**，按「删掉的是什么」定档（见 CLAUDE.md「Write-permission
+    principle」）：这是别人跟了几个月的计划，误删的代价和删掉一条日常填报不是一回事。
+    新建与改名＝登录用户——要 admin 代建的话，现场调试那边就没人建了。
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "wbs_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(200), nullable=False, comment="WBS 名称")
+    kind = Column(String(16), nullable=False, default="special",
+                  comment="归属类型：special=专项 / machine=机台调试，见 enums.WBS_KINDS")
+    # 两个归属外键**只填一个**，由 kind 决定填哪个。合成一个多态列（对象类型+id）
+    # 的话就没有外键约束了，删掉专项之后这份 WBS 会指向一个不存在的 id。
+    special_id = Column(Integer, ForeignKey("specials.id", ondelete="SET NULL"),
+                        nullable=True, index=True, comment="kind=special 时的专项")
+    machine_status_id = Column(Integer, ForeignKey("customer_status.id", ondelete="SET NULL"),
+                               nullable=True, index=True, comment="kind=machine 时的机台")
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                           nullable=True, index=True, comment="负责人")
+    owner = Column(String(64), default="", comment="负责人姓名快照（FK 为空时前端回退到它）")
+    description = Column(Text, default="", comment="说明")
+    sort_order = Column(Integer, default=0, comment="排序")
+    version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    items = relationship("WbsItem", back_populates="plan", cascade="all, delete-orphan")
+
+
+class WbsItem(Base):
+    """WBS 里的一行：分组 / 工作包 / 子任务——**同一张表，靠 parent_id 分层，层数不限**。
+
+    不做成"分组表 + 工作包表"两张：真实的拆解深度是拆到才知道的，`2.1` 今天是
+    工作包，明天要拆成 `2.1.1`/`2.1.2` 就成了分组。两张表的话这一步要跨表搬行。
+
+    **能不能填，看它有没有子行，不看它在第几层**：
+    - 叶子行（没有子行）填 man_days / progress_pct / status / 计划起止；
+    - 只要挂了子行，这几项一律由服务端从叶子汇总，**不入库、也不接受写入**。
+      父行能单独填的话，把 `2.1` 拆开之后父子两个数就对不上了，而两边看着都对。
+
+    编号（1.2.3）**不存**，出接口时按 parent_id + sort_order 现算。存下来的话，
+    上移一行、加一个子项之后编号就和位置对不上了，而每一行单独看都合法。
+
+    写权限＝登录用户（协作编辑域的日常填报），删除同档——自己拆的活自己改。
+    新表由 create_all 自动建。
+    """
+    __tablename__ = "wbs_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("wbs_plans.id", ondelete="CASCADE"),
+                     nullable=False, index=True)
+    parent_id = Column(Integer, ForeignKey("wbs_items.id", ondelete="CASCADE"),
+                       nullable=True, index=True, comment="上级行；NULL＝最外层分组")
+    name = Column(String(300), nullable=False, default="", comment="工作包")
+    deliverable = Column(Text, default="", comment="交付物")
+    dod = Column(Text, default="", comment="完成标准（DoD）")
+    predecessor = Column(String(200), default="", comment="前置 WBS 编号，逗号分隔（不参与计算）")
+
+    owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
+                           nullable=True, index=True, comment="负责人")
+    owner = Column(String(64), default="", comment="负责人姓名快照")
+    group_id = Column(Integer, ForeignKey("resource_groups.id", ondelete="SET NULL"),
+                      nullable=True, index=True, comment="PL组")
+    owner_group = Column(String(64), default="", comment="PL组名称快照")
+
+    # 计划起止是**用户填的**，原样存、出接口不转时区（见 CLAUDE.md「时间」那一节）。
+    # 标成 LocalDT 会凭空加 8 小时。
+    planned_start = Column(DateTime, nullable=True, comment="计划开始（用户填写，不做时区转换）")
+    planned_end = Column(DateTime, nullable=True, comment="计划完成（用户填写，不做时区转换）")
+    man_days = Column(Float, nullable=True, comment="工期（人天）；仅叶子行有效")
+    status = Column(String(16), default="未开始", comment="见 enums.PROGRESS_STATUSES")
+    progress_pct = Column(Integer, default=0, comment="完成度 0-100；仅叶子行有效")
+    remark = Column(Text, default="", comment="假设 · 范围外 · 风险")
+
+    sort_order = Column(Integer, default=0, comment="同一父级下的排序")
+    version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    plan = relationship("WbsPlan", back_populates="items")
