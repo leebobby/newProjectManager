@@ -996,6 +996,49 @@ class BattlefieldOut(BattlefieldBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# 关键特性 × 项目 的 FO / SE / TFO
+class FeatureOwnerBase(BaseModel):
+    key_feature_id: int
+    project_id: Optional[int] = None
+    fo: Optional[str] = ""
+    se: Optional[str] = ""
+    tfo: Optional[str] = ""
+    remark: Optional[str] = ""
+
+
+class FeatureOwnerCreate(FeatureOwnerBase):
+    pass
+
+
+class FeatureOwnerUpdate(BaseModel):
+    key_feature_id: Optional[int] = None
+    project_id: Optional[int] = None
+    fo: Optional[str] = None
+    se: Optional[str] = None
+    tfo: Optional[str] = None
+    remark: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class FeatureOwnerOut(FeatureOwnerBase):
+    """出接口时回填特性名 / 项目名，并把「继承来的」值与「这一行自己填的」分开给。
+
+    只给一个最终值的话，页面上分不清这个名字是本项目填的还是从特性上继承来的，
+    改的人会以为自己在改本项目的值（同 domain_issue_targets 的继承目标）。
+    """
+    id: int
+    sort_order: int = 0
+    feature_name: str = ""          # 响应字段，非模型列
+    feature_status: str = ""
+    project_name: str = ""
+    fo_effective: str = ""          # 本行填了就是本行的，没填则是特性上的
+    se_effective: str = ""
+    fo_inherited: bool = False
+    se_inherited: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ===== Auth / User =====
 class UserBase(BaseModel):
     username: str

@@ -560,6 +560,12 @@ export const stakeholderApi = {
   createBattlefield: (data) => http.post('/stakeholders/battlefields', data),
   updateBattlefield: (id, data) => http.put(`/stakeholders/battlefields/${id}`, data),
   removeBattlefield: (id) => http.delete(`/stakeholders/battlefields/${id}`),
+
+  // 关键特性 × 项目 的 FO / SE / TFO；FO/SE 留空时服务端回填特性级的值并标 *_inherited
+  listFeatureOwners: () => http.get('/stakeholders/feature-owners'),
+  createFeatureOwner: (data) => http.post('/stakeholders/feature-owners', data),
+  updateFeatureOwner: (id, data) => http.put(`/stakeholders/feature-owners/${id}`, data),
+  removeFeatureOwner: (id) => http.delete(`/stakeholders/feature-owners/${id}`),
 }
 
 export const roadmapApi = {

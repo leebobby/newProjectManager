@@ -713,6 +713,38 @@ class StakeholderBattlefield(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class StakeholderFeatureOwner(Base):
+    """关键特性 × 项目 的 FO / SE / TFO 名单（干系人管理的第三张表）。
+
+    答的是「这个特性在这个项目上找谁」。同一个关键特性在不同项目上责任人常常不是
+    同一批人，所以项目是**行上的一个维度**，不是给每个项目各开一份名单。
+
+    **FO / SE 允许留空，留空时显示 `key_features` 上那个特性级的责任人并标成
+    「继承」**（同 `domain_issue_targets` 的通用兜底目标：继承来的值要在界面上
+    标出来，否则改的人会以为自己在改本项目的值）。这样特性级责任人仍然只有一份，
+    这张表只在"这个项目上不是他"的时候才需要填。TFO 在特性表里没有对应列，
+    空就是空，不继承。
+
+    `project_id` 为空＝通用/未指定项目的一行，**不参与继承**——两级兜底会让
+    "这个格子里的名字到底是从哪儿来的"没人说得清。
+    表由 create_all 自动建；主数据一档，写入仅 admin。
+    """
+    __tablename__ = "stakeholder_feature_owners"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key_feature_id = Column(Integer, ForeignKey("key_features.id", ondelete="CASCADE"),
+                            nullable=False, index=True, comment="关键特性 FK")
+    project_id = Column(Integer, ForeignKey("roadmap_projects.id", ondelete="SET NULL"),
+                        nullable=True, index=True, comment="项目 FK；空＝通用/未指定项目")
+    fo = Column(String(64), default="", comment="FO 责任人（空＝继承特性上的 FO）")
+    se = Column(String(64), default="", comment="特性 SE（空＝继承特性上的 SE）")
+    tfo = Column(String(64), default="", comment="TFO 责任人")
+    remark = Column(String(256), default="", comment="备注")
+    sort_order = Column(Integer, default=0, comment="排序")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ProjectFormationImage(Base):
     """项目阵型图：全局单张图片/SVG，存 id=1 这一行。"""
     __tablename__ = "project_formation_image"

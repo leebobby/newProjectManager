@@ -80,6 +80,83 @@
       </div>
     </el-card>
 
+    <!-- 关键特性责任人：按关键特性看各项目的 FO / SE / TFO -->
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-title">
+            <el-icon><Avatar /></el-icon> 关键特性责任人（FO / SE / TFO）
+          </span>
+          <el-button v-if="isAdmin" type="primary" size="small" :icon="Plus" @click="openFeatureOwnerDialog()">
+            新增
+          </el-button>
+        </div>
+      </template>
+
+      <el-alert type="info" :closable="false" class="fo-tip" show-icon
+        title="同一个关键特性在不同项目上责任人常常不是同一批人，所以按「特性 × 项目」一行一填"
+        description="FO / SE 留空时显示「关键特性」页上那个特性级的责任人并标成「继承」——特性级的名单仍然只有那一份，这里只在本项目上不是他的时候才填。TFO 在特性表里没有对应列，空就是空。" />
+
+      <el-table
+        :data="featureOwnerRows"
+        v-loading="loadingFeatureOwner"
+        border
+        stripe
+        :span-method="featureSpan"
+        class="feature-owner-table"
+      >
+        <el-table-column prop="feature_name" label="关键特性" min-width="180">
+          <template #default="{ row }">
+            <span class="fo-feature">{{ row.feature_name || '（特性已删除）' }}</span>
+            <el-tag v-if="row.feature_status" size="small" effect="plain" class="fo-status">
+              {{ row.feature_status }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="项目" min-width="130">
+          <template #default="{ row }">
+            <span v-if="row.project_name">{{ row.project_name }}</span>
+            <span v-else class="muted">通用 / 未指定项目</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="FO" min-width="120">
+          <template #default="{ row }">
+            <span v-if="row.fo_effective">{{ row.fo_effective }}</span>
+            <span v-else class="muted">—</span>
+            <!-- 继承来的值要标出来，否则改的人会以为自己在改本项目的值 -->
+            <el-tag v-if="row.fo_inherited" size="small" type="info" effect="plain" class="fo-inherit">继承</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="SE" min-width="120">
+          <template #default="{ row }">
+            <span v-if="row.se_effective">{{ row.se_effective }}</span>
+            <span v-else class="muted">—</span>
+            <el-tag v-if="row.se_inherited" size="small" type="info" effect="plain" class="fo-inherit">继承</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="TFO" min-width="120">
+          <template #default="{ row }">
+            <span v-if="row.tfo">{{ row.tfo }}</span><span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="remark" label="备注" min-width="140" />
+        <el-table-column v-if="isAdmin" label="操作" width="140" align="center">
+          <template #default="{ row }">
+            <el-button size="small" type="primary" text :icon="EditIcon" @click="openFeatureOwnerDialog(row)">编辑</el-button>
+            <el-popconfirm title="确认删除该条目？" @confirm="deleteFeatureOwner(row.id)">
+              <template #reference>
+                <el-button size="small" type="danger" text :icon="Delete">删除</el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div v-if="!loadingFeatureOwner && featureOwnerRows.length === 0" class="empty-hint">
+        暂无数据{{ isAdmin ? '，点击右上角「新增」添加条目' : '' }}
+      </div>
+    </el-card>
+
     <!-- 项目阵型 -->
     <el-card shadow="never" class="section-card">
       <template #header>
@@ -355,15 +432,57 @@
         <el-button type="primary" :loading="battlefieldSaving" @click="saveBattlefield">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 关键特性责任人 编辑框 -->
+    <el-dialog
+      v-model="featureOwnerDialogVisible"
+      :title="featureOwnerForm.id ? '编辑关键特性责任人' : '新增关键特性责任人'"
+      width="520px"
+    >
+      <el-form :model="featureOwnerForm" label-width="96px">
+        <el-form-item label="关键特性" required>
+          <el-select v-model="featureOwnerForm.key_feature_id" filterable placeholder="请选择" style="width: 100%">
+            <el-option v-for="f in keyFeatures" :key="f.id" :label="f.name" :value="f.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="项目">
+          <el-select
+            v-model="featureOwnerForm.project_id"
+            clearable
+            filterable
+            placeholder="不选＝通用 / 未指定项目"
+            style="width: 100%"
+          >
+            <el-option v-for="p in projectOptions" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="FO">
+          <el-input v-model="featureOwnerForm.fo" :placeholder="inheritHint('fo')" />
+        </el-form-item>
+        <el-form-item label="SE">
+          <el-input v-model="featureOwnerForm.se" :placeholder="inheritHint('se')" />
+        </el-form-item>
+        <el-form-item label="TFO">
+          <el-input v-model="featureOwnerForm.tfo" placeholder="特性表里没有这一列，空就是空" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="featureOwnerForm.remark" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="featureOwnerDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="featureOwnerSaving" @click="saveFeatureOwner">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { DataAnalysis, Delete, Download, Edit as EditIcon, Grid, OfficeBuilding, Plus, Upload, UploadFilled, UserFilled } from '@element-plus/icons-vue'
+import { Avatar, DataAnalysis, Delete, Download, Edit as EditIcon, Grid, OfficeBuilding, Plus, Upload, UploadFilled, UserFilled } from '@element-plus/icons-vue'
 import { auth } from '../store/auth'
-import http, { customerApi, downloadBlob, formationApi, resourceGroupApi, stakeholderApi, userApi } from '../api'
+import http, { apiError, customerApi, downloadBlob, formationApi, keyFeatureApi, roadmapApi, resourceGroupApi, stakeholderApi, userApi } from '../api'
 import { checkStorageOrWarn } from '../store/storage'
 
 const isAdmin = auth.isAdmin
@@ -513,6 +632,134 @@ async function deleteBattlefield(id) {
     await loadBattlefields()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '删除失败')
+  }
+}
+
+// ── 关键特性责任人（FO / SE / TFO） ──────────────────────────────────────
+// 一行＝一个「关键特性 × 项目」。FO / SE 留空时服务端回填特性级的值并把
+// *_inherited 标出来，页面照着显示，**不在这儿再算一遍继承**——两处各写一份的
+// 表现是同一格在页面和接口里不是一个人，而两边看着都对。
+const featureOwners = ref([])
+const keyFeatures = ref([])
+const projectOptions = ref([])
+const loadingFeatureOwner = ref(false)
+const featureOwnerDialogVisible = ref(false)
+const featureOwnerSaving = ref(false)
+const featureOwnerForm = reactive({
+  id: null, key_feature_id: null, project_id: null, fo: '', se: '', tfo: '', remark: '',
+})
+
+// 按关键特性把行聚到一起，特性之间的顺序跟着「关键特性」页（sort_order）走。
+// 不聚的话同一个特性的几行会被别的特性隔开，第一列的合并格就跨不过去
+const featureOwnerRows = computed(() => {
+  const order = new Map(keyFeatures.value.map((f, i) => [f.id, i]))
+  return [...featureOwners.value].sort((a, b) => {
+    const oa = order.has(a.key_feature_id) ? order.get(a.key_feature_id) : 1e9
+    const ob = order.has(b.key_feature_id) ? order.get(b.key_feature_id) : 1e9
+    if (oa !== ob) return oa - ob
+    return String(a.project_name || '').localeCompare(String(b.project_name || ''), 'zh-Hans-CN')
+  })
+})
+
+// 第一列按关键特性纵向合并：一屏扫下来「这个特性在各项目上分别是谁」连成一块
+function featureSpan({ row, columnIndex, rowIndex }) {
+  if (columnIndex !== 0) return undefined
+  const list = featureOwnerRows.value
+  if (rowIndex > 0 && list[rowIndex - 1].key_feature_id === row.key_feature_id) {
+    return { rowspan: 0, colspan: 0 }
+  }
+  let n = 1
+  while (rowIndex + n < list.length && list[rowIndex + n].key_feature_id === row.key_feature_id) n += 1
+  return { rowspan: n, colspan: 1 }
+}
+
+function inheritHint(field) {
+  const f = keyFeatures.value.find((x) => x.id === featureOwnerForm.key_feature_id)
+  const v = ((f && f[field]) || '').trim()
+  return v ? `留空＝继承特性上的「${v}」` : '特性上也没填，留空就是空'
+}
+
+async function loadFeatureOwners() {
+  loadingFeatureOwner.value = true
+  try {
+    const { data } = await stakeholderApi.listFeatureOwners()
+    featureOwners.value = data
+  } catch (e) {
+    ElMessage.error(apiError(e, '加载关键特性责任人失败'))
+  } finally {
+    loadingFeatureOwner.value = false
+  }
+}
+
+// 特性与项目两份下拉数据：编辑框要用，表格排序也要用（特性顺序）
+async function loadFeatureRefs() {
+  try {
+    const [feats, projs] = await Promise.all([
+      keyFeatureApi.list(),
+      roadmapApi.listProjects(),
+    ])
+    keyFeatures.value = feats.data || []
+    projectOptions.value = projs.data || []
+  } catch (e) {
+    ElMessage.error(apiError(e, '加载关键特性 / 项目下拉失败'))
+  }
+}
+
+function openFeatureOwnerDialog(row = null) {
+  Object.assign(featureOwnerForm, {
+    id: row ? row.id : null,
+    key_feature_id: row ? row.key_feature_id : null,
+    project_id: row ? row.project_id : null,
+    // 编辑时回填的是**这一行自己填的值**，不是 *_effective：把继承来的名字灌进
+    // 输入框，一保存就把它抄成了本行的值，从此再也不跟着特性走了
+    fo: row ? row.fo : '',
+    se: row ? row.se : '',
+    tfo: row ? row.tfo : '',
+    remark: row ? row.remark : '',
+  })
+  featureOwnerDialogVisible.value = true
+}
+
+async function saveFeatureOwner() {
+  if (!featureOwnerForm.key_feature_id) {
+    ElMessage.warning('请选择关键特性')
+    return
+  }
+  featureOwnerSaving.value = true
+  try {
+    const payload = {
+      key_feature_id: featureOwnerForm.key_feature_id,
+      // clearable 的 el-select 清空后给的是 undefined，而 undefined 会被
+      // JSON.stringify 从请求体里整个丢掉、后端按「没传＝不修改」处理，
+      // 表现是"清掉项目一保存，刷新又回来了"，页面还提示保存成功
+      project_id: featureOwnerForm.project_id ?? null,
+      fo: featureOwnerForm.fo || '',
+      se: featureOwnerForm.se || '',
+      tfo: featureOwnerForm.tfo || '',
+      remark: featureOwnerForm.remark || '',
+    }
+    if (featureOwnerForm.id) {
+      await stakeholderApi.updateFeatureOwner(featureOwnerForm.id, payload)
+    } else {
+      await stakeholderApi.createFeatureOwner(payload)
+    }
+    featureOwnerDialogVisible.value = false
+    ElMessage.success('已保存')
+    await loadFeatureOwners()
+  } catch (e) {
+    ElMessage.error(apiError(e, '保存失败'))
+  } finally {
+    featureOwnerSaving.value = false
+  }
+}
+
+async function deleteFeatureOwner(id) {
+  try {
+    await stakeholderApi.removeFeatureOwner(id)
+    ElMessage.success('已删除')
+    await loadFeatureOwners()
+  } catch (e) {
+    ElMessage.error(apiError(e, '删除失败'))
   }
 }
 
@@ -747,10 +994,18 @@ onMounted(() => {
   loadOrg()
   loadMembers()
   loadCustomerList()
+  loadFeatureRefs()
+  loadFeatureOwners()
 })
 </script>
 
 <style scoped>
+.fo-tip { margin-bottom: 12px; }
+.fo-feature { font-weight: 600; }
+.fo-status { margin-left: 6px; }
+.fo-inherit { margin-left: 6px; }
+.muted { color: #909399; }
+
 .stakeholder-page {
   display: flex;
   flex-direction: column;

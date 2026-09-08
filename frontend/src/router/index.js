@@ -42,6 +42,15 @@ const routes = [
     component: () => import('../views/CustomerDetail.vue'),
     meta: { title: '客户详情', hidden: true },
   },
+  // 「计划管理」组内的菜单顺序＝这里的**声明顺序**（App.vue 的 menuGroups 只按
+  // GROUP_ORDER 分组，组内保持 routes 原序）。里程碑（项目级 1/2 级计划）→
+  // 版本 → WBS（3/4 级计划）是由粗到细的，挪动这三块的相对位置就会改掉侧栏顺序。
+  {
+    path: '/roadmaps',
+    name: 'RoadmapManage',
+    component: () => import('../views/RoadmapManage.vue'),
+    meta: { title: '里程碑管理', icon: 'Guide', requireAdmin: true, group: '计划管理' },
+  },
   {
     path: '/versions',
     name: 'VersionManagement',
@@ -89,12 +98,6 @@ const routes = [
     name: 'KeyFeatureManagement',
     component: () => import('../views/KeyFeatureManagement.vue'),
     meta: { title: '关键特性', icon: 'Opportunity', group: '进度管理' },
-  },
-  {
-    path: '/roadmaps',
-    name: 'RoadmapManage',
-    component: () => import('../views/RoadmapManage.vue'),
-    meta: { title: '里程碑管理', icon: 'Guide', requireAdmin: true, group: '计划管理' },
   },
   {
     // WBS：父项是列表页，各份 WBS 由 App.vue 渲染成二级菜单（同专项管理）
