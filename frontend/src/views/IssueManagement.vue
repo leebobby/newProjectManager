@@ -1011,7 +1011,7 @@ function initTrendCharts() {
   const dates    = td.daily.map(d => d.date)
   const groups   = td.all_groups
   const sevs     = td.all_severities
-  const SEV_CLR  = { '严重': '#F56C6C', '一般': '#E6A23C', '提示': '#909399' }
+  const SEV_CLR  = { '致命': '#8E24AA', '严重': '#F56C6C', '一般': '#E6A23C', '提示': '#909399' }
 
   if (trendGroupEl.value) {
     setChart('trendGroup', trendGroupEl.value, {
