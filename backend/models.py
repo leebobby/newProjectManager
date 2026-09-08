@@ -1299,7 +1299,18 @@ class IssueSnapshot(Base):
 
 
 class IssueSnapshotStat(Base):
-    """快照的维度聚合数字（趋势数据源）：dimension ∈ group / customer / severity。"""
+    """快照的维度聚合数字（趋势数据源）：dimension ∈ group / customer / severity。
+
+    两个数字并排存：`count` 是条数，`score` 是 DI 加权分（致命10/严重3/一般1/提示0.1，
+    权重表在 routers/_issue_source.SEVERITY_WEIGHTS，全系统只有那一份）。
+    两个都要落库是因为**趋势只读库里的数字、不碰明细文件**——DI 若在看图时现算，
+    就得把每一天的明细 JSON 全读一遍，而那正是当初把数字入库要避开的事。
+
+    `score` 可空，且**空不等于 0**：DI 是后加的列，在那之前采集的快照压根没算过。
+    记 0 的话趋势图上那一段会画成一条贴地的线，看着像"那几天确实没缺陷"；
+    留 NULL 才能在接口里如实报「这几天的 DI 还没回算」。
+    回算用 scripts/backfill_issue_di.py（明细文件还在就能补齐）。
+    """
     __tablename__ = "issue_snapshot_stats"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1308,6 +1319,7 @@ class IssueSnapshotStat(Base):
     dimension = Column(String(16), nullable=False, index=True, comment="group / customer / severity")
     dim_key = Column(String(128), nullable=False, default="", comment="维度取值，如小组名/客户面名/严重程度")
     count = Column(Integer, nullable=False, default=0)
+    score = Column(Float, nullable=True, comment="DI 加权分；NULL＝这份快照采集时还没有 DI，不是 0 分")
 
 
 class IssueTrack(Base):

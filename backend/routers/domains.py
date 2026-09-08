@@ -37,7 +37,6 @@ _PROG_FIELDS = [
     "progress_walkthrough", "progress_reverse", "progress_stc",
     "progress_coding", "progress_bbit", "progress_clarify",
 ]
-_SEVERITIES = ["严重", "一般", "提示"]
 _RISK_TYPES = {"风险", "求助"}
 # 问题单加权分值：致命10 严重3 一般1 提示0.1（实现在 _issue_source，度量看板共用）
 _SEVERITY_WEIGHTS = _issue_source.SEVERITY_WEIGHTS

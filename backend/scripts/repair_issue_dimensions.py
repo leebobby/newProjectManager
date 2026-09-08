@@ -164,12 +164,18 @@ def main() -> int:
                 models.IssueSnapshotStat.snapshot_id == snap.id,
                 models.IssueSnapshotStat.dimension == dim,
             ).delete(synchronize_session=False)
+            # DI 要跟着一起重写。只写 count 的话，这个脚本每跑一次就把该维度的
+            # DI 抹回 NULL——趋势图上那几天的 DI 线当场断掉，而条数一切正常，
+            # 看着完全不像是重算脚本干的。
+            di = ri.score_by(raw, dim)
             for key, cnt in ri._count_by(raw, dim).items():
                 db.add(models.IssueSnapshotStat(
                     snapshot_id=snap.id, dimension=dim, dim_key=key, count=cnt,
+                    score=di.get(key, 0.0),
                 ))
     db.commit()
     print(f"\n已写回：{len(touched)} 份快照明细 + 对应的趋势数字（共 {total_rows} 行）。")
+    print("重算的维度连 DI 加权分一并重写；没动的维度（如 severity）保持原样。")
     print("新增/解决差分（issue_snapshot_flows）按缺陷编号算，与这两列无关，未改动。")
     print("data/issue_excel/ 下的历史 Excel 备份是当天存档，未改写；需要的话在页面上重新导出。")
     return 0

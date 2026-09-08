@@ -22,14 +22,41 @@ import schemas
 from routers.config import _load as _load_config
 from timeutil import parse_plan_date  # noqa: F401  实现在 timeutil，见下方注释
 
-# 问题单加权分值：致命10 严重3 一般1 提示0.1（未列出的级别记 0 分，仍计入数量）。
-# 领域总览与度量看板共用——两处各写一份，同一批单在两个页面上会得出不同的分数。
+# 问题单加权分值（DI）：致命10 严重3 一般1 提示0.1（未列出的级别记 0 分，仍计入数量）。
+# 领域总览、度量看板、问题单管理三处共用——各写一份的表现是同一批单在三个页面上
+# 得出三个 DI，而每一个单独看都挺合理。
 SEVERITY_WEIGHTS = {"致命": 10.0, "严重": 3.0, "一般": 1.0, "提示": 0.1}
 
 
+def row_score(row: dict) -> float:
+    """一条单的 DI 分。认不出的级别记 0 分——**但那一条仍然计入条数**。
+
+    记 0 而不是丢掉：级别是 DTS 那边的自由取值，写法一变（多一个空格、换个叫法）
+    就会认不出来，丢掉的话条数和 DI 会对不上，而两个数单独看都正常。
+    记 0 则表现为「条数涨了 DI 没涨」，一眼能看出是词表没对上。
+    """
+    return SEVERITY_WEIGHTS.get((row.get("severity") or "").strip(), 0.0)
+
+
 def weighted_score(rows: List[dict]) -> float:
-    return round(sum(SEVERITY_WEIGHTS.get((r.get("severity") or "").strip(), 0.0)
-                     for r in rows), 1)
+    return round(sum(row_score(r) for r in rows), 1)
+
+
+def score_by(rows: List[dict], field: str) -> dict:
+    """按某个维度分组求 DI：{维度取值: 分数}。
+
+    **分组口径必须和条数那边一模一样**：`issues._count_by` 取值为空时是**整条跳过**
+    （不落「未标注」那种兜底桶），这里照做。分法只要有一点不同，同一张表里
+    条数按一种分法、DI 按另一种，两列加起来都还对得上，只有分到哪一行不一样——
+    没人会去核。
+    """
+    out: dict = {}
+    for r in rows:
+        key = r.get(field, "")
+        if not key:
+            continue
+        out[key] = round(out.get(key, 0.0) + row_score(r), 1)
+    return out
 
 
 # ─── 超期未处理 ────────────────────────────────────────────────────────────

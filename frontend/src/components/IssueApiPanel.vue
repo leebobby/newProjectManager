@@ -45,6 +45,11 @@
             <div class="stat-card" @click="openDrill({}, '全部问题单')">
               <div class="stat-num">{{ detail.count }}</div><div class="stat-label">合计</div>
             </div>
+            <!-- 致命单为 0 时不铺这张卡：多数项目没有致命单，占着一格只会稀释其它数字
+                 （同 _build_pptx 里那条规矩）。有的时候它是 DI 里最重的一档，必须看得见 -->
+            <div v-if="sevCount('致命')" class="stat-card crit" @click="openDrill({ severity: '致命' }, '致命缺陷')">
+              <div class="stat-num">{{ sevCount('致命') }}</div><div class="stat-label">致命</div>
+            </div>
             <div class="stat-card sev" @click="openDrill({ severity: '严重' }, '严重缺陷')">
               <div class="stat-num">{{ sevCount('严重') }}</div><div class="stat-label">严重</div>
             </div>
@@ -59,6 +64,17 @@
             </div>
             <div class="stat-card dev" @click="openDrill({ scope: 'dev' }, '研发问题')">
               <div class="stat-num">{{ devRows.length }}</div><div class="stat-label">研发问题</div>
+            </div>
+            <!-- DI 卡不可点：DI 是一个加权分，筛不出"是哪几条单"，做成能点会让人
+                 以为点进去是这些分对应的单，其实只能是全部单 -->
+            <div class="stat-card di nolink">
+              <div class="stat-num">{{ fmtDI(detail.di_total) }}</div>
+              <div class="stat-label">
+                DI 值
+                <el-tooltip placement="top" :content="diTip">
+                  <el-icon class="di-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </div>
             </div>
           </div>
 
@@ -162,8 +178,24 @@
             <el-radio-button label="customer">按客户面</el-radio-button>
             <el-radio-button label="severity">按严重程度</el-radio-button>
           </el-radio-group>
+          <span class="muted" style="margin-left: 16px">指标：</span>
+          <!-- 切指标**不重新请求**：条数和 DI 是同一次响应里带回来的，
+               分成两次还得处理"切太快回来的是上一个指标的数据" -->
+          <el-radio-group v-model="trendMetric" size="small" @change="renderTrendChart">
+            <el-radio-button label="count">缺陷数</el-radio-button>
+            <el-radio-button label="di">DI 值</el-radio-button>
+          </el-radio-group>
           <span class="muted" style="margin-left: auto">已积累 {{ trend?.dates?.length || 0 }} 天</span>
         </div>
+        <!-- DI 是后加的列：在那之前采的快照没算过分，那几天画成断线而不是 0。
+             不说清楚的话，图上那一段贴着零轴，看着像那几天确实没缺陷 -->
+        <el-alert v-if="trendMetric === 'di' && diMissing.length" type="warning" show-icon
+                  :closable="false" style="margin-bottom: 8px">
+          <template #title>
+            有 {{ diMissing.length }} 天的 DI 还没回算（{{ diMissingText }}），图上这几天是断开的，不是 0 分。
+            服务端跑一次 <code>python scripts/backfill_issue_di.py --apply</code> 即可补齐（明细文件还在就补得回来）。
+          </template>
+        </el-alert>
         <div v-if="trend && !trend.dates.length" class="muted" style="padding: 28px 0; text-align: center">
           暂无趋势数据（至少采集 1 天后展示；多天才能看出走势）
         </div>
@@ -322,7 +354,7 @@
 <script setup>
 import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElButton, ElMessage, ElTable, ElTableColumn, ElTag } from 'element-plus'
-import { Download, Refresh, Search } from '@element-plus/icons-vue'
+import { Download, QuestionFilled, Refresh, Search } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { apiError, downloadBlob, issueApi, issueTrackApi, majorVersionApi } from '../api'
 import { auth } from '../store/auth'
@@ -336,8 +368,11 @@ const collecting = ref(false)
 const exporting = ref(false)
 
 const PAL = ['#4073ba', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#8E7AD8', '#26C9C3', '#F9A825']
-const SEV_CLR = { 严重: '#F56C6C', 一般: '#E6A23C', 提示: '#909399' }
-const SEV_ORDER = { 严重: 0, 一般: 1, 提示: 2 }
+// 与后端 routers/issues.py 的 _SEV_ORDER **两端各一份，必须同步**。
+// 致命排最前：DI 把它定为最重的一档（10 分），排到末尾的话一张表里最该先看的
+// 那一列在最右边，而每一列单独看都没错。致命的紫色沿用导出 PPT 里的 C_CRIT。
+const SEV_CLR = { 致命: '#8E24AA', 严重: '#F56C6C', 一般: '#E6A23C', 提示: '#909399' }
+const SEV_ORDER = { 致命: 0, 严重: 1, 一般: 2, 提示: 3 }
 
 // ── 内联子组件：统计交叉表 ───────────────────────────
 const StatsTable = defineComponent({
@@ -352,6 +387,13 @@ const StatsTable = defineComponent({
             default: ({ row }) => {
               const val = row[col] ?? 0
               const isTotal = col === '合计' || row.label === '合计'
+              // DI 是加权分不是条数：点它下钻会得到"这一档的全部单"，而人看到的
+              // 是一个分数，对不上。所以整列不可点，并保留一位小数——
+              // 提示单 0.1 分，取整会把一屏提示单显示成 0。
+              const isDI = col === 'DI'
+              if (isDI) {
+                return h('span', { class: val ? 'num-di' : 'num-zero' }, val.toFixed(1))
+              }
               return h('span', {
                 class: val && !isTotal ? 'num-link' : (isTotal && val ? 'num-total' : 'num-zero'),
                 onClick: (val && !isTotal) ? () => emit('cell-click', row.label, col, val) : undefined,
@@ -437,6 +479,12 @@ const subTab = ref('stats')
 const statsView = ref('both')
 const search = ref('')
 const trendDim = ref('group')
+const trendMetric = ref('count')   // count=缺陷数 / di=DI 加权分
+const diMissing = computed(() => trend.value?.di_missing_dates || [])
+const diMissingText = computed(() => {
+  const d = diMissing.value
+  return d.length <= 3 ? d.join('、') : `${d[0]} … ${d[d.length - 1]}`
+})
 const trend = ref(null)
 const flow = ref(null)
 const flowMode = ref('snapshot')   // snapshot=按采集日差分；issue_no=按编号里的创建日
@@ -448,6 +496,25 @@ const customerRows = computed(() => raw.value.filter((r) => (r.customer || '').t
 const devRows = computed(() => raw.value.filter((r) => !(r.customer || '').trim()))
 function sevCount(s) { return detail.value?.by_severity?.[s] || 0 }
 
+// ── DI（缺陷加权分）──────────────────────────────────────────────────
+// 权重由服务端随快照明细一起发下来（routers/_issue_source.SEVERITY_WEIGHTS，
+// 全系统只有那一份）。**这里刻意不写死一份 {致命:10,...}**：两端各存一份的话，
+// 哪天调权重只改一边，页面上的 DI 和趋势里的 DI 就对不上，而两边看着都对。
+const diWeights = computed(() => detail.value?.di_weights || null)
+const round1 = (n) => Math.round(n * 10) / 10
+function rowScore(r) {
+  const w = diWeights.value
+  if (!w) return 0
+  return w[(r.severity || '').trim()] ?? 0   // 认不出的级别记 0 分，但条数照算
+}
+function fmtDI(v) { return v == null ? '—' : round1(v).toFixed(1) }
+const diTip = computed(() => {
+  const w = diWeights.value
+  if (!w) return 'DI = 各缺陷按严重程度加权求和'
+  return 'DI = ' + Object.entries(w).map(([k, v]) => `${k}×${v}`).join(' + ') +
+         '；不在表内的级别记 0 分，但仍计入条数'
+})
+
 // ── 交叉表构建（行维度 × 严重程度）────────────────
 function buildCross(rows, rowField, colField) {
   const rowFallback = rowField === 'group' ? '未分组' : '未标注'
@@ -456,6 +523,8 @@ function buildCross(rows, rowField, colField) {
   const colTotals = {}
   const colSet = new Set()
   let grand = 0
+  const diRow = {}
+  let diGrand = 0
   for (const r of rows) {
     const rv = r[rowField] || rowFallback
     const cv = r[colField] || colFallback
@@ -464,21 +533,29 @@ function buildCross(rows, rowField, colField) {
     map[rv][cv] = (map[rv][cv] || 0) + 1
     colTotals[cv] = (colTotals[cv] || 0) + 1
     grand += 1
+    const sc = rowScore(r)
+    diRow[rv] = (diRow[rv] || 0) + sc
+    diGrand += sc
   }
   let cols = [...colSet]
   if (colField === 'severity') cols.sort((a, b) => (SEV_ORDER[a] ?? 99) - (SEV_ORDER[b] ?? 99))
   else cols.sort()
-  const columns = [...cols, '合计']
+  // DI 只在服务端把权重发下来时才出这一列。**前端不另存一份权重表**：
+  // 两端各写一份的表现是同一批单在页面上和趋势里 DI 不一样，而两边看着都对。
+  const wantDI = !!diWeights.value
+  const columns = wantDI ? [...cols, '合计', 'DI'] : [...cols, '合计']
   const outRows = Object.keys(map).sort().map((rv) => {
     const rec = { label: rv }
     let t = 0
     for (const c of cols) { const n = map[rv][c] || 0; rec[c] = n; t += n }
     rec['合计'] = t
+    if (wantDI) rec['DI'] = round1(diRow[rv] || 0)
     return rec
   })
   const totalRow = { label: '合计' }
   for (const c of cols) totalRow[c] = colTotals[c] || 0
   totalRow['合计'] = grand
+  if (wantDI) totalRow['DI'] = round1(diGrand)
   outRows.push(totalRow)
   return { columns, rows: outRows }
 }
@@ -583,7 +660,9 @@ function setChart(key, el, option) {
 // 排版：图例放顶部、grid 开 containLabel（旋转后的长标签计入绘图区，不再与图例/边缘重叠）
 function crossBarOption(cross) {
   const { columns = [], rows = [] } = cross
-  const cats = columns.filter((c) => c !== '合计')
+  // 「合计」和「DI」都不进堆叠柱：合计会把总量再叠一遍；DI 是加权分，
+  // 和条数不是一个量纲，堆上去那一截比谁都高，而图例里看着像多了一个严重程度档。
+  const cats = columns.filter((c) => c !== '合计' && c !== 'DI')
   const xRows = rows.filter((r) => r.label !== '合计')
   return {
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
@@ -610,19 +689,28 @@ function crossBarOption(cross) {
 function trendLineOption(t) {
   const dates = t.dates || []
   const color = (name, i) => (trendDim.value === 'severity' ? (SEV_CLR[name] || PAL[i % PAL.length]) : PAL[i % PAL.length])
+  const isDI = trendMetric.value === 'di'
+  // DI 走 null 而不是 0：没回算过的那几天要断线。ECharts 默认 connectNulls=false，
+  // 断口正好把"这里没有数"和"这里是 0"分开——补成 0 就再也看不出区别了。
+  const totalData = isDI ? (t.total_di || []) : (t.total || [])
+  const pick = (s) => (isDI ? (s.di || []) : (s.data || []))
   return {
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      valueFormatter: (v) => (v == null ? '未回算' : (isDI ? Number(v).toFixed(1) : v)),
+    },
     legend: { data: ['合计', ...(t.series || []).map((s) => s.name)], top: 0, type: 'scroll' },
     grid: { top: 34, left: 8, right: 16, bottom: 4, containLabel: true },
     xAxis: { type: 'category', data: dates, axisLabel: { rotate: dates.length > 8 ? 30 : 0, fontSize: 11 } },
-    yAxis: { type: 'value', minInterval: 1, name: '缺陷数' },
+    // DI 有 0.1 这一档，minInterval:1 会把提示单的变化整个抹平
+    yAxis: isDI ? { type: 'value', name: 'DI 值' } : { type: 'value', minInterval: 1, name: '缺陷数' },
     series: [
       {
         name: '合计', type: 'line', smooth: true, symbolSize: 8, lineStyle: { width: 2.5 },
-        color: '#4073ba', data: t.total || [], areaStyle: { opacity: 0.05 },
+        color: isDI ? '#c7000b' : '#4073ba', data: totalData, areaStyle: { opacity: 0.05 },
       },
       ...(t.series || []).map((s, i) => ({
-        name: s.name, type: 'line', smooth: true, symbolSize: 6, color: color(s.name, i), data: s.data,
+        name: s.name, type: 'line', smooth: true, symbolSize: 6, color: color(s.name, i), data: pick(s),
       })),
     ],
   }
@@ -1009,11 +1097,17 @@ onUnmounted(() => {
 .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px -12px rgba(31,45,61,.3); border-color: #c6e2ff; }
 .stat-num { font-size: 30px; font-weight: 700; color: #303133; line-height: 1.1; }
 .stat-label { font-size: 13px; color: #909399; margin-top: 6px; }
+.crit .stat-num { color: #8e24aa; } .crit:hover { border-color: #d9b3e6; }
 .sev .stat-num { color: #f56c6c; } .sev:hover { border-color: #fab6b6; }
 .nor .stat-num { color: #e6a23c; } .nor:hover { border-color: #f3d19e; }
 .tip .stat-num { color: #909399; }
 .cus .stat-num { color: #4073ba; } .cus:hover { border-color: #c6e2ff; }
 .dev .stat-num { color: #8e7ad8; } .dev:hover { border-color: #d6ccf2; }
+.di .stat-num { color: #c7000b; }
+.stat-card.nolink { cursor: default; }
+.stat-card.nolink:hover { transform: none; box-shadow: none; border-color: #ebeef5; }
+.di-help { margin-left: 3px; vertical-align: -1px; color: #c0c4cc; cursor: help; }
+.num-di { color: #c7000b; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .main-card :deep(.el-card__body) { padding: 0 16px 16px; }
 

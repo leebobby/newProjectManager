@@ -35,6 +35,7 @@ import models
 from auth import get_current_user, require_admin
 from database import SessionLocal, get_db
 from op_log import log_op
+from routers._issue_source import SEVERITY_WEIGHTS, score_by, weighted_score
 from routers.config import _load as _load_config
 from timeutil import fmt_local, iso_local
 
@@ -502,7 +503,7 @@ def get_trend(db: Session = Depends(get_db), _: models.User = Depends(get_curren
             "total": r.total, "by_group": bg, "by_severity": bs,
         })
 
-    sev_order = ["严重", "一般", "提示"]
+    sev_order = ["致命", "严重", "一般", "提示"]
     return {
         "daily":          daily,
         "all_groups":     sorted(all_groups),
@@ -567,7 +568,11 @@ def _run_issue_api_script(project: str) -> List[Dict]:
 
 # ─── 每日快照：库存"数字"（趋势）+ 文件存明细（钻取）──────────────────────────
 _BACKEND_DIR = pathlib.Path(__file__).resolve().parent.parent
-_SEV_ORDER = {"严重": 0, "一般": 1, "提示": 2}
+# 严重程度的展示顺序：**致命排最前**。DI 把它定为最重的一档（10 分），
+# 排到末尾的话，一张表里最该先看的那一列在最右边，而每一列单独看都没错。
+# 前端 IssueApiPanel.vue 的 SEV_ORDER / SEV_CLR 各有一份，**必须同步**
+# （漏一档的表现是那一档排到末尾、颜色落到兜底色）。
+_SEV_ORDER = {"致命": 0, "严重": 1, "一般": 2, "提示": 3}
 
 
 def _snapshot_root() -> pathlib.Path:
@@ -839,14 +844,20 @@ def _take_snapshot(db: Session, project: str,
     snap.created_at = datetime.utcnow()
     db.flush()  # 拿到 snap.id
 
-    # 重建维度聚合数字（group / customer / severity）
+    # 重建维度聚合数字（group / customer / severity）：条数与 DI 一起写。
+    # DI 也入库是因为**趋势只读库、不碰明细文件**——看图时现算就得把每天的
+    # 明细 JSON 全读一遍，那正是当初把数字入库要避开的事。
     db.query(models.IssueSnapshotStat).filter(
         models.IssueSnapshotStat.snapshot_id == snap.id
     ).delete(synchronize_session=False)
     for dim in ("group", "customer", "severity"):
+        di = score_by(raw, dim)      # 与 _count_by 同一套分组口径，见 _issue_source
         for key, cnt in _count_by(raw, dim).items():
             db.add(models.IssueSnapshotStat(
                 snapshot_id=snap.id, dimension=dim, dim_key=key, count=cnt,
+                # 这里落 0.0 而不是 None：这一档确实算过，只是级别全都认不出来。
+                # None 的含义是"这份快照压根没算过 DI"，两者不能混。
+                score=di.get(key, 0.0),
             ))
     db.commit()
     db.refresh(snap)
@@ -1031,6 +1042,13 @@ def snapshot_detail(project: str, date: Optional[str] = None,
         "by_severity": _count_by(raw, "severity"),
         "by_group": _count_by(raw, "group"),
         "by_customer": _count_by(raw, "customer"),
+        # DI 从明细现算（这个接口本来就把明细整份读进来了），与趋势读库里的数字
+        # 是同一份实现（_issue_source.score_by），不会出现"页面上的 DI 和趋势对不上"。
+        "di_total": weighted_score(raw),
+        "di_by_severity": score_by(raw, "severity"),
+        "di_by_group": score_by(raw, "group"),
+        "di_by_customer": score_by(raw, "customer"),
+        "di_weights": dict(SEVERITY_WEIGHTS),
     }
 
 
@@ -1038,7 +1056,16 @@ def snapshot_detail(project: str, date: Optional[str] = None,
 def snapshot_trend(project: str, dimension: str = "group",
                    db: Session = Depends(get_db),
                    _: models.User = Depends(get_current_user)):
-    """趋势：只从库里读维度聚合数字（不碰明细文件）。dimension ∈ group/customer/severity。"""
+    """趋势：只从库里读维度聚合数字（不碰明细文件）。dimension ∈ group/customer/severity。
+
+    条数和 DI **一次全返回**，前端切「缺陷数 / DI」不重新请求——一次请求就能拿到的
+    东西分成两次，还得处理"切太快回来的是上一个指标的数据"。
+
+    DI 有一档特殊状态：`score` 是后加的列，在那之前采集的快照压根没算过 DI。
+    那些天回 `null` 而不是 0，并把日期列进 `di_missing_dates`，页面据此明说
+    「这几天的 DI 还没回算」。记 0 的话图上是一条贴地的线，看着像那几天确实没缺陷，
+    而这种错没人会当 bug 报（同 overdue_unknown / match_rate：算不出来要如实说算不出来）。
+    """
     if dimension not in ("group", "customer", "severity"):
         dimension = "group"
     snaps = (
@@ -1048,18 +1075,33 @@ def snapshot_trend(project: str, dimension: str = "group",
         .all()
     )
     if not snaps:
-        return {"project": project, "dimension": dimension, "dates": [], "total": [], "series": []}
+        return {"project": project, "dimension": dimension, "dates": [], "total": [],
+                "series": [], "total_di": [], "di_missing_dates": [],
+                "di_weights": dict(SEVERITY_WEIGHTS)}
 
     dates = [s.snapshot_date for s in snaps]
     total = [s.total for s in snaps]
     id_to_idx = {s.id: i for i, s in enumerate(snaps)}
-    stats = (
-        db.query(models.IssueSnapshotStat)
-        .filter(models.IssueSnapshotStat.dimension == dimension,
-                models.IssueSnapshotStat.snapshot_id.in_([s.id for s in snaps]))
-        .all()
-    )
+    snap_ids = [s.id for s in snaps]
+
+    def _load(dim: str):
+        return (db.query(models.IssueSnapshotStat)
+                .filter(models.IssueSnapshotStat.dimension == dim,
+                        models.IssueSnapshotStat.snapshot_id.in_(snap_ids))
+                .all())
+
+    stats = _load(dimension)
+
+    # 「这份快照有没有算过 DI」按整份判，不按某一格判：采集时三个维度是一起写的，
+    # 所以任一行的 score 非空就说明这份算过。空快照（total=0）没有任何 stat 行，
+    # 那不是"没算过"，它的 DI 就是 0——不特判的话每个空快照都会被报成待回算。
+    has_di = {s.id: (s.total == 0) for s in snaps}
+    for st in stats:
+        if st.score is not None:
+            has_di[st.snapshot_id] = True
+
     matrix: Dict[str, List[int]] = {}
+    di_matrix: Dict[str, List[Optional[float]]] = {}
     order: List[str] = []
     for st in stats:
         idx = id_to_idx.get(st.snapshot_id)
@@ -1067,15 +1109,40 @@ def snapshot_trend(project: str, dimension: str = "group",
             continue
         if st.dim_key not in matrix:
             matrix[st.dim_key] = [0] * len(dates)
+            di_matrix[st.dim_key] = [None] * len(dates)
             order.append(st.dim_key)
         matrix[st.dim_key][idx] = st.count
+        di_matrix[st.dim_key][idx] = st.score
+    # 这份快照算过 DI、只是这一档当天没有单 → 0 而不是断线；没算过的仍留 None
+    for i, s in enumerate(snaps):
+        if not has_di.get(s.id):
+            continue
+        for key in order:
+            if di_matrix[key][i] is None:
+                di_matrix[key][i] = 0.0
+
     if dimension == "severity":
         order.sort(key=lambda k: _SEV_ORDER.get(k, 99))
     else:
         order.sort()
-    series = [{"name": k, "data": matrix[k]} for k in order]
+    series = [{"name": k, "data": matrix[k], "di": di_matrix[k]} for k in order]
+
+    # 合计 DI 一律按**严重程度**那一维加总，与请求的维度无关：
+    # 级别取值为空的行会被 _count_by/score_by 跳过，但那种行的 DI 本来就是 0
+    # （不在权重表里），所以严重程度各档之和 ＝ 整份快照的 DI，一分不差。
+    # 换成按客户面加总就不成立了——标题匹配不到客户的单整条不进那一维。
+    sev_stats = stats if dimension == "severity" else _load("severity")
+    di_sum: Dict[int, float] = {}
+    for st in sev_stats:
+        if st.score is not None:
+            di_sum[st.snapshot_id] = round(di_sum.get(st.snapshot_id, 0.0) + st.score, 1)
+    total_di = [(di_sum.get(s.id, 0.0) if has_di.get(s.id) else None) for s in snaps]
+
     return {"project": project, "dimension": dimension, "dates": dates,
-            "total": total, "series": series}
+            "total": total, "series": series,
+            "total_di": total_di,
+            "di_missing_dates": [s.snapshot_date for s in snaps if not has_di.get(s.id)],
+            "di_weights": dict(SEVERITY_WEIGHTS)}
 
 
 # ─── 快照导出 Excel：原始数据 + 统计分析 两张表 ────────────────────────────────
