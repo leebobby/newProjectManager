@@ -63,6 +63,7 @@
 │       ├── annual_iterations.py     /annual-iterations 年度 12 月迭代
 │       ├── iteration_requirements.py         /iteration-requirements 领域需求（6 进展子项）
 │       ├── iteration_product_requirements.py /iteration-product-requirements 产品需求（7 进展子项）
+│       ├── iteration_req_links.py  /iteration-req-links 产品需求 ↔ 领域需求 拆解关联（独立关联表）
 │       ├── domains.py               /domains 按 PL 组聚合 + 事务与风险跟踪
 │       ├── issues.py                /issues 问题单：本地报表 / 趋势 / 快照采集 / PPT
 │       ├── metrics.py               /metrics 版本完成率 / 迭代质量 / 组级负载
@@ -111,7 +112,8 @@
         │   ├── NotificationMarquee.vue  广播通知跑马灯
         │   └── iteration/
         │       ├── DomainRequirementTab.vue   迭代详情 · 领域需求页
-        │       └── ProductRequirementTab.vue  迭代详情 · 产品需求页
+        │       ├── ProductRequirementTab.vue  迭代详情 · 产品需求页
+        │       └── RequirementLinkDialog.vue  拆解关联挂接（两个 Tab 共用一份表单）
         └── views/                （路径与权限见下方「页面与功能」）
             ├── Login.vue                    ProjectIntro.vue
             ├── CustomerStatus.vue           CustomerIssueTracking.vue *
@@ -184,7 +186,7 @@ npm run dev
 | 客户面管理 | 客户详情 | `/customers/:id` | 登录用户 | 单客户档案 + 名下机台逐台展开（里程碑 / SOW / license / 自定义信息块 / 定制化需求 / 问题条目），可订阅变更。定制化需求的「预计合入版本」是**版本**下拉（已发布的不列出，仍可自由输入） |
 | 客户面管理 | 客户面支撑情况 | `/business-trips` | 登录用户 | 支撑记录（谁 / 战场 / **支撑项目** / **现场·线上** / 起止时间 / 事由 / **工作量人天**），状态按日期实时推导；看板按区间统计人次与人天，可按项目与支撑方式收窄 |
 | 进度管理 | 迭代管理 | `/iterations` | 登录用户 | 年度视图，12 个月度迭代；点击进入需求清单详情页（领域 / 产品需求各带「项目」列，迭代本身跨项目） |
-| 进度管理 | 迭代详情 | `/iterations/:id` | 登录用户 | 两个 Tab：**产品需求**（7 个进展子项）/ **领域需求**（6 个进展子项）；均支持行内编辑、Excel 批量导入、导出 PPT |
+| 进度管理 | 迭代详情 | `/iterations/:id` | 登录用户 | 两个 Tab：**产品需求**（7 个进展子项）/ **领域需求**（6 个进展子项）；均支持行内编辑、Excel 批量导入、导出 PPT。两张表之间可**挂拆解关联**（一条产品需求由哪几条领域需求承接，多对多、可跨迭代）：产品需求侧显示「N/M 条完成」与未拆解条数，领域需求侧显示它是为哪些产品需求做的 |
 | 进度管理 | 问题单管理 | `/issues` | 登录用户 | 按项目分 Tab（YLS3000/5000/8000，走 API 采集：每日快照 + 趋势 + 明细），另有「历史数据」Tab 读本地 Excel 报表（当天数据 / 趋势）；导出 PPT，统计明细可钻取到 19 列原始数据。管理员的「配置」Tab 里维护统计部门与小组名单，并列出**未归组责任人**（一键加入某组） |
 | 进度管理 | 领域管理 | `/domains` | 登录用户 | 三个 Tab：**领域总览**（按 PL 组聚合需求情况 / 问题单情况 / 最近主要工作 / 风险与求助，需求口径按迭代或按版本二选一，可下钻明细、可移除不管理的组）、**事务与风险跟踪**（跨领域逐条，带责任领域 + **责任人** + 优先级 + **风险等级** + **当前进展（富文本）**）、**遗留问题**（编号 / 任务名称 / 状态 / **当前进展（富文本）** / 三类人员角色 / 所属领域 / 计划完成时间 / 优先级） |
 | 进度管理 | 关键特性 | `/key-features` | 登录用户（删除 admin） | 全局特性目录：交付状态六档＝点灯、需求度量（总 SR/已验收/已转测）、责任人（FO/SE）、简介、附件与链接；机台按需勾选引用 |

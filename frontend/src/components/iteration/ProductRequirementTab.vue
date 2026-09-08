@@ -54,6 +54,11 @@
         共 {{ filteredList.length }}/{{ list.length }} 条<template v-if="changedCount">，
         其中 <b>{{ changedCount }}</b> 条已变更（置灰，不计入任何统计看板）</template>；特性 FO/SE/TFO 任一命中即匹配
       </span>
+      <!-- 未拆解的条数如实报出来：不报的话，一条领域需求都没挂的产品需求在页面上
+           和"拆完了"长得一样，而它们正是最该被追着去拆的那批 -->
+      <span v-if="undecomposedCount" class="tip-warn">
+        其中 <b>{{ undecomposedCount }}</b> 条还没挂任何领域需求
+      </span>
     </div>
 
     <el-table
@@ -281,6 +286,22 @@
         </el-table-column>
       </el-table-column>
 
+      <!-- 领域拆解：这条产品需求由哪几条领域需求承接。数字是**现算**的
+           （服务端按 routers/_req_progress 那一份口径），不在关联表里存一份——
+           存了的话领域需求那边一改，这里的数字就停在上一次挂接的时刻。
+           它与左边那 7 个进展子项答的不是同一个问题（那是这条产品需求自己走到
+           哪一步，这是底下几条领域需求做完没有），所以并排两列、互不覆盖。 -->
+      <el-table-column label="领域拆解" width="130" align="center">
+        <template #default="{ row }">
+          <el-link type="primary" :underline="false" @click="openLinks(row)">
+            <template v-if="linkSummary(row).total">
+              {{ linkSummary(row).done }}/{{ linkSummary(row).total }} 条完成
+            </template>
+            <span v-else class="undecomposed">未拆解</span>
+          </el-link>
+        </template>
+      </el-table-column>
+
       <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">完整编辑</el-button>
@@ -441,6 +462,15 @@
     </el-dialog>
 
     <!-- 所属特性管理 -->
+    <RequirementLinkDialog
+      v-model="linkDialog.visible"
+      side="product"
+      :row="linkDialog.row"
+      :iteration-id="iterationId"
+      :links="linkDialog.row ? linksOf(linkDialog.row) : []"
+      @changed="loadLinks"
+    />
+
     <el-dialog v-model="featureDialog.visible" title="管理所属特性" width="460px">
       <div class="feature-tip">所属特性下拉值来自项目级配置文件，所有用户共享。一行一个，支持空行删除。</div>
       <div v-for="(f, i) in featureDialog.list" :key="i" class="feature-row">
@@ -459,9 +489,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import RequirementDuplicateAlert from './RequirementDuplicateAlert.vue'
+import RequirementLinkDialog from './RequirementLinkDialog.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Download, Plus, Refresh, Setting, Upload, UploadFilled } from '@element-plus/icons-vue'
-import { configApi, downloadBlob, productRequirementApi, userApi } from '../../api'
+import { configApi, downloadBlob, productRequirementApi, reqLinkApi, userApi } from '../../api'
 import { auth } from '../../store/auth'
 import EditSelectCell from '../EditSelectCell.vue'
 import { buildVersionOptions, matchPlannedVersion } from '../../utils/plannedVersion'
@@ -681,6 +712,46 @@ function defaultForm() {
   }
 }
 
+// 拆解关联：按迭代一次拉全（两侧任一侧在本迭代的关联都在里面），页面按
+// product_req_id 切片。逐行去查就是 N+1，而这张表一屏几十行。
+const links = ref([])
+const linkDialog = reactive({ visible: false, row: null })
+
+const linksByProduct = computed(() => {
+  const m = new Map()
+  for (const l of links.value) {
+    if (!m.has(l.product_req_id)) m.set(l.product_req_id, [])
+    m.get(l.product_req_id).push(l)
+  }
+  return m
+})
+
+function linksOf(row) {
+  return linksByProduct.value.get(row.id) || []
+}
+
+/** 这条产品需求的拆解汇总。「已变更」的领域需求不计入分母——同度量看板的口径。 */
+function linkSummary(row) {
+  const rows = linksOf(row).map((l) => l.domain).filter((d) => d && !d.changed)
+  return { total: rows.length, done: rows.filter((d) => d.done).length }
+}
+
+const undecomposedCount = computed(
+  () => filteredList.value.filter((r) => !linksOf(r).length).length,
+)
+
+async function loadLinks() {
+  try {
+    const { data } = await reqLinkApi.list(props.iterationId)
+    links.value = data
+  } catch { links.value = [] }
+}
+
+function openLinks(row) {
+  linkDialog.row = row
+  linkDialog.visible = true
+}
+
 const dupInfo = ref(null)
 
 // 重复提示跟着列表一起刷新，但**不挡列表**：查重失败只是少一条提示，
@@ -700,6 +771,7 @@ async function load() {
     const { data } = await productRequirementApi.list(props.iterationId)
     list.value = data
     loadDuplicates()
+    loadLinks()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {
@@ -985,6 +1057,14 @@ onMounted(() => {
   margin-left: auto;
   color: #909399;
   font-size: 12px;
+}
+/* 未拆解提示紧跟在计数后面，不再 margin-left:auto——两个都靠右会把它顶到下一行 */
+.tip-warn {
+  color: #e6a23c;
+  font-size: 12px;
+}
+.undecomposed {
+  color: #e6a23c;
 }
 .editable-cell {
   cursor: text;

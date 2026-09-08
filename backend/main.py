@@ -9,7 +9,8 @@ from auth import get_current_user, hash_password
 from enums import SPECIAL_SECTION_KEYS
 from database import Base, SessionLocal, engine
 from migrate import ensure_schema
-from routers import annual_iterations, iteration_product_requirements, iteration_requirements
+from routers import (annual_iterations, iteration_product_requirements,
+                     iteration_req_links, iteration_requirements)
 from routers import auth as auth_router
 from routers import config as config_router
 from routers import archives as archives_router, history as history_router
@@ -53,6 +54,7 @@ app.include_router(customer_custom_req.router, dependencies=authed)
 app.include_router(annual_iterations.router, dependencies=authed)
 app.include_router(iteration_requirements.router, dependencies=authed)
 app.include_router(iteration_product_requirements.router, dependencies=authed)
+app.include_router(iteration_req_links.router, dependencies=authed)
 app.include_router(roadmap.router, dependencies=authed)
 app.include_router(issues.router, dependencies=authed)
 app.include_router(issue_tracks.router, dependencies=authed)
