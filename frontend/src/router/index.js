@@ -46,7 +46,7 @@ const routes = [
     path: '/versions',
     name: 'VersionManagement',
     component: () => import('../views/VersionManagement.vue'),
-    meta: { title: '版本管理', icon: 'Files', group: '进度管理' },
+    meta: { title: '版本管理', icon: 'Files', group: '计划管理' },
   },
   {
     path: '/iterations',
@@ -94,7 +94,20 @@ const routes = [
     path: '/roadmaps',
     name: 'RoadmapManage',
     component: () => import('../views/RoadmapManage.vue'),
-    meta: { title: '里程碑管理', icon: 'Guide', requireAdmin: true, group: '概览' },
+    meta: { title: '里程碑管理', icon: 'Guide', requireAdmin: true, group: '计划管理' },
+  },
+  {
+    // WBS：父项是列表页，各份 WBS 由 App.vue 渲染成二级菜单（同专项管理）
+    path: '/wbs',
+    name: 'WbsList',
+    component: () => import('../views/WbsList.vue'),
+    meta: { title: 'WBS', icon: 'Grid', group: '计划管理', wbsParent: true },
+  },
+  {
+    path: '/wbs/:id',
+    name: 'WbsDetail',
+    component: () => import('../views/WbsDetail.vue'),
+    meta: { title: 'WBS 详情', hidden: true },
   },
   {
     path: '/handbook',

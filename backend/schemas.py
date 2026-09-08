@@ -2028,3 +2028,147 @@ class PageSnapshotTarget(BaseModel):
 class PageSnapshotCreate(BaseModel):
     kind: str
     ref_id: int = 0
+
+
+# ─── WBS：一份 WBS 挂在专项或机台调试上，行按 parent_id 分层，层数不限 ──────────
+class WbsPlanBase(BaseModel):
+    name: str
+    kind: str = "special"
+    special_id: Optional[int] = None
+    machine_status_id: Optional[int] = None
+    owner_user_id: Optional[int] = None
+    description: str = ""
+
+
+class WbsPlanCreate(WbsPlanBase):
+    # norm_* 只挂 Create/Update，绝不挂 Base/Out：Out 继承 Base 又走 from_attributes
+    # 读库，老库里的历史脏值会让读取直接 422（见 CLAUDE.md「枚举」）。
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v):
+        return enums.norm_wbs_kind(v)
+
+
+class WbsPlanUpdate(BaseModel):
+    name: Optional[str] = None
+    kind: Optional[str] = None
+    special_id: Optional[int] = None
+    machine_status_id: Optional[int] = None
+    owner_user_id: Optional[int] = None
+    description: Optional[str] = None
+    version: Optional[int] = None       # 乐观锁：不一致返回 409
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v):
+        return enums.norm_wbs_kind(v) if v is not None else v
+
+
+class WbsPlanOut(WbsPlanBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    owner: str = ""
+    kind_label: str = ""            # 响应字段，非模型列
+    ref_name: str = ""              # 归属对象的名字（专项名 / 客户+机台号）
+    version: int = 0
+    created_at: LocalDT
+    updated_at: LocalDT
+    # 下面几个是整份 WBS 的汇总，由服务端算，**前端不重算**——两端各加一次迟早对不上
+    total_days: float = 0.0
+    progress_pct: int = 0
+    leaf_count: int = 0
+    row_count: int = 0
+    max_depth: int = 0
+    flagged: int = 0                # 待补录（缺负责人 / 缺工期）的叶子数
+    excluded: int = 0               # 因「已变更 / 不涉及」不计入统计的叶子数
+    excluded_days: float = 0.0
+    planned_start: Optional[datetime] = None   # 用户填的日期，不转时区
+    planned_end: Optional[datetime] = None
+
+
+class WbsItemBase(BaseModel):
+    name: str = ""
+    deliverable: str = ""
+    dod: str = ""
+    predecessor: str = ""
+    owner_user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    planned_start: Optional[datetime] = None
+    planned_end: Optional[datetime] = None
+    man_days: Optional[float] = None
+    status: str = enums.PROGRESS_DEFAULT
+    progress_pct: int = 0
+    remark: str = ""
+
+
+class WbsItemCreate(WbsItemBase):
+    parent_id: Optional[int] = None
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v):
+        return enums.norm_progress(v)
+
+
+class WbsItemUpdate(BaseModel):
+    name: Optional[str] = None
+    deliverable: Optional[str] = None
+    dod: Optional[str] = None
+    predecessor: Optional[str] = None
+    owner_user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    planned_start: Optional[datetime] = None
+    planned_end: Optional[datetime] = None
+    man_days: Optional[float] = None
+    status: Optional[str] = None
+    progress_pct: Optional[int] = None
+    remark: Optional[str] = None
+    version: Optional[int] = None
+    # parent_id **不在这里**：改层级走 /move，那一步还要重排 sort_order 并防环，
+    # 做成普通字段的话前端一个 PUT 就能把一行挂到自己的子孙下面，整棵树从此读不出来。
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, v):
+        return enums.norm_progress(v, partial=True) if v is not None else v
+
+
+class WbsItemOut(WbsItemBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    plan_id: int
+    parent_id: Optional[int] = None
+    owner: str = ""
+    owner_group: str = ""
+    sort_order: int = 0
+    version: int = 0
+    # ── 以下全是响应字段，不是模型列 ──────────────────────────────────
+    code: str = ""            # 1.2.3，按 parent_id + sort_order 现算，不入库
+    depth: int = 1
+    is_leaf: bool = True
+    child_count: int = 0
+    # 父行的这四个是从叶子汇总来的；叶子行就是它自己填的值
+    roll_days: float = 0.0
+    roll_pct: int = 0
+    roll_start: Optional[datetime] = None
+    roll_end: Optional[datetime] = None
+    leaf_count: int = 0
+    excluded: int = 0
+    issues: List[str] = []    # 待补录提示：缺负责人 / 缺工期 / 已过计划完成日……
+
+
+class WbsPlanDetail(WbsPlanOut):
+    items: List[WbsItemOut] = []
+
+
+class WbsReorder(BaseModel):
+    """整体重写某个父级下的顺序。逐个 PUT sort_order 在中途失败会留下「排到一半」
+    的顺序，而顺序错了不报错、只是看着不对（同版本三层的 /reorder）。"""
+    parent_id: Optional[int] = None
+    ids: List[int] = []
+
+
+class WbsMove(BaseModel):
+    """改层级：把一行连同它的子树挂到 new_parent_id 下（None＝提到最外层）。"""
+    new_parent_id: Optional[int] = None
+    version: Optional[int] = None
