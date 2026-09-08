@@ -56,8 +56,8 @@
 
         <el-table-column label="风险" width="112" align="center">
           <template #default="{ row }">
-            <!-- 点灯是这张表里唯一能改的一格，所以做成可点；改走统一弹窗，
-                 不在行内挂下拉——一屏几十行，每行一个 popper 没必要 -->
+            <!-- 灯是这张表里唯一「只属于总览」的一格（其余几列改的都是专项自己的字段）。
+                 改走统一弹窗，不在行内挂下拉——一屏几十行，每行一个 popper 没必要 -->
             <button type="button" class="light-btn" :title="lightTitle(row)" @click="openLight(row)">
               <i class="dot" :class="'dot-' + row.light" />
               <span>{{ LIGHT_LABELS[row.light] }}</span>
@@ -71,6 +71,10 @@
             <div class="cell-text" :class="{ clamp: !expandAll }" :title="row.progress">
               {{ row.progress || '—' }}
             </div>
+            <!-- 改的是专项详情页的「整体进展」那一段本身，不是总览自己存的一列 -->
+            <el-link type="primary" :underline="false" class="edit-link" @click="openProgress(row)">
+              {{ row.progress ? '编辑' : '填写' }}
+            </el-link>
           </template>
         </el-table-column>
 
@@ -85,9 +89,11 @@
                 <div v-if="r.progress" class="risk-act" :class="{ clamp: !expandAll }" :title="r.progress">
                   措施：{{ r.progress }}
                 </div>
-                <div v-if="r.owner || r.planned_close_date" class="risk-meta">
+                <div class="risk-meta">
                   <span v-if="r.owner">{{ r.owner }}</span>
                   <span v-if="r.planned_close_date">计划闭环 {{ r.planned_close_date }}</span>
+                  <!-- 改的是该专项风险分段里的那一行本身；标成 closed 之后它就不再出现在这儿了 -->
+                  <el-link type="primary" :underline="false" class="edit-link" @click="openRisk(row, r)">编辑</el-link>
                 </div>
               </div>
               <!-- 截断要写明另有几条，别悄悄少几行 -->
@@ -100,6 +106,9 @@
               >另 {{ row.risks.length - RISK_LIMIT }} 条，点开专项查看</el-link>
             </div>
             <span v-else class="muted">{{ emptyRiskText(row) }}</span>
+            <div class="risk-add">
+              <el-link type="primary" :underline="false" class="edit-link" @click="openRisk(row, null)">+ 新增风险</el-link>
+            </div>
           </template>
         </el-table-column>
 
@@ -115,7 +124,9 @@
       <div class="foot-note">
         表里七列全部从各专项自己的字段自动取：目标＝专项目标分段，关键进展＝整体进展分段，
         关键风险和措施＝风险和问题分段里<b>还没闭环</b>的行，责任人＝专项责任人。
-        在对应专项的详情页里改，这里刷新就跟着变；只有「风险」这一盏灯可以在本页人工指定。
+        「关键进展」「关键风险和措施」可以直接在这儿改，但<b>改的是专项详情页里的那一段本身</b>
+        ——总览没有自己的一份，所以两边永远是同一个值；改完详情页、周报、导出都跟着变。
+        「风险」这一盏灯可以在本页人工指定；目标与责任人到专项里改。
       </div>
     </el-card>
 
@@ -143,6 +154,34 @@
         <el-button type="primary" :loading="dialog.saving" @click="saveLight">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 关键进展：改的是该专项 content.progress_summary 本身（详情页的「整体进展」分段） -->
+    <el-dialog v-model="progressDlg.visible" title="关键进展" width="720px" top="8vh">
+      <div v-if="progressDlg.row" class="dlg-name">
+        {{ progressDlg.row.kind_label }}：{{ progressDlg.row.name }}
+      </div>
+      <el-alert type="info" :closable="false" class="dlg-auto" show-icon
+        title="这里改的就是专项详情页的「整体进展」分段"
+        description="总览没有自己的一份进展文案，所以改完详情页、周报、导出看到的都是这一段。" />
+      <div v-loading="progressDlg.loading">
+        <RichTextEditor v-model="progressDlg.html" min-height="220px" placeholder="本周期该专项的关键进展…" />
+      </div>
+      <template #footer>
+        <el-button @click="progressDlg.visible = false">取消</el-button>
+        <el-button type="primary" :loading="progressDlg.saving" :disabled="progressDlg.loading" @click="saveProgress">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 风险行：表单与专项详情页共用一份（SpecialItemDialog） -->
+    <SpecialItemDialog
+      v-model="riskDlg.visible"
+      kind="risk"
+      :special-id="riskDlg.specialId"
+      :item="riskDlg.item"
+      @saved="load"
+    />
   </div>
 </template>
 
@@ -152,6 +191,8 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Download, Refresh } from '@element-plus/icons-vue'
 import { specialApi, apiError, downloadBlob } from '../api'
+import RichTextEditor from '../components/RichTextEditor.vue'
+import SpecialItemDialog from '../components/SpecialItemDialog.vue'
 
 // 四档灯。**与后端 enums.SPECIAL_OVERVIEW_LIGHT_LABELS 必须同步**：
 // 分叉的表现是页面上多出/少掉一档，而那一档的行会显示成空白。
@@ -219,6 +260,72 @@ async function saveLight() {
   }
 }
 
+// ── 就地编辑「关键进展」与「关键风险和措施」 ────────────────────────────
+// **总览不存自己的一份**：这两处改的都是专项详情页里的那个字段本身
+// （content.progress_summary / special_risks 的行），走的也是详情页那两个接口。
+// 反过来做成「总览上单独填一列」的话，它就会和详情页对不上，而两边看着都对。
+//
+// 表里的文字是服务端剥过 HTML 的（横着扫的表留着标签每行高矮不一），
+// 所以编辑时要回源拿**原始富文本**——拿页面上这份剥过的存回去，
+// 等于把别人排的版一次抹平，而保存时一点提示都没有。
+const progressDlg = reactive({ visible: false, row: null, html: '', version: 0, loading: false, saving: false })
+
+async function openProgress(row) {
+  progressDlg.row = row
+  progressDlg.html = ''
+  progressDlg.version = row.version
+  progressDlg.visible = true
+  progressDlg.loading = true
+  try {
+    const { data } = await specialApi.detail(row.id)
+    progressDlg.html = data.content?.progress_summary || ''
+    progressDlg.version = data.content?.version ?? row.version
+  } catch (e) {
+    progressDlg.visible = false
+    ElMessage.error(apiError(e, '加载专项内容失败'))
+  } finally {
+    progressDlg.loading = false
+  }
+}
+
+async function saveProgress() {
+  progressDlg.saving = true
+  try {
+    await specialApi.updateContent(progressDlg.row.id, {
+      progress_summary: progressDlg.html,
+      version: progressDlg.version,
+    })
+    progressDlg.visible = false
+    ElMessage.success('已保存')
+    await load()
+  } catch (e) {
+    if (![409, 423].includes(e?.response?.status)) ElMessage.error(apiError(e, '保存失败'))
+  } finally {
+    progressDlg.saving = false
+  }
+}
+
+const riskDlg = reactive({ visible: false, specialId: null, item: null })
+
+async function openRisk(row, cell) {
+  riskDlg.specialId = row.id
+  if (!cell) {                 // 新增
+    riskDlg.item = null
+    riskDlg.visible = true
+    return
+  }
+  // 同上：编辑已有行要回源拿原始富文本，表里那份是剥过 HTML 的
+  try {
+    const { data } = await specialApi.detail(row.id)
+    const raw = (data.risks || []).find((x) => x.id === cell.id)
+    if (!raw) { ElMessage.warning('这条风险已被他人删除，刷新后重试'); await load(); return }
+    riskDlg.item = raw
+    riskDlg.visible = true
+  } catch (e) {
+    ElMessage.error(apiError(e, '加载风险行失败'))
+  }
+}
+
 const exporting = ref(false)
 
 async function onExport() {
@@ -280,6 +387,8 @@ onMounted(load)
 .risk-act { color: #606266; font-size: 13px; margin-top: 2px; word-break: break-word; line-height: 1.5; }
 .risk-meta { color: #909399; font-size: 12px; margin-top: 2px; display: flex; gap: 10px; }
 .more { font-size: 12px; }
+.edit-link { font-size: 12px; }
+.risk-add { margin-top: 6px; }
 .muted { color: #909399; }
 .foot-note { margin-top: 12px; color: #909399; font-size: 12px; line-height: 1.7; }
 .dlg-name { font-weight: 600; margin-bottom: 10px; }

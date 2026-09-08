@@ -410,37 +410,14 @@
       </template>
     </el-dialog>
 
-    <!-- 事务/风险 对话框 -->
-    <el-dialog
+    <!-- 事务/风险 对话框：表单在 SpecialItemDialog 里，与专项总览页共用一份 -->
+    <SpecialItemDialog
       v-model="itemDialog.visible"
-      :title="(itemDialog.editing ? '编辑' : '新增') + (itemDialog.kind === 'task' ? '事务' : '风险/问题')"
-      width="520px"
-    >
-      <el-form :model="itemDialog.form" label-width="100px">
-        <el-form-item :label="itemDialog.kind === 'task' ? '事务内容' : '问题内容'">
-          <RichTextEditor v-model="itemDialog.form.content" min-height="90px" placeholder="支持加粗 / 字号 / 颜色" />
-        </el-form-item>
-        <el-form-item label="当前进展">
-          <RichTextEditor v-model="itemDialog.form.progress" min-height="70px" placeholder="支持加粗 / 字号 / 颜色" />
-        </el-form-item>
-        <el-form-item label="责任人">
-          <el-input v-model="itemDialog.form.owner" />
-        </el-form-item>
-        <el-form-item label="计划闭环时间">
-          <el-input v-model="itemDialog.form.planned_close_date" placeholder="YYYY-MM-DD 或自由文本" />
-        </el-form-item>
-        <el-form-item label="当前状态">
-          <el-radio-group v-model="itemDialog.form.status">
-            <el-radio value="open">Open</el-radio>
-            <el-radio value="closed">Closed</el-radio>
-          </el-radio-group>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="itemDialog.visible = false">取消</el-button>
-        <el-button type="primary" @click="onSaveItem">保存</el-button>
-      </template>
-    </el-dialog>
+      :kind="itemDialog.kind"
+      :special-id="special?.id"
+      :item="itemDialog.editing"
+      @saved="reloadItems(itemDialog.kind)"
+    />
 
     <!-- 周报草稿对话框 -->
     <el-dialog v-model="reportDialog.visible" :title="`${label}周报草稿`" width="720px" top="6vh">
@@ -495,6 +472,7 @@ import FormationGrid from '../components/FormationGrid.vue'
 import HistoryActions from '../components/HistoryActions.vue'
 import RichGrid from '../components/RichGrid.vue'
 import RichTextEditor from '../components/RichTextEditor.vue'
+import SpecialItemDialog from '../components/SpecialItemDialog.vue'
 import SubscribeButton from '../components/SubscribeButton.vue'
 
 const route = useRoute()
@@ -643,17 +621,13 @@ async function toggleEdit() {
 }
 
 const msDialog = reactive({ visible: false, editing: null, target: null, form: { name: '', date: '', status: 'planning' } })
-const itemDialog = reactive({ visible: false, editing: null, kind: 'task', form: defaultItem() })
+const itemDialog = reactive({ visible: false, editing: null, kind: 'task' })
 const reportDialog = reactive({
   visible: false,
   loading: false,
   downloading: false,
   form: { to: '', cc: '', subject: '', body: '' },
 })
-
-function defaultItem() {
-  return { content: '', progress: '', owner: '', planned_close_date: '', status: 'open' }
-}
 
 async function load() {
   // 请求令牌：若 await 期间又发起了新的一次 load，则丢弃本次迟到响应，避免写错专项
@@ -1122,31 +1096,7 @@ async function onUploadPanorama(uploadFile) {
 function openItemDialog(kind, row) {
   itemDialog.kind = kind
   itemDialog.editing = row || null
-  itemDialog.form = row
-    ? {
-        content: row.content, progress: row.progress, owner: row.owner,
-        planned_close_date: row.planned_close_date, status: row.status || 'open',
-      }
-    : defaultItem()
   itemDialog.visible = true
-}
-
-async function onSaveItem() {
-  const { kind, editing, form } = itemDialog
-  try {
-    if (editing) {
-      const api = kind === 'task' ? specialApi.updateTask : specialApi.updateRisk
-      await api(editing.id, form)
-    } else {
-      const api = kind === 'task' ? specialApi.createTask : specialApi.createRisk
-      await api(special.value.id, form)
-    }
-    itemDialog.visible = false
-    await reloadItems(kind)
-    ElMessage.success('已保存')
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '保存失败')
-  }
 }
 
 async function onRemoveItem(kind, row) {
