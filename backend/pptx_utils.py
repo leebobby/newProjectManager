@@ -61,6 +61,7 @@ def issues_to_text(machine, kind: str) -> str:
     return "\n".join(lines)
 
 import brand
+import enums
 from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -111,6 +112,10 @@ _FONT_EA = "微软雅黑"
 # 六档里只有四档给底色，「未开始 / 不涉及」故意留白底：
 # 它们表达的是"这里没有进展"，上了底色反而和真有状态的格子一样抢眼。
 _STATUS_FILLS = {k: _c(v) for k, v in brand.STATUS_FILLS.items()}
+# 点灯（自由表格的点灯列 / 专项总览的风险灯）。**与 _STATUS_FILLS 不是一回事**，
+# 见 brand.py 里的说明：那一套认进展状态词，这一套认用户自己拨的灯。
+_LIGHT_FILLS = {k: _c(v) for k, v in brand.LIGHT_FILLS.items()}
+_LIGHT_TEXTS = {k: _c(v) for k, v in brand.LIGHT_TEXTS.items()}
 _STATUS_TEXT = {k: _c(v) for k, v in brand.STATUS_TEXT.items()}
 _STATUS_ON_FILL_TEXT = _c(brand.STATUS_ON_FILL_TEXT)
 
@@ -393,7 +398,7 @@ def _style_link_cell(cell, url: str, font_size: int, zebra: bool, label: str = "
 
 
 def _style_data_cell(cell, value, font_size: int, zebra: bool, center: bool = False,
-                     total: bool = False):
+                     total: bool = False, light: bool = False):
     text = "" if value is None else str(value)
     cell.text = text
     cell.fill.solid()
@@ -411,10 +416,18 @@ def _style_data_cell(cell, value, font_size: int, zebra: bool, center: bool = Fa
     is_status = fill is not None or muted is not None
     color = _STATUS_ON_FILL_TEXT if fill is not None else (muted or _TEXT)
 
+    # 点灯列：走另一套配色（brand.LIGHT_*），字色跟着灯走而不是压成近黑——
+    # 这一列整格就一个字，浅底上再用黑字就看不出是哪盏灯了。
+    key = enums.light_key_of(stripped) if (light and not total) else ""
+    if key:
+        cell.fill.fore_color.rgb = _LIGHT_FILLS[key]
+        color = _LIGHT_TEXTS[key]
+        is_status = True
+
     for para in cell.text_frame.paragraphs:
         para.alignment = PP_ALIGN.CENTER if (center or is_status) else PP_ALIGN.LEFT
         for r in para.runs:
-            _apply_run_font(r, font_size, (fill is not None) or total, color)
+            _apply_run_font(r, font_size, (fill is not None) or bool(key) or total, color)
     _set_cell_border(cell)
 
 
@@ -436,6 +449,7 @@ def _add_grouped_table(
     font_size: int,
     center_cols: Optional[set] = None,
     link_cols: Optional[set] = None,
+    light_cols: Optional[set] = None,
 ):
     """在一张 slide 上画一张「父表头 + 子表头」的表。**只画一页**，分页由调用方做。
 
@@ -445,6 +459,7 @@ def _add_grouped_table(
     """
     center_cols = center_cols or set()
     link_cols = link_cols or set()
+    light_cols = light_cols or set()
     n_cols = len(leaf_headers)
     n_rows = 2 + len(rows)
 
@@ -510,7 +525,8 @@ def _add_grouped_table(
                 _style_link_cell(table.cell(i, j), text, font_size, zebra)
             else:
                 _style_data_cell(table.cell(i, j), val, font_size, zebra,
-                                 center=(j in center_cols), total=total)
+                                 center=(j in center_cols), total=total,
+                                 light=(j in light_cols))
 
 
 def _footer_text(slide, left_in: float, width_in: float, align, text: str,
@@ -584,6 +600,7 @@ def add_table_slides(
     center_cols: Optional[set] = None,
     clip_cols: Optional[dict] = None,
     link_cols: Optional[set] = None,
+    light_cols: Optional[set] = None,
     empty_note: str = "暂无数据",
 ):
     """把一批数据行铺成**若干张**幻灯片，每张都装得下。
@@ -596,6 +613,9 @@ def add_table_slides(
     clip_cols:  {列下标: 最多行数}，长文本列超出就截断并标"…（另 N 条）"。
                 一格能吃掉一整页，不截断的话分页也救不回来。
     link_cols:  这些列里的 http(s) 值渲染成可点的「查看」短链接。
+    light_cols: 这些列按**点灯**着色（红/黄/绿/灰），取值→档位走
+                `enums.light_key_of()`，配色走 `brand.LIGHT_*`——与进展状态词的
+                那套点灯不是一回事，见 brand.py 的说明。
     """
     n_cols = len(leaf_headers)
     parent_headers = list(parent_headers or [None] * n_cols)
@@ -604,6 +624,7 @@ def add_table_slides(
 
     clip_cols = clip_cols or {}
     link_cols = link_cols or set()
+    light_cols = light_cols or set()
     prepared: List[List[str]] = []
     for row in rows:
         vals = ["" if v is None else str(v) for v in row]
@@ -634,7 +655,7 @@ def add_table_slides(
             page_sub += f"   ·   第 {idx}/{len(pages)} 页"
         _add_header(slide, title, page_sub)
         _add_grouped_table(slide, parent_headers, leaf_headers, page_rows,
-                           widths, font_size, center_cols, link_cols)
+                           widths, font_size, center_cols, link_cols, light_cols)
         _add_footer(slide, idx, len(pages))
 
 
@@ -675,6 +696,94 @@ def build_customer_status_pptx(rows: Iterable) -> io.BytesIO:
         # 不截断那一行能顶满整张幻灯片，后面的机器全被挤到页外
         clip_cols={6: _DEFAULT_MAX_LINES, 7: _DEFAULT_MAX_LINES, 8: _DEFAULT_MAX_LINES},
         empty_note="没有可导出的机台",
+    )
+
+    buf = io.BytesIO()
+    pres.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def _overview_risk_text(risks) -> str:
+    """专项总览「关键风险和措施」一格的文本：**一条风险占一行**。
+
+    刻意不把措施另起一行——`_clip_text` 的「另 N 条」数的是**行**，一条风险占
+    两行的话，截断时会写成"另 4 条"而其实只剩 2 条风险；那个数看着完全合理，
+    没人会去核。所以风险与措施用「｜」接在同一行里，让"条"和"行"对得上。
+    """
+    lines = []
+    for i, r in enumerate(risks, 1):
+        body = (getattr(r, "content", "") or "").replace("\n", " ").strip() or "（未填写）"
+        act = (getattr(r, "progress", "") or "").replace("\n", " ").strip()
+        head = f"{i}. " + ("[已超期] " if getattr(r, "overdue", False) else "")
+        lines.append(head + body + (f"｜措施：{act}" if act else ""))
+    return "\n".join(lines)
+
+
+def build_special_overview_pptx(rows: Iterable) -> io.BytesIO:
+    """专项总览 → PPT。传入 schemas.SpecialOverviewRow 列表，返回 BytesIO。
+
+    列与页面一一对应，**不在导出里另算一遍**：`light` / `risks` 都是接口已经
+    推好的值，这里只负责排版。两处各算一份的表现是"页面是黄的、PPT 里是红的"，
+    而两边看着都对。
+    """
+    leaf_headers = ["序号", "关键专题", "目标", "风险", "关键进展",
+                    "关键风险和措施", "责任人"]
+    # 列宽是**比例**，内部归一化到页宽；手写英寸数的话改个列就再也铺不满
+    col_ratios = [0.4, 1.5, 2.2, 0.65, 2.4, 3.1, 0.75]
+
+    rows = list(rows)
+    data: List[List[str]] = []
+    for r in rows:
+        risks = list(getattr(r, "risks", []) or [])
+        if risks:
+            risk_text = _overview_risk_text(risks)
+        elif getattr(r, "risk_total", 0):
+            risk_text = f"{r.risk_total} 条风险已全部闭环"
+        else:
+            risk_text = "未登记风险"
+        # 「攻关」才加前缀：一屏全是「专项」两个字是纯噪音，
+        # 而攻关与专项在管理上是两回事，不标出来看的人分不出
+        name = (f"【{r.kind_label}】{r.name}"
+                if getattr(r, "kind", "") == "assault" else r.name)
+        data.append([
+            str(r.seq),
+            name,
+            (r.goal or "").strip() or "—",
+            enums.SPECIAL_OVERVIEW_LIGHT_LABELS.get(r.light, r.light or ""),
+            (r.progress or "").strip() or "—",
+            risk_text,
+            (r.owner or "").strip() or "—",
+        ])
+
+    counts = {k: 0 for k in ("red", "yellow", "green", "gray")}
+    for r in rows:
+        if r.light in counts:
+            counts[r.light] += 1
+    manual = sum(1 for r in rows if getattr(r, "light_manual", ""))
+
+    labels = enums.SPECIAL_OVERVIEW_LIGHT_LABELS
+    dist = "  ".join(f"{labels[k]} {counts[k]}" for k in ("red", "yellow", "green", "gray"))
+    subtitle = (f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                f"   ·   共 {len(data)} 项   ·   {dist}")
+    # 有人工拨过的灯就如实说一句：不说的话，这份材料等于把"人拍的板"
+    # 摆成了"系统算出来的结论"，而看的人分不出哪几行是哪种
+    if manual:
+        subtitle += f"   ·   其中 {manual} 项的灯为人工指定"
+
+    pres = _new_pres()
+    add_table_slides(
+        pres,
+        "专项总览",
+        subtitle,
+        leaf_headers, data,
+        col_ratios=col_ratios,
+        center_cols={0, 3, 6},
+        light_cols={3},
+        # 三个长文本列限行：一个专项挂七八条风险的话，不截断那一行能顶满整张
+        # 幻灯片，后面的专项全被挤到页外。截断会写明「另 N 条，见系统」
+        clip_cols={2: 5, 4: 5, 5: 8},
+        empty_note="还没有专项",
     )
 
     buf = io.BytesIO()

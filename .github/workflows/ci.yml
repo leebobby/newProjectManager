@@ -54,6 +54,15 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      # 生产机装依赖走的是 --omit=dev（跳过只有开发/CI 用的 eslint 与 playwright，
+      # 那两个要 Node 20+，而部署机是 Node 18）。这条路和上面那条装的东西不一样，
+      # 不单独验一次就没人验：vite 一旦被挪回 devDependencies，部署时就是
+      # 「vite: not found」——而 CI 全绿，只有升级那天在客户现场才会发现。
+      - name: 生产装法也要能构建（npm ci --omit=dev）
+        run: |
+          rm -rf node_modules
+          npm ci --omit=dev
+          npm run build
 
   smoke:
     name: 冒烟（真开个浏览器点一遍）

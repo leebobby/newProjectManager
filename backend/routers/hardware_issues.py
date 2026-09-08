@@ -21,6 +21,7 @@ import schemas
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
+import revisions
 from routers._lookups import fill_group_fk, fill_user_fk
 from routers.config import _load as load_config
 
@@ -230,6 +231,7 @@ def update_item(
     if item.version != payload.version:
         raise HTTPException(status_code=409, detail="数据已被他人修改，请刷新后重试")
 
+    before = revisions.snapshot(item)
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
     if "machine_cells" in changes:
@@ -243,6 +245,7 @@ def update_item(
     for k, v in changes.items():
         setattr(item, k, v)
     item.version += 1
+    revisions.record(db, item, before, user=current_user)
     db.commit()
     db.refresh(item)
     log_op(db, action="修改", target="硬件问题清零", target_id=item.id,
@@ -262,6 +265,7 @@ def delete_item(
     if not item:
         raise HTTPException(status_code=404, detail="Not found")
     snapshot = (item.summary or "")[:40]
+    revisions.record_delete(db, item, user=current_admin)
     db.delete(item)
     db.commit()
     log_op(db, action="删除", target="硬件问题清零", target_id=item_id,

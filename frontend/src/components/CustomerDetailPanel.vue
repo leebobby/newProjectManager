@@ -6,6 +6,9 @@
         <div class="sec-head">
           <span>基本信息</span>
           <div class="actions">
+            <HistoryActions v-if="customer.id" :scope="`customer:${customer.id}`" kind="customer"
+                            :ref-id="customer.id"
+                            :title="`客户面：${customer.display_name || customer.code}`" />
             <el-button v-if="canEdit" size="small" @click="openMetaDialog">编辑基本信息</el-button>
           </div>
         </div>
@@ -593,6 +596,7 @@ import {
   customerApi, customerCustomReqApi, customerExtraApi, customerIssueApi, customerStatusApi, downloadBlob, issueApi, licenseApi, majorVersionApi, sowApi,
 } from '../api'
 import { auth } from '../store/auth'
+import HistoryActions from './HistoryActions.vue'
 import CustomerIssueCell from './CustomerIssueCell.vue'
 import MilestoneTimeline from './MilestoneTimeline.vue'
 

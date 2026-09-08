@@ -25,7 +25,7 @@ DateTime 列在本项目里有两类，口径完全不同：
 所以 `LocalDT` 只挂在第一类字段上。判断标准是「这个值是谁写进去的」，
 不是「它长得像不像时间」。
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from pydantic import PlainSerializer
@@ -78,3 +78,42 @@ LocalDT = Annotated[
     datetime,
     PlainSerializer(iso_local, return_type=Optional[str], when_used="json"),
 ]
+
+
+# ─── 自由格式日期串 → date ────────────────────────────────────────────────
+# 「预计闭环时间」（DTS 的 planCloseTime）、里程碑日期这类**用户/外系统填的**列
+# 都是自由字符串：见过 2026-09-15、2026/9/15、2026-09-15 00:00:00、13 位毫秒
+# 时间戳、2026年9月15日。**认不出来的一律算"没填"而不是算"没超期"**——后者会把
+# 一批读不懂的日期悄悄记成达标，数字看着还挺好。
+#
+# 全系统只有这一份实现（`routers._issue_source` 再导出同一个函数）：两处分叉的
+# 表现是同一个日期在两个页面上一个算超期一个不算，而两边看着都对。
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m-%d %H:%M:%S",
+                 "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y年%m月%d日")
+
+
+def parse_plan_date(value) -> Optional[date]:
+    """自由格式的日期串 → date；认不出返回 None（＝「没填」，不是「达标」）。"""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    # 纯数字：秒 / 毫秒时间戳
+    if s.isdigit() and len(s) in (10, 13):
+        try:
+            return datetime.fromtimestamp(int(s) / (1000 if len(s) == 13 else 1)).date()
+        except (ValueError, OSError, OverflowError):
+            return None
+    head = s.replace("T", " ").split(" ")[0] if " " in s or "T" in s else s
+    for fmt in _DATE_FORMATS:
+        for cand in (s, head):
+            try:
+                return datetime.strptime(cand, fmt).date()
+            except ValueError:
+                continue
+    return None

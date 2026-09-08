@@ -1340,6 +1340,56 @@ class SpecialLockOut(BaseModel):
     ttl: int = 180
 
 
+# ─── 专项总览（跨专项的一张表）────────────────────────────────────────────────
+
+
+class SpecialOverviewRisk(BaseModel):
+    """总览「关键风险和措施」一列里的一条。
+
+    content＝风险本身，progress＝当前进展也就是措施——两者在 special_risks 里
+    就是两列，合成一段字符串会让前端再也拆不开（要按超期加粗、要点进去定位）。
+    """
+    id: int
+    content: str = ""
+    progress: str = ""
+    owner: str = ""
+    planned_close_date: str = ""
+    overdue: bool = False
+
+
+class SpecialOverviewRow(BaseModel):
+    """总览表的一行＝一个专项。文本列一律是**剥过 HTML 的纯文本**：
+    这张表是拿来横向扫的，富文本样式在这儿只会让每行高矮不一。
+    截断交给前端（能展开、能点进详情），服务端不截——截了就再也找不回来。
+    """
+    seq: int                       # 表内序号，1 起；跟着侧栏顺序走，不是 id
+    id: int
+    name: str
+    kind: str = "special"
+    kind_label: str = "专项"
+    owner: str = ""
+    goal: str = ""
+    progress: str = ""
+    risks: List[SpecialOverviewRisk] = []
+    # 最终点灯＝手工覆盖优先，没覆盖时用自动推的。三个字段都给出去，
+    # 页面才说得清"这个灯是人拍的还是算出来的"——只给最终值的话，
+    # 风险都闭环了灯还是红，没人知道是覆盖忘了清还是规则算错了。
+    light: str = "gray"
+    light_auto: str = "gray"
+    light_manual: str = ""
+    light_reason: str = ""         # 一句话说明自动档是怎么推出来的
+    risk_total: int = 0
+    risk_open: int = 0
+    risk_overdue: int = 0
+    version: int = 0               # content 的乐观锁版本，改点灯时原样带回来
+
+
+class SpecialOverviewLightUpdate(BaseModel):
+    """改某个专项的总览点灯。light 传空串＝清掉覆盖回到自动。"""
+    version: int
+    light: str = ""
+
+
 # ─── 专项模板（版式预设，主数据）──────────────────────────────────────────────
 
 class SpecialTemplateBase(BaseModel):
@@ -1907,3 +1957,74 @@ class IssueTrackOut(BaseModel):
     updated_at: Optional[LocalDT] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ─── 修订历史 / 整页存档 ──────────────────────────────────────────────────────
+
+class FieldRevisionOut(BaseModel):
+    id: int
+    entity: str
+    entity_label: str          # 实体中文名，前端不再各存一份对照表
+    entity_id: int
+    entity_title: str = ""     # 改动时那一行的首句；行被删掉后仍认得出是哪一条
+    scope_key: str = ""
+    field: str = ""
+    field_label: str = ""
+    old_value: str = ""
+    new_value: str = ""
+    # 出口再清洗一遍的 HTML：留痕里存的是**当时库里那个值**，而入口清洗是后加的，
+    # 老数据没洗过（见 CLAUDE.md「富文本：入口清洗，出口也清洗」）。
+    # 前端拿 *_html 直接渲染，不要自己去 v-html 那两个原始值。
+    old_html: str = ""
+    new_html: str = ""
+    action: str = "update"
+    username: str = ""
+    created_at: LocalDT
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FieldRevisionPage(BaseModel):
+    total: int
+    items: List[FieldRevisionOut]
+
+
+class RowAtOut(BaseModel):
+    """某一行在某个时刻的样子。"""
+    entity: str
+    entity_id: int
+    at: str
+    exists: bool = True        # 行现在还在不在；不在时 fields 为空，去看删除记录
+    fields: List[dict] = []    # [{field, label, value}]，按登记表顺序
+
+
+class PageSnapshotOut(BaseModel):
+    id: int
+    kind: str
+    kind_label: str
+    ref_id: int
+    label: str                 # 存档日 YYYY-MM-DD（本地，不做时区转换）
+    title: str = ""
+    reason: str = "weekly"
+    created_by: str = ""
+    created_at: LocalDT
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PageSnapshotDetail(PageSnapshotOut):
+    payload: dict = {}
+
+
+class PageSnapshotTarget(BaseModel):
+    """存档浏览页的左侧清单：有档的对象各一行。"""
+    kind: str
+    ref_id: int
+    title: str = ""
+    count: int = 0
+    latest: str = ""           # 最近一份档的存档日
+
+
+class PageSnapshotCreate(BaseModel):
+    kind: str
+    ref_id: int = 0

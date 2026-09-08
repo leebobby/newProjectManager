@@ -33,6 +33,14 @@ def test_ppt_and_excel_share_one_palette():
     assert xlsx_utils._HEADER_BG == brand.HEADER_BG
     assert xlsx_utils._BRAND == brand.BRAND
     assert {k: str(v) for k, v in PU._STATUS_FILLS.items()} == brand.STATUS_FILLS
+    # 点灯（自由表格的点灯列 / 专项总览的风险灯）也只有一份：Excel 与 PPT
+    # 各写一份字面量的表现是同一盏灯在两份文件里颜色不一样，而两份单独看都正常
+    assert xlsx_utils._LIGHT_FILL == brand.LIGHT_FILLS
+    assert xlsx_utils._LIGHT_FONT == brand.LIGHT_TEXTS
+    assert {k: str(v) for k, v in PU._LIGHT_FILLS.items()} == brand.LIGHT_FILLS
+    assert {k: str(v) for k, v in PU._LIGHT_TEXTS.items()} == brand.LIGHT_TEXTS
+    # 但这两套**不能合并**：一套认进展状态词，一套认用户拨的灯
+    assert set(brand.LIGHT_FILLS) & set(brand.STATUS_FILLS) == set()
 
 
 def test_status_match_is_exact_not_substring():
@@ -145,8 +153,11 @@ def test_special_report_lights_only_the_status_cell():
     """
     ws = _special_sheet()
     row = next(r for r in range(1, 20) if str(ws.cell(r, 1).value) == "1")
-    lit = [c for c in range(1, 7)
+    # 每个逻辑列在 36 列物理网格上占一段合并区，样式只落在左上角那一格
+    lit = [c for c in range(1, xlsx_utils._NCOL + 1)
            if _rgb(ws.cell(row, c).fill.fgColor) in brand.STATUS_FILLS.values()]
     assert len(lit) == 1, "只有状态格该点灯"
+    assert lit[0] == xlsx_utils._spans_from_ratios(xlsx_utils._SIX_RATIOS)[-1][0], \
+        "点灯的应该是最后一列（状态）"
     assert str(ws.cell(row, lit[0]).value) == "进行中"
     assert _rgb(ws.cell(row, lit[0]).fill.fgColor) == "FFD966"

@@ -273,6 +273,27 @@ def snapshot_job_status() -> dict:
     }
 
 
+def weekly_page_archive() -> None:
+    """每周一 07:00：给专项 / 领域 / 客户面 / 硬件清零各存一份整页存档。
+
+    存在周一早上而不是周五下班前：周末补录的内容也要进这一份档，而周一上班前
+    存完，回看「上周长什么样」拿到的就是完整的上一周。
+    同一对象同一天覆盖（见 archives.create_snapshot），补跑一次不会堆出两份。
+    时刻写死不做成可配置：它不像问题单采集那样要跟外部系统的窗口对齐，
+    多一个配置项就多一处"线上改过、代码里看不出来"的地方。
+    """
+    import archives
+
+    db = SessionLocal()
+    try:
+        counts = archives.run_weekly(db)
+        logger.info("weekly_page_archive done: %s", counts)
+    except Exception as exc:  # noqa: BLE001  定时任务不能把异常抛回调度器
+        logger.warning("weekly_page_archive failed: %s", exc)
+    finally:
+        db.close()
+
+
 def start() -> None:
     """在 main.py 启动时调用一次。"""
     global _scheduler
@@ -282,8 +303,12 @@ def start() -> None:
     # 每天早上 8:00：临期/逾期扫描
     sched.add_job(daily_ddl_scan, "cron", hour=8, minute=0, id="daily_ddl_scan",
                   replace_existing=True, misfire_grace_time=_MISFIRE_GRACE)
+    # 每周一 07:00：整页存档（回看「那一周长什么样」，见 archives.py）
+    sched.add_job(weekly_page_archive, "cron", day_of_week="mon", hour=7, minute=0,
+                  id="weekly_page_archive", replace_existing=True,
+                  misfire_grace_time=_MISFIRE_GRACE)
     sched.start()
     _scheduler = sched
     # 问题单快照采集：时刻来自 config，可在页面「配置」中改
     apply_issue_snapshot_schedule()
-    logger.info("APScheduler started; daily_ddl_scan@08:00")
+    logger.info("APScheduler started; daily_ddl_scan@08:00, weekly_page_archive@mon 07:00")

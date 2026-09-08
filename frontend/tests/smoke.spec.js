@@ -61,21 +61,47 @@ test('登录进得去，首页渲染得出来', async ({ page }) => {
 test('侧栏每一页都点得开', async ({ page }) => {
   await login(page)
 
+  // 先把二级菜单展开。「专项管理」「客户面状态」下面的页面藏在折叠的 sub-menu 里，
+  // 不展开就既点不到、也不在覆盖范围内——而"新加的页面自动被覆盖"正是这份用例
+  // 值得长期留着的理由，少了这一步它对二级页面就是空头承诺。
+  // 点标题是**开关**，所以先看一眼开没开：el-menu 会自动展开当前路由所在的那一组，
+  // 无条件点一遍反而会把它收起来，而收起来的那几页就悄悄不在覆盖里了。
+  const subs = page.locator('.el-sub-menu')
+  for (let i = 0; i < (await subs.count()); i += 1) {
+    const sub = subs.nth(i)
+    if (!(await sub.isVisible().catch(() => false))) continue
+    if ((await sub.getAttribute('class') || '').includes('is-opened')) continue
+    await sub.locator('.el-sub-menu__title').first().click()
+  }
+  await page.waitForTimeout(300)
+
   // 从真实 DOM 里取菜单项，而不是维护一份路由清单：
-  // 新加的页面自动被这条用例覆盖，不必记得回来改测试
+  // 新加的页面自动被这条用例覆盖，不必记得回来改测试。
+  // **按下标遍历而不是按名字**：二级菜单里有两个「总览」（专项 / 客户面），
+  // 按名字取会把同一个点两遍，另一个从此没人点过，而用例照样是绿的。
   const items = page.getByRole('menuitem')
-  const names = (await items.allInnerTexts())
-    .map((t) => t.replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-  expect(names.length, '侧栏一个菜单项都没有，登录态多半没建立起来').toBeGreaterThan(5)
+  const total = await items.count()
+  expect(total, '侧栏一个菜单项都没有，登录态多半没建立起来').toBeGreaterThan(5)
 
   const broken = []
   const noticed = []
-  for (const name of names) {
+  for (let i = 0; i < total; i += 1) {
     // 每一页单独收错：一页坏了要能说出是哪一页，而不是丢一堆栈让人自己猜
     const { fatal, noisy } = watchErrors(page)
-    const item = page.getByRole('menuitem', { name, exact: true }).first()
+    const item = items.nth(i)
     if (!(await item.isVisible().catch(() => false))) continue
+    // 二级菜单的容器本身也带 role=menuitem，但它不是一个页面：点它只是**折叠/展开**，
+    // 会把上面刚展开的那组又收回去，于是组里的页面在下一轮就点不到了。跳过它。
+    if (((await item.getAttribute('class')) || '').includes('el-sub-menu')) continue
+    const text = (await item.innerText()).replace(/\s+/g, ' ').trim() || `第 ${i + 1} 项`
+    // 二级菜单里有两个「总览」（客户面状态 / 专项管理），只报叶子名字的话，
+    // 报告写着「【总览】渲染不出来」而没人说得清是哪一个。带上所属分组。
+    const parentTitle = item.locator(
+      'xpath=ancestor::*[contains(@class,"el-sub-menu")][1]//*[contains(@class,"el-sub-menu__title")]')
+    const group = (await parentTitle.count())
+      ? (await parentTitle.first().innerText()).replace(/\s+/g, ' ').trim()
+      : ''
+    const name = group ? `${group} · ${text}` : text
     await item.click()
     try {
       await expectRendered(page, name)

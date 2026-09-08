@@ -359,7 +359,7 @@
               v-if="overdue.total && overdue.overdue_unknown >= overdue.total"
               type="warning" show-icon :closable="false"
               title="这批单一条都没有「预计闭环时间」，超期数算不出来"
-              description="DTS 该字段为空，或采集脚本的 FIELD_MAPPING 里还没映射上；见部署指南 4.1 ⑤。"
+              description="DTS 该字段为空，或采集脚本的 FIELD_MAPPING 里还没映射上；见 doc/升级历史.md 的「补记」一条。"
             />
             <el-alert
               v-else-if="overdue.overdue_unknown"

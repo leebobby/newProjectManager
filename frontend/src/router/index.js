@@ -103,11 +103,27 @@ const routes = [
     meta: { title: '项目一本通', icon: 'Notebook', group: '知识管理' },
   },
   {
+    path: '/archives',
+    name: 'ArchiveBrowser',
+    component: () => import('../views/ArchiveBrowser.vue'),
+    // 读权限对所有登录用户开放（删存档才限 admin，页面内自查 + 服务端独立校验）
+    meta: { title: '历史存档', icon: 'Collection', group: '知识管理' },
+  },
+  {
     path: '/specials',
     name: 'SpecialList',
     // 路由本身不需要 requireAdmin（页面内自查），让左侧菜单的"专项管理"分组对普通用户也可见
     component: () => import('../views/SpecialList.vue'),
     meta: { title: '专项管理', icon: 'Briefcase', specialsParent: true, group: '进度管理' },
+  },
+  {
+    // 总览排在 /specials/:id 前面即可——:id 限定了纯数字，两条路由本来就不会撞。
+    // hidden：它在侧栏里是「专项管理」下的一个二级项（App.vue 手写的那段），
+    // 不该再作为顶层菜单项出现一次。
+    path: '/specials/overview',
+    name: 'SpecialOverview',
+    component: () => import('../views/SpecialOverview.vue'),
+    meta: { title: '专项总览', hidden: true },
   },
   {
     path: '/specials/:id(\\d+)',

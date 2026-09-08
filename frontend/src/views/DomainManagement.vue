@@ -197,9 +197,11 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="150" fixed="right">
+          <el-table-column label="操作" width="230" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+              <HistoryActions link :scope="`domain:${row.group_id}`" kind="domain"
+                              :ref-id="row.group_id" :title="`领域：${row.name}`" />
               <el-button v-if="!row.hidden" link type="danger" @click="hideDomain(row)">移除</el-button>
               <el-button v-else link type="success" @click="restoreDomain(row)">恢复</el-button>
             </template>
@@ -259,9 +261,11 @@
               <el-tag size="small" :type="statusType(row.status)" effect="dark">{{ row.status }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="120" fixed="right">
+          <el-table-column label="操作" width="170" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openRisk(row)">编辑</el-button>
+              <HistoryActions link entity="domain_risk" :entity-id="row.id"
+                              :title="row.content || '事务/风险'" />
               <el-button link type="danger" size="small" @click="delRisk(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -327,9 +331,11 @@
               <el-tag size="small" :type="prioType(row.priority)">{{ row.priority || '—' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="120" fixed="right">
+          <el-table-column label="操作" width="170" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="openLegacy(row)">编辑</el-button>
+              <HistoryActions link entity="domain_legacy_issue" :entity-id="row.id"
+                              :title="row.title || '遗留问题'" />
               <el-button link type="danger" size="small" @click="delLegacy(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -553,6 +559,7 @@ import { Aim, Delete, Plus, QuestionFilled, Refresh } from '@element-plus/icons-
 import { domainApi, resourceGroupApi, userApi } from '../api'
 import { auth } from '../store/auth'
 import RichTextEditor from '../components/RichTextEditor.vue'
+import HistoryActions from '../components/HistoryActions.vue'
 
 const PROG_COLS = [
   { key: 'progress_walkthrough', label: '需求串讲' },
