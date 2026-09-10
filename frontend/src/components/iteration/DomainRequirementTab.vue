@@ -323,6 +323,21 @@
         </template>
       </el-table-column>
 
+      <!-- 这条领域需求是为哪些产品需求做的。挂接不改这一行（关联是单独一张表），
+           所以不占乐观锁、也不会跟正在编辑这一行的人撞上。 -->
+      <el-table-column label="关联产品需求" width="190">
+        <template #default="{ row }">
+          <el-link type="primary" :underline="false" @click="openLinks(row)">
+            <template v-if="linksOf(row).length">
+              <span v-for="(l, i) in linksOf(row)" :key="l.id" class="link-chip">
+                {{ i ? '、' : '' }}{{ l.product.req_no || l.product.title || '未命名' }}
+              </span>
+            </template>
+            <span v-else class="unlinked">未关联</span>
+          </el-link>
+        </template>
+      </el-table-column>
+
       <el-table-column label="操作" width="160" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="openEdit(row)">完整编辑</el-button>
@@ -330,6 +345,15 @@
         </template>
       </el-table-column>
     </el-table>
+
+    <RequirementLinkDialog
+      v-model="linkDialog.visible"
+      side="domain"
+      :row="linkDialog.row"
+      :iteration-id="iterationId"
+      :links="linkDialog.row ? linksOf(linkDialog.row) : []"
+      @changed="loadLinks"
+    />
 
     <el-dialog v-model="dialogVisible" :title="editing ? '编辑需求' : '新增需求'" width="640px">
       <el-form :model="form" label-width="120px">
@@ -506,9 +530,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import RequirementDuplicateAlert from './RequirementDuplicateAlert.vue'
+import RequirementLinkDialog from './RequirementLinkDialog.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Refresh, Upload, UploadFilled } from '@element-plus/icons-vue'
-import { downloadBlob, iterationRequirementApi, resourceGroupApi, userApi } from '../../api'
+import { downloadBlob, iterationRequirementApi, reqLinkApi, resourceGroupApi, userApi } from '../../api'
 import EditSelectCell from '../EditSelectCell.vue'
 import { buildVersionOptions, matchPlannedVersion } from '../../utils/plannedVersion'
 
@@ -712,6 +737,37 @@ function splitLinks(text) {
     .filter(Boolean)
 }
 
+// 拆解关联：与产品需求 Tab 吃的是同一个接口（按迭代一次拉全，两侧任一侧在本迭代
+// 的关联都在里面）。各拉各方向的话，同一条跨迭代关联会在一个 Tab 里看得见、
+// 另一个看不见，而两边看着都对。
+const links = ref([])
+const linkDialog = reactive({ visible: false, row: null })
+
+const linksByDomain = computed(() => {
+  const m = new Map()
+  for (const l of links.value) {
+    if (!m.has(l.domain_req_id)) m.set(l.domain_req_id, [])
+    m.get(l.domain_req_id).push(l)
+  }
+  return m
+})
+
+function linksOf(row) {
+  return linksByDomain.value.get(row.id) || []
+}
+
+async function loadLinks() {
+  try {
+    const { data } = await reqLinkApi.list(props.iterationId)
+    links.value = data
+  } catch { links.value = [] }
+}
+
+function openLinks(row) {
+  linkDialog.row = row
+  linkDialog.visible = true
+}
+
 const dupInfo = ref(null)
 
 // 重复提示跟着列表一起刷新，但**不挡列表**：查重失败只是少一条提示，
@@ -731,6 +787,7 @@ async function load() {
     const { data } = await iterationRequirementApi.list(props.iterationId)
     list.value = data
     loadDuplicates()
+    loadLinks()
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载失败')
   } finally {
@@ -1037,6 +1094,12 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.link-chip {
+  font-size: 12px;
+}
+.unlinked {
+  color: #909399;
 }
 .tip {
   margin-left: auto;

@@ -735,6 +735,54 @@ class IterationProductRequirementOut(IterationProductRequirementBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# ===== 产品需求 ↔ 领域需求 关联 =====
+class ReqLinkSide(BaseModel):
+    """关联里"对面那一条需求"的展示快照。
+
+    两侧共用一个形状（列名一样、含义一样），产品需求侧的 owner / owner_group 恒为空
+    ——那两列只有领域需求有。各写一份的话，同一批字段会在两个 Tab 里长出两套列名。
+    """
+    id: int
+    seq: Optional[int] = None
+    req_no: str = ""
+    req_url: str = ""
+    title: str = ""
+    iteration_id: int
+    iteration_label: str = ""
+    project_id: Optional[int] = None
+    project_name: Optional[str] = None
+    planned_version: str = ""
+    owner: str = ""
+    owner_group: str = ""
+    #: 进展口径与度量看板共用一份（routers/_req_progress.py）
+    done: bool = False
+    changed: bool = False
+    completion: float = 0.0
+
+
+class ReqLinkOut(BaseModel):
+    id: int
+    product_req_id: int
+    domain_req_id: int
+    remark: str = ""
+    #: 两侧不在同一个迭代（正常情况，见 models.IterationRequirementLink 的说明）
+    cross_iteration: bool = False
+    #: 两侧都填了计划交付版本、但**不是同一个版本**。只报"不一致"不报"谁更晚"
+    version_mismatch: bool = False
+    product: ReqLinkSide
+    domain: ReqLinkSide
+
+
+class ReqLinkCreate(BaseModel):
+    product_req_id: int
+    domain_req_id: int
+    remark: Optional[str] = ""
+
+
+class ReqLinkUpdate(BaseModel):
+    remark: Optional[str] = None
+
+
 # ===== Roadmap =====
 class RoadmapPhaseBase(BaseModel):
     name: str

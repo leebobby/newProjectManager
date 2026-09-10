@@ -40,8 +40,9 @@ def checklist_to_text(val: str) -> str:
 def issues_to_text(machine, kind: str) -> str:
     """把机台的 customer_issues 条目转成 PPT 单元格文本。
 
-    前缀：✓ 已闭环 / ⏸ 挂起 / · 进行中；挂起单独标出来，否则它在 PPT 里
-    和未开始的看不出区别，评审时容易被当成"没人管"。
+    前缀：✓ 已闭环 / ⏸ 挂起 / ⇧ 待升级版本 / · 进行中。挂起与待升级版本都单独标
+    出来，否则它们在 PPT 里和未开始的看不出区别——评审时挂起会被当成"没人管"，
+    待升级版本会被当成"还没改"，而它其实等的是现场升级，要追的是另一拨人。
     已闭环的排在最后，重要的先入眼。
     kind="issue" 时把 demand（需求）一并带上（页面上两者同栏），加 [需求] 前缀区分。
     """
@@ -49,9 +50,9 @@ def issues_to_text(machine, kind: str) -> str:
     rows = [i for i in (getattr(machine, "issues", None) or []) if i.kind in kinds]
     if not rows:
         return ""
-    rank = {"OPEN": 0, "挂起": 1, "CLOSED": 2}
-    rows.sort(key=lambda i: (rank.get(i.status, 9), i.sort_order or 0, i.id))
-    mark = {"CLOSED": "✓ ", "挂起": "⏸ "}
+    rows.sort(key=lambda i: (enums.CUSTOMER_ISSUE_STATUS_RANK.get(i.status, 9),
+                             i.sort_order or 0, i.id))
+    mark = {"CLOSED": "✓ ", "挂起": "⏸ ", "待升级版本": "⇧ "}
     lines = []
     for i in rows:
         text = (i.description or "").strip()

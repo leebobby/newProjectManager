@@ -550,6 +550,17 @@ export const productRequirementApi = {
   },
 }
 
+// 产品需求 ↔ 领域需求的拆解关联。列表按**迭代**一次拉全（两侧任一侧在该迭代
+// 的关联都在里面），两个 Tab 切同一份——各拉各方向的话，同一条跨迭代关联会在
+// 一个 Tab 里看得见、另一个看不见，而两边看着都对。
+export const reqLinkApi = {
+  list: (iteration_id) => http.get('/iteration-req-links', { params: { iteration_id } }),
+  candidates: (params) => http.get('/iteration-req-links/candidates', { params }),
+  create: (data) => http.post('/iteration-req-links', data),
+  update: (id, data) => http.put(`/iteration-req-links/${id}`, data),
+  remove: (id) => http.delete(`/iteration-req-links/${id}`),
+}
+
 export const stakeholderApi = {
   listProjectContacts: () => http.get('/stakeholders/project-contacts'),
   createProjectContact: (data) => http.post('/stakeholders/project-contacts', data),

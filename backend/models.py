@@ -128,7 +128,7 @@ class CustomerIssue(Base):
     due_date = Column(String(10), default="", comment="计划解决时间 YYYY-MM-DD（逾期提醒基准）")
     closed_at = Column(String(10), default="", comment="实际闭环时间 YYYY-MM-DD")
     status = Column(String(16), nullable=False, default="OPEN", index=True,
-                    comment="OPEN / CLOSED / 挂起")
+                    comment="OPEN / CLOSED / 挂起 / 待升级版本")
     sort_order = Column(Integer, default=0, comment="同机台内的展示顺序")
     version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -517,6 +517,42 @@ class IterationRequirement(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     iteration = relationship("AnnualIteration", back_populates="requirements")
+
+
+class IterationRequirementLink(Base):
+    """产品需求 ↔ 领域需求的拆解关系：一行＝「这条产品需求由这条领域需求承接」。
+
+    **做成独立的一张关联表，而不是在领域需求上加一个「父产品需求」外键**，
+    有三个理由，少一个都会在别处冒出来：
+
+    1. **一条领域需求可以承接多条产品需求**（平台/公共模块的改动尤其常见）。
+       做成单个外键的话，第二条产品需求的拆解看着就是"还没拆"，而没人说得清
+       为什么明明有人在做。
+    2. **挂接不该动需求行本身**。两张需求表都带 `version` 乐观锁，在产品需求页
+       挂一条领域需求如果要去 `PUT` 那条领域需求，就会撞上正在编辑那一行的人
+       （409），而挂接与他填的内容根本不冲突。关联表有自己的行，挂/解挂
+       都不碰任何一条需求。
+    3. 解挂＝删一行关联，不是把别人行上的字段清空。
+
+    **允许跨迭代关联**（两侧的 `iteration_id` 可以不同）：同一条需求本轮没做完、
+    下个月接着排是正常的（同 `_req_dedup` 的跨迭代口径），强行限定同迭代会让
+    产品需求在下个月凭空变成"未拆解"。跨迭代的关联在接口里显式标出来
+    （`cross_iteration`），让人看得见，而不是替人决定。
+    """
+    __tablename__ = "iteration_requirement_links"
+    __table_args__ = (
+        UniqueConstraint("product_req_id", "domain_req_id", name="uq_req_link"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_req_id = Column(Integer,
+                            ForeignKey("iteration_product_requirements.id", ondelete="CASCADE"),
+                            nullable=False, index=True, comment="产品需求 FK")
+    domain_req_id = Column(Integer,
+                           ForeignKey("iteration_requirements.id", ondelete="CASCADE"),
+                           nullable=False, index=True, comment="领域需求 FK")
+    remark = Column(String(256), default="", comment="拆解说明（这条领域需求承接的是哪一部分）")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class RoadmapProject(Base):
@@ -1185,7 +1221,9 @@ class DomainHidden(Base):
 class DomainRisk(Base):
     """领域管理 · 事务与风险跟踪。类专项的「风险和问题」，但跨领域、带责任领域列。
 
-    协作编辑域，带乐观锁。状态 OPEN/CLOSED/挂起；新表由 create_all 自动建。
+    协作编辑域，带乐观锁。状态 OPEN/CLOSED/挂起（词表在 routers/domains.py
+    `_DOMAIN_RISK_STATUSES`，**与客户面问题不是同一份**：那边多一档「待升级版本」，
+    等的是现场升级，领域的事务/风险没有这一步）；新表由 create_all 自动建。
     """
     __tablename__ = "domain_risks"
 

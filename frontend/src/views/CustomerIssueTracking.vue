@@ -14,6 +14,11 @@
       <div class="stat-card hold" :class="{ active: filters.status === '挂起' }" @click="toggleFilter('status', '挂起')">
         <div class="stat-num">{{ stats.on_hold }}</div><div class="stat-label">挂起</div>
       </div>
+      <!-- 「待升级版本」单独一张卡：它也在「未闭环」里，但要追的是现场升级
+           而不是开发，混在一起看不出该找谁 -->
+      <div class="stat-card upgrade" :class="{ active: filters.status === '待升级版本' }" @click="toggleFilter('status', '待升级版本')">
+        <div class="stat-num">{{ stats.pending_upgrade }}</div><div class="stat-label">待升级版本</div>
+      </div>
       <div class="stat-card done" :class="{ active: filters.status === 'CLOSED' }" @click="toggleFilter('status', 'CLOSED')">
         <div class="stat-num">{{ stats.closed }}</div><div class="stat-label">已闭环</div>
       </div>
@@ -162,6 +167,7 @@
       <div class="legend">
         <span><i class="dot d-open" />未闭环</span>
         <span><i class="dot d-hold" />挂起</span>
+        <span><i class="dot d-upgrade" />待升级版本</span>
         <span><i class="dot d-done" />已闭环</span>
         <span><i class="dot d-over" />逾期</span>
         <span class="muted">此处新增要先选机台（条目始终挂在机台上）；在「客户面状态」总览的单元格里新增更快，那里机台是现成的。</span>
@@ -261,7 +267,7 @@ const isAdmin = auth.isAdmin
 
 // 与后端 enums.py 保持一致
 const URGENCIES = ['重要紧急', '重要', '一般']
-const STATUSES = ['OPEN', 'CLOSED', '挂起']
+const STATUSES = ['OPEN', 'CLOSED', '挂起', '待升级版本']
 // 与后端 enums.CUSTOMER_ISSUE_KINDS 一致。这张汇总表三类都显示，所以新增时也要能选：
 // 只给「问题」一档的话，事务和需求就只能回总览页去建，等于没解决问题。
 const KINDS = [
@@ -269,7 +275,9 @@ const KINDS = [
   { value: 'demand', label: '需求' },
   { value: 'task', label: '事务' },
 ]
-const STATUS_RANK = { OPEN: 0, 挂起: 1, CLOSED: 2 }
+// 与后端 enums.CUSTOMER_ISSUE_STATUS_RANK 同款：越靠前越需要人推。
+// 分叉的表现是同一批条目在页面和 PPT 里顺序不一样，而两边看着都对。
+const STATUS_RANK = { OPEN: 0, 挂起: 1, 待升级版本: 2, CLOSED: 3 }
 const URGENCY_RANK = { 重要紧急: 0, 重要: 1, 一般: 2 }
 
 // 问题单号变链接：跳到「问题单管理」页（后续与版本联动会再细化落点）
@@ -526,6 +534,7 @@ const stats = computed(() => {
     critical: open.filter((r) => r.urgency === '重要紧急').length,
     overdue: open.filter((r) => r.overdue).length,
     on_hold: rows.filter((r) => r.status === '挂起').length,
+    pending_upgrade: rows.filter((r) => r.status === '待升级版本').length,
     closed: rows.filter((r) => r.status === 'CLOSED').length,
   }
 })
@@ -591,6 +600,7 @@ function rowClass({ row }) {
   if (row.id === focusId.value) return 'row-focus'
   if (row.status === 'CLOSED') return 'row-done'
   if (row.status === '挂起') return 'row-hold'
+  if (row.status === '待升级版本') return 'row-upgrade'
   if (row.overdue) return 'row-overdue'
   return ''
 }
@@ -730,6 +740,7 @@ onActivated(() => {
 .crit .stat-num { color: #f56c6c; }
 .over .stat-num { color: #e6a23c; }
 .hold .stat-num { color: #909399; }
+.upgrade .stat-num { color: #409eff; }
 .done .stat-num { color: #67c23a; }
 
 /* 筛选栏 */
@@ -737,10 +748,13 @@ onActivated(() => {
 .filter-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .muted { color: #909399; font-size: 13px; }
 
-/* 行着色：已闭环浅绿（与专项管理 closed-row 同款，盖过斑马纹），挂起偏黄，逾期偏红 */
+/* 行着色：已闭环浅绿（与专项管理 closed-row 同款，盖过斑马纹），挂起偏黄，
+   待升级版本偏蓝（改好了，只差升级），逾期偏红。状态色压过逾期色——与挂起同规矩，
+   逾期另有一张统计卡和日期红字，不靠行底色表达 */
 :deep(.row-done td.el-table__cell) { background: #f0f9eb !important; }
 :deep(.row-done .cell) { color: #6b7d6b; }
 :deep(.row-hold) { background: #fdf9f0 !important; }
+:deep(.row-upgrade) { background: #f2f8ff !important; }
 :deep(.row-overdue) { background: #fef4f4 !important; }
 :deep(.row-focus) { background: #ecf5ff !important; box-shadow: inset 3px 0 0 #409eff; }
 
@@ -762,6 +776,7 @@ onActivated(() => {
 .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .d-open { background: #fff; border: 1px solid #dcdfe6; }
 .d-hold { background: #fdf9f0; border: 1px solid #f3d19e; }
+.d-upgrade { background: #f2f8ff; border: 1px solid #a0cfff; }
 .d-done { background: #f0f9eb; border: 1px solid #b3d8a4; }
 .d-over { background: #fef4f4; border: 1px solid #fab6b6; }
 </style>
