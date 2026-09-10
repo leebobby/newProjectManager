@@ -63,7 +63,7 @@ PRIORITY_LEGACY_MAP = {"高": "P1", "中": "P2", "低": "P3"}
 # ── 事务 / 风险条目状态 ───────────────────────────────────────────────────────
 TASK_STATUSES = ("open", "closed")
 
-# ── 领域管理 · 遗留问题（事务/风险的状态词表与客户面问题共用，见下方 CUSTOMER_ISSUE_STATUSES）──
+# ── 领域管理 · 遗留问题 ───────────────────────────────────────────────────────
 # 遗留问题（domain_legacy_issues）：pending 是业务方指定的写法，不要"顺手"改成挂起——
 # 页面、导出、筛选三处按同一字面量比对，任何一处大小写不同都会静默漏算
 DOMAIN_LEGACY_STATUSES = ("OPEN", "CLOSED", "pending")
@@ -86,9 +86,23 @@ ITERATION_STATUSES = ("planning", "in_progress", "done")
 # 「需求:」前缀区分，与问题同栏展示）；task 只用 描述 + 预计时间 + 状态。
 CUSTOMER_ISSUE_KINDS = ("issue", "task", "demand")
 CUSTOMER_ISSUE_KIND_DEFAULT = "issue"
-# 状态词表与 domain_risks 对齐，避免同一概念两套口径
-CUSTOMER_ISSUE_STATUSES = ("OPEN", "CLOSED", "挂起")
+# 状态四档。前三档与 domain_risks（routers/domains.py `_DOMAIN_RISK_STATUSES`）同形，
+# 但**从「待升级版本」这一档起两边有意分开了**，别再当成同一份词表去同步：
+# 「待升级版本」＝问题在某个版本里已经改好、等现场升级上去才算完，这是客户面独有的
+# 一步，领域的事务/风险没有"等现场升级"这回事，给它加一档只会多出一个永远没人选的值。
+#
+# 加一档不是加个字符串就完的——下面这几件事都得跟着定，这也正是它不做成配置项的原因：
+#   1. 算不算未闭环：算。全系统的"未闭环"判定一律是 `status != "CLOSED"`，
+#      新档天然落在未闭环这边（统计卡、隐藏已闭环、到期提醒都不用改）。
+#   2. 算不算逾期：算（`customer_issues._is_overdue`）。版本没升上去，问题在客户那儿
+#      就还在。给它开特例的话逾期数会少一截，而没人说得清少的是哪些。
+#   3. 排第几：`_sort_key` / `pptx_utils.issues_to_text` 的 rank，按"离闭环还有多远"排。
+#   4. 长什么样：前端 CustomerIssueTracking.vue / CustomerIssueCell.vue 的标签与行底色。
+CUSTOMER_ISSUE_STATUSES = ("OPEN", "CLOSED", "挂起", "待升级版本")
 CUSTOMER_ISSUE_STATUS_DEFAULT = "OPEN"
+#: 未闭环状态里的排序：越靠前越需要人推。挂起要有人决定要不要重排，
+#: 待升级版本已经不等人了、只等版本，所以排在它后面。
+CUSTOMER_ISSUE_STATUS_RANK = {"OPEN": 0, "挂起": 1, "待升级版本": 2, "CLOSED": 3}
 # 重要程度口径：重要紧急 / 重要 / 一般（旧词表用「紧急」，统一迁移为「重要」）
 CUSTOMER_ISSUE_URGENCIES = ("重要紧急", "重要", "一般")
 CUSTOMER_ISSUE_URGENCY_DEFAULT = "一般"
@@ -146,7 +160,7 @@ def norm_issue_kind(v, *, partial: bool = False) -> Optional[str]:
 
 
 def norm_issue_status(v, *, partial: bool = False) -> Optional[str]:
-    """OPEN/CLOSED 大小写不敏感；「挂起」原样匹配。"""
+    """OPEN/CLOSED 大小写不敏感；「挂起」「待升级版本」原样匹配。"""
     if _is_blank(v):
         return None if partial else CUSTOMER_ISSUE_STATUS_DEFAULT
     s = str(v).strip()

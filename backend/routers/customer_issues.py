@@ -50,7 +50,12 @@ def _today() -> str:
 
 
 def _is_overdue(row: models.CustomerIssue) -> bool:
-    """逾期＝有预计闭环时间、已过期、且还没闭环。挂起同样算逾期（它只是没在推进）。"""
+    """逾期＝有预计闭环时间、已过期、且还没闭环。
+
+    **只有 CLOSED 不算逾期**，挂起与待升级版本都算：挂起只是没在推进，
+    待升级版本是改好了但现场还没升上去——问题在客户那儿都还在。给这两档开特例
+    的话，「逾期未闭环」会少一截，而没人说得清少的是哪些（同 unassigned / changed）。
+    """
     if row.status == "CLOSED" or not (row.due_date or "").strip():
         return False
     return row.due_date.strip() < _today()
@@ -101,9 +106,8 @@ def _user_name_map(db: Session, rows: List[models.CustomerIssue]) -> Dict[int, s
 
 def _sort_key(d: Dict[str, Any]):
     """默认排序：未闭环在前 → 越紧急越靠前 → 提出时间早的在前（老账先还）。"""
-    status_rank = {"OPEN": 0, "挂起": 1, "CLOSED": 2}
     return (
-        status_rank.get(d["status"], 9),
+        enums.CUSTOMER_ISSUE_STATUS_RANK.get(d["status"], 9),
         enums.CUSTOMER_ISSUE_URGENCY_RANK.get(d["urgency"], 9),
         d["raised_at"] or "9999-99-99",
         d["id"],
@@ -177,6 +181,9 @@ def summary(db: Session = Depends(get_db), _: models.User = Depends(get_current_
         "open": len(open_rows),
         "closed": sum(1 for r in rows if r.status == "CLOSED"),
         "on_hold": sum(1 for r in rows if r.status == "挂起"),
+        # 「待升级版本」单独给一个数：它混在 open 里的话，看板上分不出
+        # "还没人动" 和 "改好了等升级"——后者要追的是现场升级，不是开发
+        "pending_upgrade": sum(1 for r in rows if r.status == "待升级版本"),
         "critical": sum(1 for r in open_rows if r.urgency == "重要紧急"),
         "overdue": sum(1 for r in open_rows if _is_overdue(r)),
     }
@@ -427,7 +434,7 @@ def download_import_template(_: models.User = Depends(get_current_user)):
     tip = ws.max_row + 2
     ws.cell(tip, 1, (
         "提示：机台编号必填，需与「客户面状态」中已有机台一致；重要程度填 重要紧急/重要/一般；"
-        "状态填 OPEN/CLOSED/挂起；日期填 YYYY-MM-DD；删除本示例行后再导入。"
+        "状态填 OPEN/CLOSED/挂起/待升级版本；日期填 YYYY-MM-DD；删除本示例行后再导入。"
     )).font = Font(italic=True, color="909399")
     ws.merge_cells(start_row=tip, start_column=1, end_row=tip, end_column=len(headers))
 

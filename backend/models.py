@@ -128,7 +128,7 @@ class CustomerIssue(Base):
     due_date = Column(String(10), default="", comment="计划解决时间 YYYY-MM-DD（逾期提醒基准）")
     closed_at = Column(String(10), default="", comment="实际闭环时间 YYYY-MM-DD")
     status = Column(String(16), nullable=False, default="OPEN", index=True,
-                    comment="OPEN / CLOSED / 挂起")
+                    comment="OPEN / CLOSED / 挂起 / 待升级版本")
     sort_order = Column(Integer, default=0, comment="同机台内的展示顺序")
     version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1221,7 +1221,9 @@ class DomainHidden(Base):
 class DomainRisk(Base):
     """领域管理 · 事务与风险跟踪。类专项的「风险和问题」，但跨领域、带责任领域列。
 
-    协作编辑域，带乐观锁。状态 OPEN/CLOSED/挂起；新表由 create_all 自动建。
+    协作编辑域，带乐观锁。状态 OPEN/CLOSED/挂起（词表在 routers/domains.py
+    `_DOMAIN_RISK_STATUSES`，**与客户面问题不是同一份**：那边多一档「待升级版本」，
+    等的是现场升级，领域的事务/风险没有这一步）；新表由 create_all 自动建。
     """
     __tablename__ = "domain_risks"
 

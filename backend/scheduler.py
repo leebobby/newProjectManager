@@ -93,8 +93,9 @@ def _scan_specials(db, today: date) -> int:
 def _scan_customer_issues(db, today: date) -> int:
     """客户面问题/关键事务：以 due_date（预计闭环）为基准做临期/逾期提醒。
 
-    只提醒未闭环且有责任人的条目。挂起同样会提醒——挂起只是没在推进，
-    不代表这个日期不算数，正是需要有人来决定要不要重排的时候。
+    只提醒未闭环且有责任人的条目（`status != "CLOSED"`，所以新增状态档天然被涵盖）。
+    挂起与待升级版本同样会提醒——挂起只是没在推进，正是需要有人来决定要不要重排的
+    时候；待升级版本到了期还没闭环，说明现场升级这一步卡住了，也得有人去推。
     """
     soon_threshold = today + timedelta(days=3)
     cnt = 0

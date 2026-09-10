@@ -47,6 +47,9 @@
           <span v-if="kind === 'issue' && item.urgency && item.urgency !== '一般'"
                 class="cl-tag" :class="item.urgency === '重要紧急' ? 'u-crit' : 'u-urg'">{{ item.urgency }}</span>
           <span v-if="item.status === '挂起'" class="cl-tag u-hold">挂起</span>
+          <!-- 待升级版本也要标出来：不标的话它在格子里和"还没改"长得一模一样，
+               而这两种要追的是完全不同的人 -->
+          <span v-if="item.status === '待升级版本'" class="cl-tag u-upgrade">待升级</span>
           <span v-if="kind === 'issue' && item.owner_display" class="cl-mini">{{ item.owner_display }}</span>
           <span v-if="item.due_date" class="cl-mini" :class="{ 'is-overdue': item.overdue }">
             {{ item.overdue ? '逾期 ' : '' }}{{ item.due_date }}
@@ -109,7 +112,9 @@ function textClass(item) {
   return { done: item.status === 'CLOSED', hold: item.status === '挂起' }
 }
 
-// 勾选＝在 OPEN / CLOSED 之间切；挂起的勾一下直接置为已闭环
+// 勾选＝在 OPEN / CLOSED 之间切；挂起与待升级版本勾一下直接置为已闭环。
+// 「完成」只认 CLOSED（见 doneCount / pct）——待升级版本是改好了但现场还没升上去，
+// 算进完成度的话，进度条会在版本真正落地之前就先满了
 async function toggle(item) {
   const next = item.status === 'CLOSED' ? 'OPEN' : 'CLOSED'
   try {
@@ -212,6 +217,8 @@ async function confirmAdd() {
 .u-urg { background: #fdf6ec; color: #e6a23c; }
 .u-hold { background: #f4f4f5; color: #909399; }
 .u-demand { background: #ecf5ff; color: #409eff; }
+/* 与「需求」标签同为蓝系但更浅，免得一格里两个蓝标签分不出来 */
+.u-upgrade { background: #f2f8ff; color: #409eff; border: 1px solid #d9ecff; }
 .cl-mini { font-size: 11px; color: #909399; }
 .cl-mini.ref { color: #409eff; }
 .cl-mini.is-overdue { color: #f56c6c; font-weight: 600; }
