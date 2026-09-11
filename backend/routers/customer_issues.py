@@ -23,6 +23,7 @@ from database import get_db
 from notify import dispatch
 from op_log import log_op
 import revisions
+from routers import _customer_issue_stats as _ci_stats
 from routers._lookups import fill_group_fk, fill_user_fk
 
 # 批量导入列：(表头, 模型字段, 是否必填)。machine_id/battlefield 用于定位机台，非模型列。
@@ -49,16 +50,9 @@ def _today() -> str:
     return date.today().strftime("%Y-%m-%d")
 
 
-def _is_overdue(row: models.CustomerIssue) -> bool:
-    """逾期＝有预计闭环时间、已过期、且还没闭环。
-
-    **只有 CLOSED 不算逾期**，挂起与待升级版本都算：挂起只是没在推进，
-    待升级版本是改好了但现场还没升上去——问题在客户那儿都还在。给这两档开特例
-    的话，「逾期未闭环」会少一截，而没人说得清少的是哪些（同 unassigned / changed）。
-    """
-    if row.status == "CLOSED" or not (row.due_date or "").strip():
-        return False
-    return row.due_date.strip() < _today()
+# 逾期 / 未闭环 / 统计口径收口在 routers/_customer_issue_stats.py——度量看板的
+# 「客户面问题」看板吃的是同一份。这里按私有别名再导出，既有调用点不变。
+_is_overdue = _ci_stats.is_overdue
 
 
 def _serialize(row: models.CustomerIssue, machine=None, user_names: Dict[int, str] = None) -> Dict[str, Any]:
@@ -174,19 +168,10 @@ def list_items(
 @router.get("/summary")
 def summary(db: Session = Depends(get_db), _: models.User = Depends(get_current_user)):
     """汇总页顶部统计卡。只数 issue+task 全部。"""
-    rows = db.query(models.CustomerIssue).all()
-    open_rows = [r for r in rows if r.status != "CLOSED"]
-    return {
-        "total": len(rows),
-        "open": len(open_rows),
-        "closed": sum(1 for r in rows if r.status == "CLOSED"),
-        "on_hold": sum(1 for r in rows if r.status == "挂起"),
-        # 「待升级版本」单独给一个数：它混在 open 里的话，看板上分不出
-        # "还没人动" 和 "改好了等升级"——后者要追的是现场升级，不是开发
-        "pending_upgrade": sum(1 for r in rows if r.status == "待升级版本"),
-        "critical": sum(1 for r in open_rows if r.urgency == "重要紧急"),
-        "overdue": sum(1 for r in open_rows if _is_overdue(r)),
-    }
+    # 口径与度量看板的问题看板共用一份（_customer_issue_stats.summarize）。
+    # 「待升级版本」单独给一个数：它混在 open 里的话，看板上分不出
+    # "还没人动" 和 "改好了等升级"——后者要追的是现场升级，不是开发
+    return _ci_stats.summarize(db.query(models.CustomerIssue).all())
 
 
 @router.post("", response_model=schemas.CustomerIssueOut)
