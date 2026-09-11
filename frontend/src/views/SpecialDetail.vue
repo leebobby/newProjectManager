@@ -12,10 +12,17 @@
       />
       <!-- 标题 -->
       <div class="sec-title-main">
-        <el-tag :type="isAssault ? 'danger' : 'info'" effect="dark" style="margin-right: 8px">{{ label }}</el-tag>
-        <span>{{ special.name }}</span>
-        <div class="owner-and-actions">
+        <!-- 左边是"这是什么"（标签 / 名称 / 责任人），右边是"能对它做什么"。
+             两块都在**同一个 flex 行里**，谁也压不到谁——这里原先是标题居中 +
+             操作区 position:absolute，绝对定位不占位，于是操作区每多一个按钮就
+             往左长一点，长到一定程度就盖在居中的标题上。责任人也从操作区挪了
+             过来：它是这个专项的信息，不是一个操作 -->
+        <div class="title-text">
+          <el-tag :type="isAssault ? 'danger' : 'info'" effect="dark">{{ label }}</el-tag>
+          <span class="title-name">{{ special.name }}</span>
           <span class="owner">责任人：{{ special.owner || '-' }}</span>
+        </div>
+        <div class="head-actions">
           <SubscribeButton source-type="special" :source-id="Number(route.params.id)" />
           <el-button
             v-if="auth.isLoggedIn.value"
@@ -1365,25 +1372,45 @@ onBeforeUnmount(() => {
 }
 .lock-banner :deep(.el-alert) { border-radius: 0; }
 .lock-banner { border-radius: 0; }
+/* 页头：标题块与操作块在同一个 flex 行里分列两端。
+   **不要改回「标题 text-align:center + 操作区 position:absolute」**——绝对定位的
+   元素不占位，居中的标题按整行宽度算中点，完全不知道右边站着一排按钮；
+   操作区每加一个按钮（订阅 / 编辑 / 修订历史 / 存档 / 导出 / 发周报）就往左长一截，
+   长到某个宽度就压在标题上，而窄屏下更早发生。 */
 .sec-title-main {
   background: #fff;
-  text-align: center;
   font-size: 18px;
   font-weight: 600;
   padding: 12px 20px;
   border-bottom: 1px solid #ebeef5;
-  position: relative;
-}
-.owner-and-actions {
-  position: absolute;
-  right: 20px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  /* 实在挤不下时整块操作区换到下一行，而不是挤压标题 */
+  flex-wrap: wrap;
+  gap: 8px 16px;
 }
-.owner-and-actions .owner {
+.title-text {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  /* 长专项名要能收缩换行；不给 min-width:0 的话它会把操作区顶出容器 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 名字本身允许折行，不截断：专项名是这一页的身份，省略号会把它变成猜谜 */
+.title-name { word-break: break-word; }
+.head-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  /* 按钮不参与收缩：压扁的按钮比换行更难认 */
+  flex: 0 0 auto;
+}
+.title-text .owner {
   font-size: 13px;
   font-weight: normal;
   color: #909399;

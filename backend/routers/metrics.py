@@ -41,6 +41,7 @@ import enums
 import models
 import schemas
 from database import get_db
+from routers import _customer_issue_stats as _ci_stats
 from routers import _issue_source, _req_scope
 # 进展口径（进展字段清单 / 权重表 / 做完了没有 / 已变更整行剔除）收口在
 # routers/_req_progress.py——「产品需求 ↔ 领域需求」的拆解汇总吃的是同一份。
@@ -717,4 +718,87 @@ def group_load(
         unassigned=blank,
         changed=chg,
         by_member=out_members,
+    )
+
+
+# ─── 客户面问题看板：按战场 / 业务组 / 分类专项三个维度 ─────────────────────
+# **这一页不跟顶部的「度量项目」走**：客户面问题挂在机台上，没有 roadmap_projects
+# 这个维度。硬按项目切就得靠猜，而猜错了页面上只是数字偏一点，没人会去核
+# （同「问题单超期」那一页的采集项目 vs 度量项目，两者也不是一回事）。
+class CustomerIssueDimRow(BaseModel):
+    key: str                      # 维度取值（空＝没填，见 name）
+    name: str                     # 展示名
+    unassigned: bool = False      # 这一行是"没填该维度"的兜底桶
+    total: int
+    open: int
+    closed: int
+    on_hold: int
+    pending_upgrade: int
+    critical: int
+    overdue: int
+    overdue_unknown: int
+
+
+class CustomerIssueBoard(BaseModel):
+    summary: CustomerIssueDimRow
+    battlefield: List[CustomerIssueDimRow]
+    group: List[CustomerIssueDimRow]
+    category: List[CustomerIssueDimRow]
+
+
+#: 兜底桶的名字。三个维度各有一个——**没填的那批正是最该被捞出来补录的**，
+#: 藏起来就永远没人去补（同领域质量表的「未指定领域」）
+_UNSET_LABELS = {"battlefield": "未指定客户 / 战场", "group": "未指定责任领域", "category": "未分类"}
+
+
+def _issue_dim_rows(rows: list, key_of, name_of, unset_label: str) -> List[CustomerIssueDimRow]:
+    """按某个维度分组统计。
+
+    分组口径与合计**共用 `_customer_issue_stats.summarize`**，所以各行相加＝合计，
+    不会出现"分项加起来和总数对不上"。没填该维度的行归到兜底桶并排最后。
+    """
+    buckets: dict = {}
+    for r in rows:
+        k = key_of(r)
+        buckets.setdefault(k, []).append(r)
+    out = []
+    for k, group_rows in buckets.items():
+        stats = _ci_stats.summarize(group_rows)
+        unassigned = k in (None, "")
+        out.append(CustomerIssueDimRow(
+            key="" if unassigned else str(k),
+            name=unset_label if unassigned else name_of(k),
+            unassigned=unassigned, **stats,
+        ))
+    # 未闭环多的排前面；兜底桶无论多少都排最后
+    out.sort(key=lambda x: (1 if x.unassigned else 0, -x.open, -x.total, x.name))
+    return out
+
+
+@router.get("/customer-issues", response_model=CustomerIssueBoard)
+def customer_issue_board(
+    kind: Optional[str] = Query(None, description="只看某一类：issue / task / demand；不传＝全部"),
+    db: Session = Depends(get_db),
+):
+    q = db.query(models.CustomerIssue)
+    if kind:
+        q = q.filter(models.CustomerIssue.kind == kind)
+    rows = q.all()
+
+    cmap = {c.id: (c.display_name or c.code or f"#{c.id}")
+            for c in db.query(models.Customer).all()}
+    gmap = {g.id: g.name for g in db.query(models.ResourceGroup).all()}
+
+    total = _ci_stats.summarize(rows)
+    return CustomerIssueBoard(
+        summary=CustomerIssueDimRow(key="", name="全部", **total),
+        battlefield=_issue_dim_rows(
+            rows, lambda r: r.customer_id, lambda k: cmap.get(int(k), f"#{k}"),
+            _UNSET_LABELS["battlefield"]),
+        group=_issue_dim_rows(
+            rows, lambda r: r.group_id, lambda k: gmap.get(int(k), f"#{k}"),
+            _UNSET_LABELS["group"]),
+        category=_issue_dim_rows(
+            rows, lambda r: (r.category or "").strip(), lambda k: str(k),
+            _UNSET_LABELS["category"]),
     )

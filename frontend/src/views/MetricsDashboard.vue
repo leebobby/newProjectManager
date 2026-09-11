@@ -420,6 +420,104 @@
             </el-table>
           </template>
         </el-tab-pane>
+
+        <!-- ============ 客户面问题：按战场 / 业务组 / 分类专项 ============ -->
+        <el-tab-pane label="客户面问题" name="cissue">
+          <div class="bar">
+            <el-radio-group v-model="cissueDim" size="small">
+              <el-radio-button v-for="d in CISSUE_DIMS" :key="d.key" :value="d.key">{{ d.label }}</el-radio-button>
+            </el-radio-group>
+            <el-select v-model="cissueKind" clearable placeholder="全部类型" size="small" style="width: 140px"
+                       @change="loadCissue">
+              <el-option label="问题" value="issue" />
+              <el-option label="需求" value="demand" />
+              <el-option label="事务" value="task" />
+            </el-select>
+            <el-button size="small" :icon="Refresh" :loading="cissueLoading" @click="loadCissue">刷新</el-button>
+            <!-- 顶部那个「度量项目」是需求行上的项目 FK。客户面问题挂在机台上，
+                 根本没有这个维度——不写明白的话，选了上面那个却什么都没变，
+                 看着像页面坏了（同「问题单超期」那一页） -->
+            <span class="muted">
+              客户面问题挂在机台上，没有项目维度，因此<b>不跟顶部的「度量项目」走</b>；
+              这里是全量条目，口径与「客户面状态 · 问题跟踪」的统计卡是同一份
+            </span>
+          </div>
+
+          <template v-if="cissue">
+            <div class="metric-summary">
+              <div class="stat"><div class="label">总数</div><div class="value primary">{{ cissue.summary.total }}</div></div>
+              <div class="stat"><div class="label">未闭环</div><div class="value">{{ cissue.summary.open }}</div></div>
+              <div class="stat">
+                <div class="label">重要紧急</div>
+                <div class="value" :class="cissue.summary.critical ? 'danger' : ''">{{ cissue.summary.critical }}</div>
+              </div>
+              <div class="stat">
+                <div class="label">待升级版本</div>
+                <div class="value">{{ cissue.summary.pending_upgrade }}</div>
+              </div>
+              <div class="stat">
+                <div class="label">逾期未闭环</div>
+                <div class="value" :class="cissue.summary.overdue ? 'danger' : ''">{{ cissue.summary.overdue }}</div>
+              </div>
+            </div>
+
+            <!-- 整批都没填预计闭环时间时，「逾期 0」会被读成"一条都没超期"。
+                 算不出来要如实说算不出来（同领域管理的「超期未知」） -->
+            <el-alert
+              v-if="cissue.summary.open && cissue.summary.overdue_unknown >= cissue.summary.open"
+              type="warning" show-icon :closable="false"
+              title="未闭环的条目都没填「计划解决时间」，逾期算不出来"
+              description="上面的「逾期未闭环 0」不等于没有超期的，只是没有可比的基准。"
+            />
+
+            <el-table :data="cissueRows" border stripe size="small" v-loading="cissueLoading"
+                      :row-class-name="({ row }) => (row.unassigned ? 'row-unassigned' : '')">
+              <el-table-column :label="cissueDimLabel" min-width="200">
+                <template #default="{ row }">
+                  <span :class="{ muted: row.unassigned }">{{ row.name }}</span>
+                  <!-- 没填这一维的行要看得见：那批正是最该被捞出来补录的，
+                       藏起来就永远没人去补 -->
+                  <el-tag v-if="row.unassigned" size="small" type="info" effect="plain" class="unassigned-tag">
+                    待补录
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="total" label="总数" width="80" align="center" />
+              <el-table-column label="未闭环" width="90" align="center">
+                <template #default="{ row }"><b>{{ row.open }}</b></template>
+              </el-table-column>
+              <el-table-column label="重要紧急" width="96" align="center">
+                <template #default="{ row }">
+                  <span :class="row.critical ? 'danger' : 'muted'">{{ row.critical }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="待升级版本" width="110" align="center">
+                <template #default="{ row }">
+                  <span :class="{ muted: !row.pending_upgrade }">{{ row.pending_upgrade }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="挂起" width="80" align="center">
+                <template #default="{ row }"><span :class="{ muted: !row.on_hold }">{{ row.on_hold }}</span></template>
+              </el-table-column>
+              <el-table-column label="逾期" width="80" align="center">
+                <template #default="{ row }">
+                  <span :class="row.overdue ? 'danger' : 'muted'">{{ row.overdue }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="没填计划时间" width="120" align="center">
+                <template #default="{ row }">
+                  <span :class="{ muted: !row.overdue_unknown }">{{ row.overdue_unknown }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="已闭环" width="90" align="center">
+                <template #default="{ row }"><span class="muted">{{ row.closed }}</span></template>
+              </el-table-column>
+            </el-table>
+            <p class="muted tbl-note">
+              各行相加＝上面的合计（分组与合计走的是同一份统计口径），所以分项永远对得上总数。
+            </p>
+          </template>
+        </el-tab-pane>
       </el-tabs>
     </el-card>
   </div>
@@ -435,6 +533,38 @@ import {
 import DomainQualityTable from '../components/metrics/DomainQualityTable.vue'
 
 const active = ref('version')
+
+// ── 客户面问题看板 ──────────────────────────────────────────────
+// 口径与「客户面状态 · 问题跟踪」的统计卡共用一份（后端 _customer_issue_stats），
+// 两处各写一份的表现是同一批条目在两个页面上给出不同的未闭环 / 逾期条数，
+// 而两边看着都对。
+const CISSUE_DIMS = [
+  { key: 'battlefield', label: '战场' },
+  { key: 'group', label: '业务组' },
+  { key: 'category', label: '分类专项' },
+]
+const cissue = ref(null)
+const cissueLoading = ref(false)
+const cissueDim = ref('battlefield')
+const cissueKind = ref(null)
+const cissueRows = computed(() => (cissue.value ? cissue.value[cissueDim.value] || [] : []))
+const cissueDimLabel = computed(
+  () => (CISSUE_DIMS.find((d) => d.key === cissueDim.value) || {}).label || '',
+)
+
+async function loadCissue() {
+  cissueLoading.value = true
+  try {
+    const { data } = await metricsApi.customerIssueBoard(
+      cissueKind.value ? { kind: cissueKind.value } : {},
+    )
+    cissue.value = data
+  } catch (e) {
+    ElMessage.error(apiError(e, '加载客户面问题看板失败'))
+  } finally {
+    cissueLoading.value = false
+  }
+}
 
 const pct = (v) => `${Math.round((v || 0) * 100)}%`
 
@@ -672,6 +802,7 @@ async function loadGroup() {
 // 切到「问题单超期」才去读快照：那份明细在文件里，没人看的时候不该白读一遍
 function onTabChange(name) {
   if (name === 'overdue' && !overdue.value) loadOverdue()
+  if (name === 'cissue' && !cissue.value) loadCissue()
 }
 
 onMounted(async () => {
@@ -683,6 +814,10 @@ onMounted(async () => {
 
 <style scoped>
 .bar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.unassigned-tag { margin-left: 6px; }
+/* 待补录那一行压一层浅底：它排在最后，不压一下容易被当成普通的一行数据 */
+:deep(.row-unassigned td.el-table__cell) { background: #fafafa; }
+.tbl-note { margin: 8px 0 0; font-size: 12px; }
 .project-bar {
   display: flex;
   gap: 12px;

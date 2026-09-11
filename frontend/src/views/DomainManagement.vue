@@ -223,7 +223,21 @@
         <el-table :data="riskRows" border stripe size="small" v-loading="riskLoading"
           :row-class-name="(o) => riskRowClass(o.row)">
           <el-table-column prop="seq" label="序号" width="64" align="center" />
-          <el-table-column prop="content" label="风险和事务" min-width="240" show-overflow-tooltip />
+          <!-- 这一列**不能用 show-overflow-tooltip**：它强制单行 + 省略号，一条稍长的
+               风险就只剩个开头，得逐条悬停才读得出来。而隔壁「当前进展」是换行的，
+               同一行里两列一个夹断一个铺开，看着像其中一列没渲染全。
+               专项详情页的同一张表（SpecialDetail.vue 的事务/风险）本来就是换行的，
+               这里跟上——同一个概念在两个页面上长得不一样，最难被当成 bug 报。
+               content 是**纯文本**（只有 progress 是富文本），所以按 pre-wrap 原样保留
+               用户敲的换行，不能走 v-html。 -->
+          <el-table-column prop="content" label="风险和事务" min-width="240">
+            <template #default="{ row }">
+              <!-- 限高之外的部分在格内滚动，而格内滚动条没有提示、容易被当成"还是看不全"，
+                   所以补一个原生 title 悬停看全文（同专项总览「CSS 夹断 + 原生 title」那条） -->
+              <div v-if="row.content" class="cell-multiline text-cell" :title="row.content">{{ row.content }}</div>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
           <el-table-column label="优先级" width="80" align="center">
             <template #default="{ row }">
               <el-tag size="small" :type="prioType(row.priority)">{{ row.priority || '—' }}</el-tag>
@@ -1008,9 +1022,11 @@ onMounted(() => { load(); loadRisks(); loadDomainOptions(); loadLegacy(); loadUs
 .hdr-help { font-size: 13px; color: #909399; vertical-align: -1px; cursor: help; }
 .prio-line { margin-top: 4px; }
 .prio { color: #909399; font-size: 12px; margin-right: 8px; }
-/* 富文本单元格：限高 + 内部滚动。不限高的话一条写满的进展会把整行撑到半屏，
-   同屏的其它行全被挤出视野 */
-.rich-cell {
+/* 长文本单元格：限高 + 内部滚动。不限高的话一条写满的进展会把整行撑到半屏，
+   同屏的其它行全被挤出视野。富文本（rich-cell）与纯文本（text-cell）共用这一份
+   限高——各写一份的表现是同一屏里两列的夹断高度不一样，看着像其中一列出了问题 */
+.rich-cell,
+.text-cell {
   max-height: 96px;
   overflow: auto;
   font-size: 13px;

@@ -232,6 +232,9 @@ export const metricsApi = {
     http.get(`/metrics/domain-quality/${iteration_id}`, { params }),
   // 注意这里的 project 是**问题单的采集项目**（字符串，如 YLS3000），
   // 与看板顶部的「度量项目」（需求上的 roadmap_projects FK）不是一回事。
+  // 客户面问题看板（战场 / 业务组 / 分类专项）。**不吃「度量项目」参数**：
+  // 客户面问题挂在机台上，没有 roadmap_projects 这个维度
+  customerIssueBoard: (params = {}) => http.get('/metrics/customer-issues', { params }),
   issueOverdue: (project) =>
     http.get('/metrics/issue-overdue', { params: { project: project || undefined } }),
   group: (group_id, params = {}) => http.get(`/metrics/group/${group_id}`, { params }),

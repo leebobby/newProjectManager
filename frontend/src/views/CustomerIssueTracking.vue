@@ -2,25 +2,22 @@
   <div class="track-page">
     <!-- ── 统计卡 ─────────────────────────────────── -->
     <div class="stat-row">
-      <div class="stat-card" :class="{ active: !filters.status && !filters.overdue_only && !filters.urgency }" @click="resetStatusFilter">
-        <div class="stat-num">{{ stats.open }}</div><div class="stat-label">未闭环</div>
+      <!-- 四张卡，不是六张：一行铺开六个数会读成一串数字，谁也说不清该先看哪个。
+           留下的这四个答的是四个不同的问题——总共多少 / 收了多少 / 哪些要现在就管 /
+           哪些等的是现场升级。「逾期」降级成筛选栏里的勾选框（能力没丢），
+           「挂起」在状态下拉里选。 -->
+      <div class="stat-card" :class="{ active: noFilter }" @click="resetAllFilters">
+        <div class="stat-num">{{ stats.total }}</div><div class="stat-label">总数</div>
+      </div>
+      <div class="stat-card done" :class="{ active: filters.status === 'CLOSED' }" @click="toggleFilter('status', 'CLOSED')">
+        <div class="stat-num">{{ stats.closed }}</div><div class="stat-label">已闭环</div>
       </div>
       <div class="stat-card crit" :class="{ active: filters.urgency === '重要紧急' }" @click="toggleFilter('urgency', '重要紧急')">
         <div class="stat-num">{{ stats.critical }}</div><div class="stat-label">重要紧急</div>
       </div>
-      <div class="stat-card over" :class="{ active: filters.overdue_only }" @click="toggleOverdue">
-        <div class="stat-num">{{ stats.overdue }}</div><div class="stat-label">逾期未闭环</div>
-      </div>
-      <div class="stat-card hold" :class="{ active: filters.status === '挂起' }" @click="toggleFilter('status', '挂起')">
-        <div class="stat-num">{{ stats.on_hold }}</div><div class="stat-label">挂起</div>
-      </div>
-      <!-- 「待升级版本」单独一张卡：它也在「未闭环」里，但要追的是现场升级
-           而不是开发，混在一起看不出该找谁 -->
+      <!-- 「待升级版本」也在未闭环里，但要追的是现场升级而不是开发，混在一起看不出该找谁 -->
       <div class="stat-card upgrade" :class="{ active: filters.status === '待升级版本' }" @click="toggleFilter('status', '待升级版本')">
         <div class="stat-num">{{ stats.pending_upgrade }}</div><div class="stat-label">待升级版本</div>
-      </div>
-      <div class="stat-card done" :class="{ active: filters.status === 'CLOSED' }" @click="toggleFilter('status', 'CLOSED')">
-        <div class="stat-num">{{ stats.closed }}</div><div class="stat-label">已闭环</div>
       </div>
     </div>
 
@@ -45,6 +42,11 @@
         <el-input v-model="filters.q" placeholder="搜索描述 / 问题单 / 机台 / 进展" clearable size="small" style="width:230px"
                   :prefix-icon="Search" />
         <el-checkbox v-model="includeClosed" size="small">含已闭环</el-checkbox>
+        <!-- 原先「逾期未闭环」是一张统计卡，收成四张卡之后挪到这里——
+             卡片位置让出来了，但筛逾期的能力不能跟着没了 -->
+        <el-checkbox v-model="filters.overdue_only" size="small">
+          只看逾期<span v-if="stats.overdue" class="ov-badge">{{ stats.overdue }}</span>
+        </el-checkbox>
 
         <div class="filter-right">
           <span class="muted">共 {{ filteredRows.length }} 条<span v-if="customerIssues.loading"> · 刷新中…</span></span>
@@ -530,6 +532,7 @@ const stats = computed(() => {
   const rows = customerIssues.rows
   const open = rows.filter((r) => r.status !== 'CLOSED')
   return {
+    total: rows.length,
     open: open.length,
     critical: open.filter((r) => r.urgency === '重要紧急').length,
     overdue: open.filter((r) => r.overdue).length,
@@ -611,14 +614,19 @@ function toggleFilter(key, val) {
   // 点「已闭环」卡片就是想看已闭环，顺手把开关打开，别让人再找一遍复选框
   if (key === 'status' && filters.status === 'CLOSED') includeClosed.value = true
 }
-function toggleOverdue() {
-  filters.overdue_only = !filters.overdue_only
-}
-function resetStatusFilter() {
+// 「总数」卡是**清空全部筛选**，不只是清状态：那张卡上的数字是全量条数，
+// 点它却还留着别的筛选，数字和底下的列表就对不上了
+function resetAllFilters() {
   filters.status = null
   filters.urgency = null
   filters.overdue_only = false
+  includeClosed.value = true
 }
+
+// 「总数」卡是否高亮：任何一个筛选生效它就不该亮着（那时列表已经不是全量了）
+const noFilter = computed(
+  () => !filters.status && !filters.urgency && !filters.overdue_only && includeClosed.value,
+)
 
 // 逐格保存：后端会在状态流转时自动维护闭环时间，保存后用返回值整行替换缓存
 async function save(row, patch) {
@@ -728,7 +736,12 @@ onActivated(() => {
 .track-page { display: flex; flex-direction: column; gap: 14px; }
 
 /* 统计卡 */
-.stat-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+/* 列数必须跟卡片数一致：写死 5 列却放了 6 张卡，第 6 张会单独掉到第二行，
+   一排半的版式比什么都难看。改卡片数量时**这一行要一起改** */
+.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+@media (max-width: 860px) {
+  .stat-row { grid-template-columns: repeat(2, 1fr); }
+}
 .stat-card {
   background: #fff; border: 1px solid #eaecef; border-radius: 10px;
   padding: 14px 20px; cursor: pointer; text-align: center; transition: all .2s;
@@ -738,10 +751,19 @@ onActivated(() => {
 .stat-num { font-size: 28px; font-weight: 700; color: #1f2329; line-height: 1.1; }
 .stat-label { font-size: 13px; color: #909399; margin-top: 4px; }
 .crit .stat-num { color: #f56c6c; }
-.over .stat-num { color: #e6a23c; }
-.hold .stat-num { color: #909399; }
 .upgrade .stat-num { color: #409eff; }
 .done .stat-num { color: #67c23a; }
+/* 「只看逾期」勾选框后面的角标：卡片撤了，但这个数还得看得见 */
+.ov-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #fdf6ec;
+  color: #e6a23c;
+  font-size: 11px;
+  line-height: 16px;
+}
 
 /* 筛选栏 */
 .filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
