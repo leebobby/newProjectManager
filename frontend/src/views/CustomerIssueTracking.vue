@@ -41,6 +41,16 @@
         </el-select>
         <el-input v-model="filters.q" placeholder="搜索描述 / 问题单 / 机台 / 进展" clearable size="small" style="width:230px"
                   :prefix-icon="Search" />
+        <el-select v-model="filters.category" placeholder="分类专项" clearable filterable
+                   allow-create size="small" style="width:150px">
+          <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
+        </el-select>
+        <!-- 从看板「未指定」那一桶点进来时给个看得见的标记，否则页面上只是"条数少了一截"，
+             没人说得清是被什么筛掉的 -->
+        <el-tag v-if="filters.unassigned" size="small" type="info" closable
+                @close="filters.unassigned = null">
+          只看{{ UNASSIGNED_LABELS[filters.unassigned] }}未填的
+        </el-tag>
         <el-checkbox v-model="includeClosed" size="small">含已闭环</el-checkbox>
         <!-- 原先「逾期未闭环」是一张统计卡，收成四张卡之后挪到这里——
              卡片位置让出来了，但筛逾期的能力不能跟着没了 -->
@@ -414,6 +424,12 @@ const includeClosed = ref(false)
 const filters = reactive({
   customer_id: null, urgency: null, group_id: null, status: null,
   owner_user_id: null, q: '', overdue_only: false,
+  // 分类专项是自由文本（没有主数据表），所以按字面量筛
+  category: null,
+  // 从度量看板的「未指定」那一桶点进来时用：值是维度名（customer/group/category），
+  // 表示"这一维**没填**的行"。用一个哨兵值而不是给每个下拉塞一个「未指定」选项——
+  // customer_id / group_id 是数字，塞进去要么污染类型，要么在别处被当成真 id
+  unassigned: null,
 })
 
 // ── 新增条目 ────────────────────────────────────────────────────────────────
@@ -554,6 +570,10 @@ const filteredRows = computed(() => {
   if (f.urgency) rows = rows.filter((r) => r.urgency === f.urgency)
   if (f.status) rows = rows.filter((r) => r.status === f.status)
   if (f.overdue_only) rows = rows.filter((r) => r.overdue)
+  if (f.category) rows = rows.filter((r) => (r.category || '').trim() === f.category)
+  if (f.unassigned === 'customer') rows = rows.filter((r) => !r.customer_id)
+  if (f.unassigned === 'group') rows = rows.filter((r) => !r.group_id)
+  if (f.unassigned === 'category') rows = rows.filter((r) => !(r.category || '').trim())
   if (f.q) {
     const kw = f.q.trim().toLowerCase()
     rows = rows.filter((r) =>
@@ -620,12 +640,27 @@ function resetAllFilters() {
   filters.status = null
   filters.urgency = null
   filters.overdue_only = false
+  filters.category = null
+  filters.unassigned = null
   includeClosed.value = true
 }
 
 // 「总数」卡是否高亮：任何一个筛选生效它就不该亮着（那时列表已经不是全量了）
+const UNASSIGNED_LABELS = { customer: '客户 / 战场', group: '责任领域', category: '分类专项' }
+
+// 分类专项是自由文本，选项从现有数据里现取（同「只列确实挂着东西的那些」）
+const categoryOptions = computed(() => {
+  const set = new Set()
+  for (const r of customerIssues.rows) {
+    const c = (r.category || '').trim()
+    if (c) set.add(c)
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
+})
+
 const noFilter = computed(
-  () => !filters.status && !filters.urgency && !filters.overdue_only && includeClosed.value,
+  () => !filters.status && !filters.urgency && !filters.overdue_only
+    && !filters.category && !filters.unassigned && includeClosed.value,
 )
 
 // 逐格保存：后端会在状态流转时自动维护闭环时间，保存后用返回值整行替换缓存
@@ -710,7 +745,28 @@ async function onImport(uploadFile) {
 // 带 focus 进来时，把已闭环也放开，否则聚焦项可能是已闭环、被过滤掉
 watch(focusId, (v) => { if (v) includeClosed.value = true }, { immediate: true })
 
+/**
+ * 从度量看板的「客户面问题」看板点进来时，按 query 预置筛选。
+ *
+ * 看板那边给的是维度取值（customer_id / group_id / category），或者
+ * `unassigned=<维度>`（点的是「未指定」那一桶）。**一律带上 include_closed**：
+ * 看板的条数是全量（含已闭环）算的，这边默认只看未闭环，不带的话点进来条数对不上，
+ * 而两边看着都对。
+ */
+function applyQueryFilters() {
+  const q = route.query
+  let touched = false
+  if (q.customer_id) { filters.customer_id = Number(q.customer_id); touched = true }
+  if (q.group_id) { filters.group_id = Number(q.group_id); touched = true }
+  if (q.category) { filters.category = String(q.category); touched = true }
+  if (q.unassigned) { filters.unassigned = String(q.unassigned); touched = true }
+  if (q.status) { filters.status = String(q.status); touched = true }
+  if (q.overdue) { filters.overdue_only = true; touched = true }
+  if (touched) includeClosed.value = true
+}
+
 onMounted(async () => {
+  applyQueryFilters()
   const [u, c, g] = await Promise.allSettled([
     userApi.options({ only_can_login: true }),
     customerApi.list(),

@@ -735,6 +735,42 @@ class IterationProductRequirementOut(IterationProductRequirementBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# ===== 需求：批量改版本 / 批量挪迭代 · 版本交付范围 =====
+class ReqBulkItem(BaseModel):
+    """批量操作里的一条：**必须带自己的 version**，批量也走乐观锁。"""
+    id: int
+    version: int
+
+
+class ReqBulkUpdate(BaseModel):
+    items: List[ReqBulkItem]
+    planned_version: Optional[str] = None
+    target_version_id: Optional[int] = None
+    #: 往后挪几个月（1＝下个月）。与版本字段**互斥**，一次只干一件事
+    shift_months: Optional[int] = None
+
+
+class ReqBulkResult(BaseModel):
+    updated: int
+    #: 改不动的逐条报出来（乐观锁撞了 / 目标迭代里已有同一条）。
+    #: 只报总数的话，人不知道该去改哪几条
+    conflicts: List[dict] = []
+    #: 挪到了哪几个迭代（如 ["2026-10"]），页面据此提示"去那边看看"
+    moved_to: List[str] = []
+
+
+class IterationRequirementScopeOut(BaseModel):
+    """某个迭代版本的**交付范围**（领域需求）。"""
+    items: List[IterationRequirementOut]
+    #: 因「已变更」被剔除的条数。只剔不报的表现是"这个版本怎么少了两条"
+    changed: int = 0
+
+
+class IterationProductRequirementScopeOut(BaseModel):
+    items: List[IterationProductRequirementOut]
+    changed: int = 0
+
+
 # ===== 产品需求 ↔ 领域需求 关联 =====
 class ReqLinkSide(BaseModel):
     """关联里"对面那一条需求"的展示快照。
