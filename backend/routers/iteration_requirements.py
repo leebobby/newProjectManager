@@ -20,6 +20,8 @@ from notify import dispatch
 from routers._lookups import (
     fill_group_fk, fill_user_fk, fill_version_fk, project_name_map, resolve_project_id,
 )
+from routers import _req_bulk
+from routers._req_progress import DOMAIN_PROGRESS_FIELDS, split_changed
 from routers._req_dedup import (
     dedup_key, duplicate_message, find_duplicate, scan_duplicates,
 )
@@ -76,20 +78,26 @@ def list_by_iteration(
     return [_out(i, pmap) for i in items]
 
 
-@router.get("/by-version", response_model=List[schemas.IterationRequirementOut])
+@router.get("/by-version", response_model=schemas.IterationRequirementScopeOut)
 def list_by_version(
     version_id: int = Query(..., description="迭代版本 ID（按 target_version_id 过滤）"),
     db: Session = Depends(get_db),
 ):
-    """版本管理用：列出"计划交付版本"指向该迭代版本的领域需求。"""
+    """版本管理用：这个迭代版本的**交付范围**（计划交付版本指向它的领域需求）。
+
+    **「已变更」的行不进交付范围**：那条需求本轮不做了，留在版本的合入清单里会让
+    评审时按一个虚高的条数去核（同度量看板的 `_split_changed`）。剔掉几条要如实
+    报出来——只剔不报的表现是"这个版本怎么少了两条"，而没人说得清少的是哪些。
+    """
     items = (
         db.query(models.IterationRequirement)
         .filter(models.IterationRequirement.target_version_id == version_id)
         .order_by(models.IterationRequirement.seq.asc(), models.IterationRequirement.id.asc())
         .all()
     )
+    kept, changed = split_changed(items, DOMAIN_PROGRESS_FIELDS)
     pmap = project_name_map(db)
-    return [_out(i, pmap) for i in items]
+    return {"items": [_out(i, pmap) for i in kept], "changed": changed}
 
 
 @router.get("/duplicates")
@@ -447,3 +455,36 @@ async def import_from_excel(
            user=current_user, request=request)
     return {"created": created, "skipped": skipped,
             "cross_iteration": cross_iteration, "errors": errors}
+
+
+@router.post("/bulk", response_model=schemas.ReqBulkResult)
+def bulk_update_items(
+    payload: schemas.ReqBulkUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """批量改计划交付版本 / 批量挪到下个月的迭代（口径见 routers/_req_bulk.py）。
+
+    两件事互斥：一条需求既换版本又换迭代的话，出了问题没人说得清是哪一步干的。
+    """
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="没有选中任何需求")
+    moving = payload.shift_months is not None
+    changing = payload.planned_version is not None or payload.target_version_id is not None
+    if moving and changing:
+        raise HTTPException(status_code=400, detail="改版本与挪迭代请分两次做")
+    if not moving and not changing:
+        raise HTTPException(status_code=400, detail="没有指定要改什么")
+    result = _req_bulk.bulk_update(
+        db, models.IterationRequirement, payload.items,
+        planned_version=payload.planned_version,
+        target_version_id=payload.target_version_id,
+        shift_months=payload.shift_months,
+        fill_version_fk=fill_version_fk,
+    )
+    log_op(db, action="批量修改", target="迭代领域需求",
+           detail=("shift_months=%s" % payload.shift_months) if moving
+                  else ("planned_version=%s" % payload.planned_version),
+           user=current_user, request=request)
+    return result

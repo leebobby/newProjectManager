@@ -424,7 +424,7 @@
         <!-- ============ 客户面问题：按战场 / 业务组 / 分类专项 ============ -->
         <el-tab-pane label="客户面问题" name="cissue">
           <div class="bar">
-            <el-radio-group v-model="cissueDim" size="small">
+            <el-radio-group v-model="cissueDim" size="small" @change="renderCissueChart">
               <el-radio-button v-for="d in CISSUE_DIMS" :key="d.key" :value="d.key">{{ d.label }}</el-radio-button>
             </el-radio-group>
             <el-select v-model="cissueKind" clearable placeholder="全部类型" size="small" style="width: 140px"
@@ -470,8 +470,19 @@
               description="上面的「逾期未闭环 0」不等于没有超期的，只是没有可比的基准。"
             />
 
+            <!-- 图看构成、表看细节，两者同一份数据、同一个维度。
+                 堆叠的四段是**互斥**的（OPEN / 挂起 / 待升级版本 / 已闭环），加起来正好是
+                 总数——「重要紧急」「逾期」是横切的，跟状态有重叠，堆进去就变成了
+                 一根比总数还长的条，而每一段单独看都对。它们放在表里。 -->
+            <div class="cissue-chart-wrap">
+              <div ref="cissueChartEl" class="cissue-chart" :style="{ height: chartHeight + 'px' }" />
+              <p class="muted tbl-note">点条形或表格行 → 跳到「客户面状态 · 问题跟踪」并按这一维筛好</p>
+            </div>
+
             <el-table :data="cissueRows" border stripe size="small" v-loading="cissueLoading"
-                      :row-class-name="({ row }) => (row.unassigned ? 'row-unassigned' : '')">
+                      class="cissue-table"
+                      :row-class-name="({ row }) => (row.unassigned ? 'row-unassigned' : '')"
+                      @row-click="jumpTo">
               <el-table-column :label="cissueDimLabel" min-width="200">
                 <template #default="{ row }">
                   <span :class="{ muted: row.unassigned }">{{ row.name }}</span>
@@ -524,13 +535,27 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, ref } from 'vue'
+import * as echarts from 'echarts'
+import { useRouter } from 'vue-router'
 import { ElAlert, ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import {
   annualIterationApi, apiError, majorVersionApi, metricsApi, resourceGroupApi, roadmapApi,
 } from '../api'
 import DomainQualityTable from '../components/metrics/DomainQualityTable.vue'
+
+const router = useRouter()
+
+// echarts 实例按 key 复用（同 IssueManagement 的写法）：每次 setOption 都新建一个
+// 实例的话，旧实例还挂在 DOM 上不释放，切几次 Tab 就开始卡
+const instances = {}
+function setChart(key, el, option) {
+  if (!el) return
+  if (!instances[key]) instances[key] = echarts.init(el)
+  instances[key].setOption(option, { notMerge: true })
+  instances[key].resize()
+}
 
 const active = ref('version')
 
@@ -552,6 +577,22 @@ const cissueDimLabel = computed(
   () => (CISSUE_DIMS.find((d) => d.key === cissueDim.value) || {}).label || '',
 )
 
+//: 图上最多铺这么多行。维度取值可能上百个（分类专项是自由文本），全画出来每根条
+//: 细得看不见；表格里仍然是全量，所以不是"藏起来"，是"图只画头部"
+const CISSUE_CHART_MAX = 12
+//: 四段互斥的状态色，与问题跟踪页的行底色同一套语义
+const CISSUE_SERIES = [
+  { key: 'plain_open', name: '未闭环', color: '#409EFF' },
+  { key: 'on_hold', name: '挂起', color: '#909399' },
+  { key: 'pending_upgrade', name: '待升级版本', color: '#E6A23C' },
+  { key: 'closed', name: '已闭环', color: '#67C23A' },
+]
+
+const cissueChartEl = ref(null)
+// 图上画的是前 N 行；点击回调要靠下标找回原始行，所以单独存一份
+const cissueChartRows = computed(() => cissueRows.value.slice(0, CISSUE_CHART_MAX))
+const chartHeight = computed(() => Math.max(170, cissueChartRows.value.length * 30 + 66))
+
 async function loadCissue() {
   cissueLoading.value = true
   try {
@@ -559,11 +600,65 @@ async function loadCissue() {
       cissueKind.value ? { kind: cissueKind.value } : {},
     )
     cissue.value = data
+    await nextTick()
+    renderCissueChart()
   } catch (e) {
     ElMessage.error(apiError(e, '加载客户面问题看板失败'))
   } finally {
     cissueLoading.value = false
   }
+}
+
+/**
+ * 跳到「客户面状态 · 问题跟踪」并按当前这一维筛好。
+ *
+ * 「未指定」那一桶传的是 `unassigned=<维度>` 而不是某个 id——那一维本来就没值，
+ * 硬编一个 id 过去会筛出一张空表，看着像跳错了页。
+ */
+function jumpTo(row) {
+  if (!row) return
+  const q = { tab: 'issues' }
+  if (row.unassigned) {
+    q.unassigned = { battlefield: 'customer', group: 'group', category: 'category' }[cissueDim.value]
+  } else if (cissueDim.value === 'battlefield') q.customer_id = row.key
+  else if (cissueDim.value === 'group') q.group_id = row.key
+  else q.category = row.name
+  router.push({ path: '/customer-status', query: q })
+}
+
+function renderCissueChart() {
+  nextTick(() => {
+    const el = cissueChartEl.value
+    if (!el || !cissue.value) return
+    const rows = cissueChartRows.value
+    const names = rows.map((r) => r.name)
+    setChart('cissueBoard', el, {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      legend: { top: 0, itemWidth: 12, itemHeight: 8, textStyle: { fontSize: 11 } },
+      grid: { top: 30, left: 8, right: 20, bottom: 2, containLabel: true },
+      xAxis: { type: 'value', minInterval: 1 },
+      // inverse：条数最多的排最上面，和表格的顺序对得上
+      yAxis: {
+        type: 'category', data: names, inverse: true,
+        axisLabel: { fontSize: 11, width: 130, overflow: 'truncate' },
+      },
+      series: CISSUE_SERIES.map((sr) => ({
+        name: sr.name, type: 'bar', stack: 'status', color: sr.color,
+        emphasis: { focus: 'series' },
+        data: rows.map((r) => (sr.key === 'plain_open'
+          // 纯 OPEN ＝ 未闭环 − 挂起 − 待升级版本。四段必须互斥，否则堆出来的
+          // 总长比总数还大，而每一段单独看都对
+          ? Math.max(0, r.open - r.on_hold - r.pending_upgrade)
+          : r[sr.key])),
+      })),
+    })
+    const inst = instances.cissueBoard
+    if (inst && !inst.__clickBound) {
+      inst.on('click', (p) => jumpTo(cissueChartRows.value[p.dataIndex]))
+      inst.getZr().on('mousemove', (e) => { inst.getZr().setCursorStyle(e.target ? 'pointer' : 'default') })
+      inst.__clickBound = true
+    }
+  })
 }
 
 const pct = (v) => `${Math.round((v || 0) * 100)}%`
@@ -802,7 +897,10 @@ async function loadGroup() {
 // 切到「问题单超期」才去读快照：那份明细在文件里，没人看的时候不该白读一遍
 function onTabChange(name) {
   if (name === 'overdue' && !overdue.value) loadOverdue()
-  if (name === 'cissue' && !cissue.value) loadCissue()
+  if (name === 'cissue') {
+    if (!cissue.value) loadCissue()
+    else renderCissueChart()   // v-show 不卸载实例，切回来要重画一次尺寸
+  }
 }
 
 onMounted(async () => {
@@ -818,6 +916,11 @@ onMounted(async () => {
 /* 待补录那一行压一层浅底：它排在最后，不压一下容易被当成普通的一行数据 */
 :deep(.row-unassigned td.el-table__cell) { background: #fafafa; }
 .tbl-note { margin: 8px 0 0; font-size: 12px; }
+.cissue-chart-wrap { margin-bottom: 14px; }
+.cissue-chart { width: 100%; min-height: 170px; }
+/* 整行可点就要长得可点，否则没人会去点 */
+.cissue-table :deep(.el-table__body tr) { cursor: pointer; }
+.cissue-table :deep(.el-table__body tr:hover > td.el-table__cell) { background: #ecf5ff; }
 .project-bar {
   display: flex;
   gap: 12px;

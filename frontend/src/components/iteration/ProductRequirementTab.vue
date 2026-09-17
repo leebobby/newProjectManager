@@ -61,14 +61,29 @@
       </span>
     </div>
 
+    <RequirementBulkBar
+      :rows="selected"
+      :groups="versionGroups"
+      :api="productRequirementApi"
+      label="产品需求"
+      @done="onBulkDone"
+      @clear="clearSelection"
+    />
+
     <el-table
+      ref="tableRef"
       :data="filteredList"
       v-loading="loading"
       :row-class-name="rowClass"
+      row-key="id"
       border
       stripe
       style="width: 100%"
+      @selection-change="onSelectionChange"
     >
+      <!-- 多选：批量改版本 / 批量挪到下个月。reserve-selection 需要 row-key，
+           否则翻页或刷新之后勾选会整片丢掉，而人以为还选着 -->
+      <el-table-column type="selection" width="44" align="center" fixed="left" :selectable="() => true" />
       <el-table-column prop="seq" label="序号" width="70" align="center" fixed="left" />
       <el-table-column label="需求编号" width="160" fixed="left">
         <template #default="{ row }">
@@ -490,6 +505,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import RequirementDuplicateAlert from './RequirementDuplicateAlert.vue'
 import RequirementLinkDialog from './RequirementLinkDialog.vue'
+import RequirementBulkBar from './RequirementBulkBar.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Download, Plus, Refresh, Setting, Upload, UploadFilled } from '@element-plus/icons-vue'
 import { configApi, downloadBlob, productRequirementApi, reqLinkApi, userApi } from '../../api'
@@ -750,6 +766,26 @@ async function loadLinks() {
 function openLinks(row) {
   linkDialog.row = row
   linkDialog.visible = true
+}
+
+// 批量操作的选中行。**存整行不只存 id**：批量接口要每行的 version 去比乐观锁
+const tableRef = ref(null)
+const selected = ref([])
+
+function onSelectionChange(rows) {
+  selected.value = rows
+}
+
+function clearSelection() {
+  tableRef.value?.clearSelection?.()
+  selected.value = []
+}
+
+// 批量改完整表重拉：改的是版本/迭代，受影响的远不止选中的那几行
+// （挪走的行整条不见了，重复提示与拆解汇总也得跟着变）
+async function onBulkDone() {
+  clearSelection()
+  await load()
 }
 
 const dupInfo = ref(null)

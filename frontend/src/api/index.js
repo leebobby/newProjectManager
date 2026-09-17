@@ -468,6 +468,9 @@ export const iterationRequirementApi = {
   create: (data) => http.post('/iteration-requirements', data),
   update: (id, data) => http.put(`/iteration-requirements/${id}`, data),
   remove: (id) => http.delete(`/iteration-requirements/${id}`),
+  // 批量改计划交付版本 / 批量挪迭代。**每条都要带自己的 version**——批量也走乐观锁，
+  // 撞了的逐条回在 conflicts 里，不整批回滚（一条被人动过就得从头再选一遍太糟）
+  bulk: (data) => http.post('/iteration-requirements/bulk', data),
   importTemplate: () => http.get('/iteration-requirements/import-template.xlsx', { responseType: 'blob' }),
   importExcel: (iteration_id, file) => {
     const fd = new FormData()
@@ -542,6 +545,9 @@ export const productRequirementApi = {
   create: (data) => http.post('/iteration-product-requirements', data),
   update: (id, data) => http.put(`/iteration-product-requirements/${id}`, data),
   remove: (id) => http.delete(`/iteration-product-requirements/${id}`),
+  // 批量改计划交付版本 / 批量挪迭代。**每条都要带自己的 version**——批量也走乐观锁，
+  // 撞了的逐条回在 conflicts 里，不整批回滚（一条被人动过就得从头再选一遍太糟）
+  bulk: (data) => http.post('/iteration-product-requirements/bulk', data),
   importTemplate: () => http.get('/iteration-product-requirements/import-template.xlsx', { responseType: 'blob' }),
   importExcel: (iteration_id, file) => {
     const fd = new FormData()

@@ -126,42 +126,56 @@ def resolve_project_id(db: Session, value: Optional[str]) -> Optional[int]:
     return p.id if p else None
 
 
-def fill_user_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
-    """便利函数：在 model_dump 后的字典上原位填 FK。
+def _fk_already_set(data: dict, fk_field: str) -> bool:
+    """FK 是不是已经由调用方定好了。
 
-    - 如果 fk_field 已显式提供，尊重它（即使是 None 也尊重）
-    - 否则按 str_field 自动反查
+    判的是**有没有值**，不是「key 在不在」。原先按 key 判，新建那条路就整个失灵了：
+    `create_item` 用的是全量 `model_dump()`（不是 `exclude_unset`），`*_id` 这些可选列
+    一律以 `None` 出现在字典里，于是 `fk_field in data` 恒为真、反查一次都不跑。
+    表现是**新建的需求填了版本号却没有 FK，而编辑过的有**——两条路各走各的，
+    页面上都显示着版本号，看不出差别；直到「版本管理 → 合入需求」按 FK 查交付范围时，
+    新建的那批整片不出现。
+
+    反过来，显式传了一个**非空** FK 时仍然尊重它（那是调用方挑好的行），
+    传空字符串给 str_field 时也不反查（那是"清空"的意思）。
     """
-    if fk_field in data:
+    return data.get(fk_field) is not None
+
+
+def fill_user_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
+    """便利函数：在 model_dump 后的字典上原位填 FK。"""
+    if _fk_already_set(data, fk_field):
         return
-    if str_field in data and data.get(str_field):
+    if data.get(str_field):
         data[fk_field] = resolve_user_id(db, data[str_field])
 
 
 def fill_group_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
-    if fk_field in data:
+    if _fk_already_set(data, fk_field):
         return
-    if str_field in data and data.get(str_field):
+    if data.get(str_field):
         data[fk_field] = resolve_group_id(db, data[str_field])
 
 
 def fill_version_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
-    if fk_field in data:
+    if _fk_already_set(data, fk_field):
         return
-    if str_field in data and data.get(str_field):
+    if data.get(str_field):
         data[fk_field] = resolve_iteration_version_id(db, data[str_field])
 
 
 def fill_release_version_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
     """同 fill_version_fk，但落到**版本**这一层（release_versions）。"""
-    if str_field in data and fk_field not in data:
-        data[fk_field] = resolve_release_version_id(db, data.get(str_field))
+    if _fk_already_set(data, fk_field):
+        return
+    if data.get(str_field):
+        data[fk_field] = resolve_release_version_id(db, data[str_field])
 
 
 def fill_project_fk(db: Session, data: dict, str_field: str, fk_field: str) -> None:
-    if fk_field in data:
+    if _fk_already_set(data, fk_field):
         return
-    if str_field in data and data.get(str_field):
+    if data.get(str_field):
         data[fk_field] = resolve_project_id(db, data[str_field])
 
 

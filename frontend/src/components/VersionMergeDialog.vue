@@ -30,6 +30,9 @@
           </el-table-column>
         </el-table>
         <el-empty v-if="!loading && !products.length" description="该版本暂无关联产品需求" :image-size="80" />
+        <p v-if="changedOut.product" class="scope-note">
+          另有 <b>{{ changedOut.product }}</b> 条标了「已变更」，本轮不做了，不计入本版本的交付范围。
+        </p>
       </el-tab-pane>
 
       <!-- 领域需求 -->
@@ -55,6 +58,9 @@
           </el-table-column>
         </el-table>
         <el-empty v-if="!loading && !domains.length" description="该版本暂无关联领域需求" :image-size="80" />
+        <p v-if="changedOut.domain" class="scope-note">
+          另有 <b>{{ changedOut.domain }}</b> 条标了「已变更」，本轮不做了，不计入本版本的交付范围。
+        </p>
       </el-tab-pane>
     </el-tabs>
 
@@ -65,7 +71,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { iterationRequirementApi, productRequirementApi } from '../api'
 
@@ -81,6 +87,8 @@ const activeTab = ref('product')
 const loading = ref(false)
 const products = ref([])
 const domains = ref([])
+// 因「已变更」被排除在交付范围之外的条数，两类各记一个
+const changedOut = reactive({ product: 0, domain: 0 })
 
 // 进展着色：与迭代页一致——已完成→绿、已延期→红
 function statusStyle(v) {
@@ -93,6 +101,8 @@ async function load() {
   if (!props.versionId) {
     products.value = []
     domains.value = []
+    changedOut.product = 0
+    changedOut.domain = 0
     return
   }
   loading.value = true
@@ -101,8 +111,12 @@ async function load() {
       productRequirementApi.byVersion(props.versionId),
       iterationRequirementApi.byVersion(props.versionId),
     ])
-    products.value = p.data
-    domains.value = d.data
+    // 交付范围由服务端剔掉「已变更」（本轮不做了的需求不该留在合入清单里），
+    // 剔了几条一并带回来——只剔不报的表现是"这个版本怎么少了两条"
+    products.value = p.data.items
+    domains.value = d.data.items
+    changedOut.product = p.data.changed || 0
+    changedOut.domain = d.data.changed || 0
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '加载合入需求失败')
   } finally {
@@ -113,3 +127,11 @@ async function load() {
 // 切换版本时若对话框已开着，重新加载
 watch(() => props.versionId, () => { if (props.modelValue) load() })
 </script>
+
+<style scoped>
+.scope-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #909399;
+}
+</style>
