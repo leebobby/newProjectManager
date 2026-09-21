@@ -31,6 +31,29 @@ WBS_DEFAULT_TEMPLATE = (
     "调试准备", "标定与参数整定", "功能验证", "性能与稳定性", "问题闭环", "交付与固化",
 )
 
+# WBS 各级任务的**字号阶梯**：第 1 层最大、越往下越小，一眼就能看出层级。
+# 三个出口共用这一份——页面表格、Excel 导出、调试框图（见 CLAUDE.md「WBS」）。
+# 各写一份的表现是「页面上分组比子任务大一号、导出的 Excel 里一样大」，
+# 而两边单独看都正常。前端那份在 utils/wbsLevel.js，**两端必须同步**。
+#
+# 一份里同时给 pt 与 px：Excel 吃磅值、页面与框图吃像素，换算（px×0.75）在两边
+# 各算一次迟早会出现「导出比页面小半号」，不如把两个数都写死在同一行里。
+# 深于最后一档的层级**一律用最后一档**——再往下缩就小到读不出来了，
+# 而层数是不限的，按公式一路缩下去第 8 层会是负数。
+WBS_LEVEL_FONTS = (
+    {"pt": 13.0, "px": 15.0, "bold": True,  "color": "1F242E"},   # 第 1 层：分组 / 调试阶段
+    {"pt": 11.5, "px": 13.5, "bold": True,  "color": "262626"},   # 第 2 层：工作包
+    {"pt": 10.5, "px": 12.5, "bold": False, "color": "3A3F4B"},   # 第 3 层：子任务
+    {"pt": 9.5,  "px": 11.5, "bold": False, "color": "606266"},   # 第 4 层及以下
+)
+
+
+def wbs_level_font(depth: int) -> dict:
+    """第 depth 层（1 起）的字号档位。越界一律落到最后一档，不外推。"""
+    i = max(1, int(depth or 1)) - 1
+    return WBS_LEVEL_FONTS[min(i, len(WBS_LEVEL_FONTS) - 1)]
+
+
 # WBS 挂在哪：专项 或 机台调试（customer_status 那一行＝客户+机台编号）。
 WBS_KINDS = ("special", "machine")
 WBS_KIND_LABELS = {"special": "专项", "machine": "机台调试"}

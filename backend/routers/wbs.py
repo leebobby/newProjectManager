@@ -19,6 +19,12 @@
 编号（`code`，1.2.3）**不入库**，出接口时按 parent_id + sort_order 现算：
 存下来的话，上移一行、加一个子项之后编号就和位置对不上了，而每一行单独看都合法。
 
+导出有两个出口，**版面只有一份**（[wbs_diagram.py](../wbs_diagram.py)，它只算不画）：
+`GET /plans/{id}/export.xlsx`（第 1 页平表 + 第 2 页调试框图 PNG）与
+`GET /plans/{id}/diagram`（只回版面，页面拿它画 SVG）。前端自己再排一次的话，
+同一份 WBS 在页面上是 4 列、在导出的图里是 5 列，而两边单独看都正常。
+各级任务的字号阶梯在 `enums.wbs_level_font()`，页面表格 / Excel 表格 / 框图共用一份。
+
 权限（见 CLAUDE.md「Write-permission principle」）：
 - 建 / 改 WBS、以及树里的所有增删改 ＝ **登录用户**（协作编辑域的日常填报）。
   要 admin 代建的话，现场调试那边就没人建了。
@@ -28,14 +34,18 @@ from datetime import date, datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+import brand
 import enums
 import models
 import schemas
+import wbs_diagram
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
+from xlsx_io import beautify, style_header
 
 router = APIRouter(prefix="/api/wbs", tags=["WBS"])
 
@@ -482,3 +492,177 @@ def move_item(item_id: int, payload: schemas.WbsMove, db: Session = Depends(get_
     db.commit()
     log_op(db, action="update", target="wbs_item", target_id=item_id, detail=f"move parent={new_parent}", user=user)
     return _detail(db, _get_plan(db, it.plan_id))
+
+
+# ─── 导出：Excel 表 + 调试框图 ──────────────────────────────────────────────
+def _diagram_rows(rows: List[dict]) -> List[dict]:
+    """拍平的树 → 框图要的纯字典。`wbs_diagram` 刻意不吃 ORM 对象，见那边的说明。"""
+    out = []
+    for r in rows:
+        it = r["item"]
+        out.append({
+            "code": r["code"], "name": it.name or "", "depth": r["depth"],
+            "status": (it.status or "") if r["is_leaf"] else "",
+            "owner": (it.owner or "").strip(),
+            "days": r["roll_days"], "pct": r["roll_pct"],
+            "is_leaf": r["is_leaf"], "leaf_count": r["leaf_count"],
+        })
+    return out
+
+
+@router.get("/plans/{plan_id}/diagram")
+def plan_diagram(plan_id: int, db: Session = Depends(get_db),
+                 _: models.User = Depends(get_current_user)):
+    """调试框图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
+
+    读权限一档＝登录用户，与详情页同档。版面算在服务端而不是前端，是为了让页面
+    和导出的图长得一模一样——两边各排一次的话，同一份 WBS 在页面上 4 列、
+    在导出的图里 5 列，而两边单独看都正常。
+    """
+    plan = _get_plan(db, plan_id)
+    rows = _flatten(db.query(models.WbsItem)
+                    .filter(models.WbsItem.plan_id == plan_id).all())
+    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
+    return wbs_diagram.build_diagram(_diagram_rows(rows), title=plan.name, subtitle=sub)
+
+
+def _xlsx_rows(rows: List[dict]) -> List[list]:
+    def ymd(v):
+        return str(v)[:10] if v else ""
+
+    out = []
+    for r in rows:
+        it = r["item"]
+        leaf = r["is_leaf"]
+        out.append([
+            r["code"],
+            it.name or "",
+            "工作包" if leaf else f"分组（汇总 {r['leaf_count']} 个叶子）",
+            (it.owner or "").strip(),
+            (it.owner_group or "").strip(),
+            ymd(it.planned_start if leaf else r["roll_start"]),
+            ymd(it.planned_end if leaf else r["roll_end"]),
+            r["roll_days"] or "",
+            r["roll_pct"],
+            # 分组行的状态**留空**：状态是叶子填的，分组没有状态。
+            # 随便填一个「进行中」会被当成有人标过（同「未指定领域」那行的采集问题单留空）
+            (it.status or "") if leaf else "",
+            (it.deliverable or "").strip(),
+            (it.dod or "").strip(),
+            (it.predecessor or "").strip(),
+            (it.remark or "").strip(),
+            " · ".join(_issues(it, leaf)),
+        ])
+    return out
+
+
+@router.get("/plans/{plan_id}/export.xlsx")
+def export_xlsx(plan_id: int, db: Session = Depends(get_db),
+                user: models.User = Depends(get_current_user)):
+    """整份 WBS 导出成 Excel：第 1 页是表、第 2 页是调试框图。
+
+    三条与页面一致的口径，**不在导出里另算一遍**（同专项总览 PPT 复用 overview()）：
+    分组行的人天/完成度/计划起止是汇总值、状态留空；「已变更 / 不涉及」的行照导
+    （那是计划的一部分），但排除了几条、多少人天在表尾如实写出来。
+
+    **各级任务的字号跟着 `enums.wbs_level_font()` 走**，与页面表格同一份阶梯——
+    在这儿另写一套数的话，导出的 Excel 里分组和子任务一样大，而页面上是分层的。
+    """
+    import io
+
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    plan = _get_plan(db, plan_id)
+    rows = _flatten(db.query(models.WbsItem)
+                    .filter(models.WbsItem.plan_id == plan_id).all())
+    base = _plan_out(db, plan, rows)
+
+    headers = ["编号", "工作包", "类型", "负责人", "PL组", "计划开始", "计划完成",
+               "人天", "完成度%", "状态", "交付物", "完成标准（DoD）", "前置",
+               "假设·范围外·风险", "待补录"]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "WBS"
+    style_header(ws, headers)
+    for line in _xlsx_rows(rows):
+        ws.append(line)
+    last = 1 + len(rows)
+    ws.column_dimensions["B"].width = 42
+    beautify(ws, last_row=last, center_cols={1, 3, 8, 9, 10})
+
+    # ── beautify 之后再上层级字号：它把数据区的字统一刷成 11 号，
+    #    先写后刷的话这一档分层会被它整段抹平 ──────────────────────────
+    section = PatternFill("solid", fgColor=brand.SECTION_BG)
+    for i, r in enumerate(rows):
+        row_no = 2 + i
+        fs = enums.wbs_level_font(r["depth"])
+        f = Font(size=fs["pt"], bold=fs["bold"], color=fs["color"])
+        ws.cell(row_no, 1).font = f
+        c = ws.cell(row_no, 2)
+        c.font = f
+        # 缩进用 Alignment.indent 而不是往名字前面塞空格：塞空格的话，
+        # 这一列复制出去、或者拿来筛选排序时，名字前面永远挂着几个空格
+        c.alignment = Alignment(vertical="center", wrap_text=True, indent=r["depth"] - 1)
+        ws.row_dimensions[row_no].height = max(18.0, fs["pt"] * 1.7)
+        if not r["is_leaf"]:
+            # 分组行整行上中灰，和它底下的叶子分开。只给**父行**上：
+            # 父行的状态那格本来就是空的，不会盖掉叶子的状态点灯
+            for j in range(1, len(headers) + 1):
+                ws.cell(row_no, j).fill = section
+
+    note = ws.max_row + 2
+    ws.cell(note, 1, f"合计：计入统计 {base.total_days} 人天 / {base.leaf_count} 个叶子工作包，"
+                     f"加权完成度 {base.progress_pct}%（Σ人天×完成度 ÷ Σ人天，只数叶子）")
+    if base.excluded:
+        ws.cell(note + 1, 1, f"已排除 {base.excluded} 条（状态为「已变更 / 不涉及」）、合计 "
+                             f"{base.excluded_days} 人天，不计入上面的合计。这些行仍然留在表里。")
+    else:
+        ws.cell(note + 1, 1, "当前没有「已变更 / 不涉及」的行，上面的合计就是全量。")
+    ws.cell(note + 2, 1, "分组行的人天 / 完成度 / 计划起止都是从叶子汇总来的；"
+                         "状态一栏留空是因为状态由叶子填，分组没有状态。")
+    ws.cell(note + 3, 1, f"待补录 {base.flagged} 条，见最后一列。字号按层级分档，"
+                         f"第 1 层最大——与系统页面上同一份阶梯。")
+
+    # ── 第 2 页：调试框图。版面与页面共用 wbs_diagram，这里只负责画 ──────
+    ws2 = wb.create_sheet("调试框图")
+    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
+    spec = wbs_diagram.build_diagram(_diagram_rows(rows), title=plan.name, subtitle=sub)
+    ws2.cell(1, 1, f"{plan.name} · 调试框图")
+    ws2.cell(2, 1, f"第 1 层是调试阶段，从左到右按顺序走；每一列底下是它的子任务，"
+                   f"越深一层字越小。共 {spec['stage_count']} 个阶段 / {spec['box_count']} 个方框。")
+    png = wbs_diagram.render_png(spec) if spec["box_count"] else None
+    if not spec["box_count"]:
+        # 空 WBS 与「画不出来」是两回事，混成一句会让人去装字体
+        ws2.cell(4, 1, "这份 WBS 还没有任何工作包，框图是空的。")
+        tail = 6
+    elif png:
+        from openpyxl.drawing.image import Image as XLImage
+        stream = io.BytesIO(png)
+        xi = XLImage(stream)
+        # 图片是浮在格子上的、不占行：按像素预留行数，少留会压住下面的说明文字
+        xi.width, xi.height = spec["width"], spec["height"]
+        ws2.add_image(xi, "A4")
+        tail = 4 + int(spec["height"] / 20) + 2
+    else:
+        # 找不到中文字体就如实说，绝不回退 PIL 默认字体（画出来是一排方块）
+        ws2.cell(4, 1, "这台服务器上没找到能渲染中文的字体，框图没有画出来。"
+                       "装一个中文字体（如 Noto Sans CJK / 微软雅黑）或设 APP_CJK_FONT 后重导即可；"
+                       "系统页面上的框图不受影响，它是浏览器画的。")
+        tail = 6
+    if spec["skipped"]:
+        ws2.cell(tail, 1, f"另有 {spec['skipped']} 行没画进图里（整份 WBS 太大，"
+                          f"画出来每个方框细得看不见）。第 1 页的表是全量的。")
+    ws2.column_dimensions["A"].width = 120
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"wbs-{plan_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+    log_op(db, action="导出Excel", target="wbs_plan", target_id=plan_id,
+           detail=f"rows={len(rows)} stages={spec['stage_count']}", user=user)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )

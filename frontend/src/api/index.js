@@ -129,6 +129,10 @@ export const wbsApi = {
   removeItem: (id) => http.delete(`/wbs/items/${id}`),
   reorder: (planId, parent_id, ids) => http.post(`/wbs/plans/${planId}/reorder`, { parent_id, ids }),
   move: (id, new_parent_id, version) => http.post(`/wbs/items/${id}/move`, { new_parent_id, version }),
+  // 调试框图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
+  // 前端自己再排一次的话，页面上是 4 列、导出的图里是 5 列，而两边单独看都正常。
+  diagram: (id) => http.get(`/wbs/plans/${id}/diagram`),
+  exportXlsx: (id) => http.get(`/wbs/plans/${id}/export.xlsx`, { responseType: 'blob' }),
 }
 
 export const specialApi = {
