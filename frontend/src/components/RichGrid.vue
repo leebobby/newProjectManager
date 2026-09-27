@@ -1,5 +1,5 @@
 <template>
-  <div class="rich-grid">
+  <div ref="gridRoot" class="rich-grid">
     <!-- 编辑工具条 -->
     <div v-if="editable" class="rg-toolbar">
       <span class="rg-tip">{{ selDesc }}</span>
@@ -62,6 +62,30 @@
           class="rg-optinput"
           :placeholder="selColType === 'light' ? '点灯取值，逗号分隔' : '下拉选项，逗号分隔'"
         />
+      </span>
+      <span class="rg-fmt rg-width-tools">
+        <span class="rg-tip">列宽</span>
+        <el-select v-model="widthPreset" size="small" class="rg-widthpreset">
+          <el-option label="汇报表" value="report" />
+          <el-option label="明细表" value="detail" />
+          <el-option label="均分" value="equal" />
+        </el-select>
+        <el-button size="small" @click="applyWidthPreset">应用</el-button>
+        <el-input-number
+          v-model="selectedWidth"
+          size="small"
+          class="rg-widthinput"
+          :disabled="selectedPhysicalCol < 0"
+          :min="48"
+          :max="600"
+          :step="10"
+          controls-position="right"
+        />
+        <span class="rg-tip">px</span>
+        <el-button size="small" :disabled="selectedPhysicalCol < 0" @click="applySelectedWidth">设宽</el-button>
+        <el-button size="small" @click="autoFitWidths">按内容</el-button>
+        <el-button size="small" @click="fitWidthsToViewport">适合页面</el-button>
+        <el-button size="small" @click="resetWidths">恢复默认</el-button>
       </span>
       <div class="spacer" />
       <el-button-group>
@@ -210,6 +234,8 @@ const emit = defineEmits(['update:modelValue'])
 const model = computed(() => props.modelValue)
 
 const sel = ref(null) // { type:'header'|'body', r, c }
+const widthPreset = ref('report')
+const gridRoot = ref(null)
 
 const isBodySel = computed(() => sel.value?.type === 'body')
 const isHeaderSel = computed(() => sel.value?.type === 'header')
@@ -328,6 +354,80 @@ function ensureWidths() {
 }
 function lastPhysCol(hi) {
   return groupOffset(hi) + (model.value.headers[hi].colspan || 1) - 1
+}
+const selectedPhysicalCol = computed(() => {
+  if (!sel.value) return -1
+  return sel.value.type === 'header' ? lastPhysCol(sel.value.c) : sel.value.c
+})
+const selectedWidth = computed({
+  get: () => {
+    const col = selectedPhysicalCol.value
+    return col < 0 ? undefined : (Number(model.value.colWidths?.[col]) || DEFAULT_W)
+  },
+  set: (value) => {
+    const col = selectedPhysicalCol.value
+    if (col < 0) return
+    ensureWidths()
+    model.value.colWidths[col] = Math.max(48, Math.min(600, Number(value) || DEFAULT_W))
+  },
+})
+
+function applySelectedWidth() {
+  if (selectedPhysicalCol.value < 0) return
+  // v-model 已写回；这里统一发出 update，确保数字输入失焦后能立即落到父组件。
+  emitUpdate()
+}
+function widthForColumn(i, mode = 'report') {
+  const type = colTypeAt(i)
+  const label = String(model.value.headers.find((h, hi) => {
+    const start = groupOffset(hi)
+    return i >= start && i < start + (h.colspan || 1)
+  })?.text || '')
+  if (mode === 'equal') return DEFAULT_W
+  if (type === 'light') return mode === 'detail' ? 90 : 80
+  if (type === 'date') return mode === 'detail' ? 130 : 110
+  if (type === 'select') return mode === 'detail' ? 130 : 110
+  if (/(备注|描述|进展|措施|内容|标准|范围|风险)/.test(label)) return mode === 'detail' ? 420 : 300
+  if (/(责任人|负责人|人员|领域)/.test(label)) return mode === 'detail' ? 120 : 100
+  if (/(编号|版本|客户|战场)/.test(label)) return mode === 'detail' ? 180 : 150
+  return mode === 'detail' ? 200 : 160
+}
+function applyWidthPreset() {
+  ensureWidths()
+  const n = bodyColCount()
+  for (let i = 0; i < n; i++) model.value.colWidths[i] = widthForColumn(i, widthPreset.value)
+  emitUpdate()
+}
+function autoFitWidths() {
+  ensureWidths()
+  const n = bodyColCount()
+  for (let i = 0; i < n; i++) {
+    const header = String(model.value.headers.find((h, hi) => {
+      const start = groupOffset(hi)
+      return i >= start && i < start + (h.colspan || 1)
+    })?.text || '')
+    const maxChars = Math.max(header.length, ...model.value.rows.map(r => String(r[i]?.text || '').slice(0, 30).length))
+    const min = colTypeAt(i) === 'light' ? 80 : (colTypeAt(i) === 'date' ? 110 : 90)
+    model.value.colWidths[i] = Math.max(min, Math.min(360, maxChars * 14 + 30))
+  }
+  emitUpdate()
+}
+function fitWidthsToViewport() {
+  ensureWidths()
+  // rich-grid 自身占满分段宽度；clientWidth 是当前专项详情页可用宽度。
+  const available = Math.max(700, gridRoot.value?.clientWidth || 700)
+  const current = displayWidths.value
+  const total = current.reduce((sum, w) => sum + w, 0) || 1
+  current.forEach((w, i) => {
+    const min = colTypeAt(i) === 'light' ? 70 : (colTypeAt(i) === 'date' ? 105 : 80)
+    model.value.colWidths[i] = Math.max(min, Math.round(w / total * available))
+  })
+  emitUpdate()
+}
+function resetWidths() {
+  ensureWidths()
+  model.value.colWidths.fill(DEFAULT_W)
+  emitUpdate()
 }
 let resizing = null
 function startResize(e, hi) {
@@ -546,6 +646,9 @@ function removeHeader(hi) {
 .rg-sizesel { width: 96px; }
 .rg-bgsel { width: 100px; }
 .rg-optinput { width: 200px; }
+.rg-width-tools { flex-wrap: wrap; }
+.rg-widthpreset { width: 86px; }
+.rg-widthinput { width: 104px; }
 /* 单元格内的下拉 / 日期控件铺满列宽 */
 .rg-table td :deep(.rg-field) { width: 100%; }
 .rg-table td :deep(.el-input__wrapper) { padding: 0 6px; box-shadow: none; }
