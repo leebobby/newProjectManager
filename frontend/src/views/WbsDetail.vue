@@ -48,14 +48,21 @@
         <el-button size="small" @click="expandAll(false)">全部收起</el-button>
         <el-checkbox v-model="onlyFlag" size="small" style="margin-left: 8px">只看待补录</el-checkbox>
         <span class="grow" />
+        <!-- 导出到第几层：深于它的行不再逐条列出，但**汇总数字一个都不变**
+             （人天/完成度本来就是从叶子算上来的），折叠了几条写在表尾 -->
+        <el-select v-model="exportDepth" size="small" style="width: 128px" :persistent="false">
+          <el-option v-for="o in depthOptions" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
         <el-button size="small" :type="showDiagram ? 'primary' : ''" :plain="showDiagram"
                    @click="showDiagram = !showDiagram">调试框图</el-button>
         <el-button size="small" :icon="Download" :loading="exporting" @click="exportXlsx">导出 Excel</el-button>
       </div>
 
-      <!-- 框图与表格是同一份数据的两种看法：表看每一行填了什么，图看这件事分几步走。
+      <!-- 框图与表格是同一份数据的两种看法：表看每一行填了什么，
+           图看这件事分几步走、每一步哪天该完、哪一步已经拖了。
            默认收着——不是每次进来都要看图，而它一展开就占掉一屏 -->
-      <WbsDiagram v-if="showDiagram" ref="diagramRef" :plan-id="route.params.id" class="diagram" />
+      <WbsDiagram v-if="showDiagram" ref="diagramRef" :plan-id="route.params.id"
+                  :max-depth="exportDepth || null" class="diagram" />
 
       <el-empty v-if="!items.length" description="这份 WBS 还是空的">
         <span class="muted">可以「套用标准调试模板」一次生成 6 个分组，再往里逐层拆；也可以直接新增一个分组。</span>
@@ -243,6 +250,9 @@ const drawerRow = ref(null)
 const showDiagram = ref(false)
 const diagramRef = ref(null)
 const exporting = ref(false)
+// 0 ＝ 全部。默认全部：先给全量，要收再收——默认砍掉几层的话，
+// 导出的人根本不知道自己少拿了东西
+const exportDepth = ref(0)
 const dform = reactive({ deliverable: '', dod: '', predecessor: '', remark: '' })
 
 const ymd = (v) => (v ? String(v).slice(0, 10) : '—')
@@ -252,11 +262,20 @@ const statusStyle = (s) => (FILL[s] ? { background: FILL[s], color: '#1F242E' } 
 // 编号跟着名字一起分档，但不跟着加粗：一列等宽数字全加粗会比名字还抢眼
 const codeStyle = (d) => ({ ...levelStyle(d), fontWeight: 400 })
 
+// 只列到「树里真有的那么深」+ 全部：铺一堆点进去和全量一样的档位没有意义
+const depthOptions = computed(() => {
+  const max = plan.value?.max_depth || 1
+  const out = [{ value: 0, label: '导出全部层级' }]
+  for (let d = 1; d < max; d += 1) out.push({ value: d, label: `只导出到第 ${d} 层` })
+  return out
+})
+
 async function exportXlsx() {
   exporting.value = true
   try {
-    const { data } = await wbsApi.exportXlsx(plan.value.id)
-    downloadBlob(data, `${plan.value.name || 'wbs'}-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null)
+    const suffix = exportDepth.value ? `-第${exportDepth.value}层` : ''
+    downloadBlob(data, `${plan.value.name || 'wbs'}${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`)
     ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图）')
   } catch (e) {
     ElMessage.error(apiError(e, '导出失败'))
