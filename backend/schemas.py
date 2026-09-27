@@ -2228,6 +2228,19 @@ class WbsItemBase(BaseModel):
     remark: str = ""
 
 
+class WbsItemRef(BaseModel):
+    """前置工作包的一条引用（响应用）。
+
+    `code` / `name` 是**现算**的（同 `WbsItemOut.code`，编号不入库）。指向的行被
+    删掉时 `missing=True` 并保留 id：静默丢掉的话，页面上那条前置凭空消失，
+    没人说得清是本来就没填、还是关联断了（同 `overdue_unknown`：算不出来要说）。
+    """
+    id: int
+    code: str = ""
+    name: str = ""
+    missing: bool = False
+
+
 class WbsItemCreate(WbsItemBase):
     parent_id: Optional[int] = None
 
@@ -2250,6 +2263,9 @@ class WbsItemUpdate(BaseModel):
     status: Optional[str] = None
     progress_pct: Optional[int] = None
     remark: Optional[str] = None
+    # 前置关联：传 **id 列表**（不是编号）。服务端校验必须是同一份 WBS 里的行、
+    # 不许指向自己，并去重保序后存成逗号串。传 [] ＝清空。
+    predecessor_ids: Optional[List[int]] = None
     version: Optional[int] = None
     # parent_id **不在这里**：改层级走 /move，那一步还要重排 sort_order 并防环，
     # 做成普通字段的话前端一个 PUT 就能把一行挂到自己的子孙下面，整棵树从此读不出来。
@@ -2282,6 +2298,8 @@ class WbsItemOut(WbsItemBase):
     leaf_count: int = 0
     excluded: int = 0
     issues: List[str] = []    # 待补录提示：缺负责人 / 缺工期 / 已过计划完成日……
+    predecessor_ids: str = ""             # 库里存的那一串 id（前端编辑时回填用）
+    predecessors: List[WbsItemRef] = []   # 现算的编号与名字，页面据此画超链接
 
 
 class WbsPlanDetail(WbsPlanOut):

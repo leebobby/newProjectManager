@@ -31,7 +31,7 @@
 
 - **字号阶梯来自 `enums.wbs_level_font()`**，与页面表格、Excel 表格共用一份。
   在这儿另写一套 SIZE 常量的话，框图里第 2 层比第 3 层大一号、表格里一样大。
-- **折行按显示宽度估，且宁可估宽**（`_text_w`：全角 1.0 em、西文 0.55 em，同
+- **折行按显示宽度估，且宁可估宽**（`text_w`：全角 1.0 em、西文 0.55 em，同
   `pptx_utils` 的行高估算）。估窄了会算出"这一行装得下"，画出来的字戳出盒子。
   估的是宽度而不是拿真字体量，是因为**两个出口必须折在同一个位置**：PIL 那边有字体、
   浏览器那边没有，只有算出来的行数是两边都认的。
@@ -56,7 +56,7 @@
 - **父行画细的汇总条**（子行的最早开始 → 最晚完成），与表格里那个汇总同一个口径。
 """
 from datetime import date, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import brand
 import enums
@@ -91,8 +91,13 @@ BAR_FILL = "#5B8FF9"
 BAR_H = 3.0
 
 
-def _text_w(s: str, size: float) -> float:
-    """显示宽度估算：全角 1.0 em、其余 0.55 em。**宁可估宽**，见模块说明。"""
+def text_w(s: str, size: float) -> float:
+    """显示宽度估算：全角 1.0 em、其余 0.55 em。**宁可估宽**，见模块说明。
+
+    两张图（本模块与 [wbs_timeline.py](wbs_timeline.py)）共用这一份估算，
+    前端那份在 `components/WbsDiagram.vue`。各写一份的表现是页面上的图例
+    与导出的 PNG 错开一段，而两边单独看都正常。
+    """
     w = 0.0
     for ch in str(s or ""):
         w += size if ord(ch) > 0x2E7F else size * 0.55
@@ -122,16 +127,16 @@ def _wrap(s: str, size: float, max_w: float, max_lines: int) -> List[str]:
     line = ""
     for tok in toks:
         cand = line + tok
-        if line and _text_w(cand, size) > max_w:
+        if line and text_w(cand, size) > max_w:
             lines.append(line)
             line = "" if tok == " " else tok
         else:
             line = cand
         # 单个词元本身就比一行宽（一长串型号/路径）时才从中间劈开：
         # 不劈的话它会直接戳出盒子，而盒子看着还是规规矩矩的
-        while _text_w(line, size) > max_w and len(line) > 1:
+        while text_w(line, size) > max_w and len(line) > 1:
             k = len(line) - 1
-            while k > 1 and _text_w(line[:k], size) > max_w:
+            while k > 1 and text_w(line[:k], size) > max_w:
                 k -= 1
             lines.append(line[:k])
             line = line[k:]
@@ -141,6 +146,61 @@ def _wrap(s: str, size: float, max_w: float, max_lines: int) -> List[str]:
         lines = lines[:max_lines]
         lines[-1] = lines[-1][:-1] + "…" if len(lines[-1]) > 1 else "…"
     return lines
+
+
+def clip_text(s: str, size: float, max_w: float) -> str:
+    """单行截断，收尾加省略号。折行放不下的场合（A 图的左栏只有一行）用它。
+
+    截了要看得出来——省略号就是那个记号；**悄悄截掉**的表现是两个不同的工作包
+    在图上长得一模一样，而两行单独看都正常。
+    """
+    text = " ".join(str(s or "").split())
+    if max_w <= 0:
+        return ""
+    if text_w(text, size) <= max_w:
+        return text
+    out = ""
+    for ch in text:
+        if text_w(out + ch + "…", size) > max_w:
+            break
+        out += ch
+    return (out + "…") if out else "…"
+
+
+def split_stages(rows: List[dict]) -> Tuple[List[List[dict]], int]:
+    """按第 1 层把拍平的行切成若干「阶段」。
+
+    返回 (阶段列表, 孤儿数)。孤儿＝depth>1 却还没出现过第 1 层的行，那是树坏了，
+    画不出来也要**计入 skipped**：直接丢掉会让人以为数据没了。
+    两张图共用这一份切法，各写一份的表现是同一份 WBS 在两张图上截断的位置不一样。
+    """
+    stages: List[List[dict]] = []
+    orphans = 0
+    for r in rows:
+        if int(r.get("depth") or 1) == 1:
+            stages.append([r])
+        elif stages:
+            stages[-1].append(r)
+        else:
+            orphans += 1
+    return stages, orphans
+
+
+def cap_stages(stages: List[List[dict]], max_rows: int) -> Tuple[List[List[dict]], int]:
+    """行数超了就整段丢，返回 (保留的段, 丢掉的行数)。
+
+    **截断按「整段阶段」截**：从一个阶段中间切开的话，图上那一段看着就是
+    "这个阶段就这么多活"，而它其实还有一半没画（同 A 图）。
+    """
+    kept: List[List[dict]] = []
+    used = skipped = 0
+    for st in stages:
+        if used + len(st) > max_rows and kept:
+            skipped += len(st)
+            continue
+        kept.append(st)
+        used += len(st)
+    return kept, skipped
 
 
 def _md(v) -> str:
@@ -212,29 +272,10 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
     拖起 models 只会让它没法单独测（同 `timeutil.parse_plan_date` 放在 timeutil 的理由）。
     每行认这些键：code / name / depth / status / owner / days / pct / is_leaf / leaf_count。
     """
-    stages: List[List[dict]] = []
-    for r in rows:
-        if int(r.get("depth") or 1) == 1:
-            stages.append([r])
-        elif stages:
-            stages[-1].append(r)
-        # depth>1 却还没出现过第 1 层的行是树坏了，直接丢会让人以为数据没了，
-        # 但这里画不出来——它的列不存在。计入 skipped 由下面统一报。
-
-    skipped = sum(1 for r in rows if int(r.get("depth") or 1) > 1) - sum(
-        len(s) - 1 for s in stages)
-
-    # 先按整棵树的行数截断：截在哪儿要按"整段阶段"截，从一个阶段中间切开的话，
-    # 图上会出现一个只剩半截子任务的列，而它看着像那个阶段就这么多活
-    kept: List[List[dict]] = []
-    used = 0
-    for st in stages:
-        if used + len(st) > MAX_BOXES and kept:
-            skipped += len(st)
-            continue
-        kept.append(st)
-        used += len(st)
-    stages = kept
+    # 切段与整段截断收口在 split_stages / cap_stages，A 图吃的是同一份
+    stages, skipped = split_stages(rows)
+    stages, dropped = cap_stages(stages, MAX_BOXES)
+    skipped += dropped
 
     cols_per_band = max(1, int((MAX_BAND_W - 2 * PAD + COL_GAP) // (COL_W + COL_GAP)))
     cols_per_band = min(cols_per_band, max(1, len(stages)))
@@ -432,7 +473,7 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
                         outline=item.get("stroke") or STROKE,
                         width=max(1, S(2 if item.get("stroke") else 0.8)))
             d.text((lx + sq + S(5), ly - S(1)), item["label"], font=f_leg, fill="#" + brand.TEXT)
-            lx += sq + S(6) + int(_text_w(item["label"], spec["legend_px"]) * scale) + S(16)
+            lx += sq + S(6) + int(text_w(item["label"], spec["legend_px"]) * scale) + S(16)
         ny = ly + sq + S(6)
         for line in spec.get("note_lines", []):
             d.text((S(spec["pad"]), ny), line, font=f_leg, fill="#" + brand.MUTED)

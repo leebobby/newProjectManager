@@ -115,7 +115,7 @@ def test_diagram_wraps_long_names_inside_the_box():
     assert len(box["lines"]) > 1
     inner = box["w"] - 2 * wbs_diagram.BOX_PAD_X
     for ln in box["lines"]:
-        assert wbs_diagram._text_w(ln, box["font_px"]) <= inner + 0.01
+        assert wbs_diagram.text_w(ln, box["font_px"]) <= inner + 0.01
 
 
 # ─── Excel 导出 ────────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ def test_export_says_how_many_rows_it_excluded(client, admin_headers, plan):
 def test_export_carries_the_diagram_sheet(client, admin_headers, plan):
     """第 2 页是框图，且说明与版面是同一份 spec 算出来的。"""
     wb = _load(client, admin_headers, plan)
-    assert wb.sheetnames == ["WBS", "调试框图"]
+    assert wb.sheetnames == ["WBS", "调试框图", "A图（时间轴）"]
     ws2 = wb["调试框图"]
     head = "\n".join(str(ws2.cell(r, 1).value or "") for r in range(1, 5))
     assert "调试框图" in head
@@ -192,7 +192,7 @@ def test_empty_plan_exports_without_blaming_the_font(client, admin_headers, spec
                     headers=admin_headers)
     pid = r.json()["id"]
     wb = _load(client, admin_headers, pid)
-    for sheet in ("调试框图",):
+    for sheet in ("调试框图", "A图（时间轴）"):
         text = "\n".join(str(wb[sheet].cell(i, 1).value or "") for i in range(1, 8))
         assert "还没有任何工作包" in text, sheet
         assert "字体" not in text, sheet

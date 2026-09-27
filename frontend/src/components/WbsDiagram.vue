@@ -88,6 +88,9 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiError, downloadBlob, wbsApi } from '../api'
+// 序列化与 PNG 转换**两张图共用一份**（A 图在 WbsTimeline.vue）：各写一份的表现是
+// 同一个「导出 PNG」在两张图上一个带白底、一个透明底，而两边单独看都正常。
+import { serializeSvg, stamp, svgBlob, svgToPngBlob } from '../utils/svgExport'
 
 const props = defineProps({
   planId: { type: [String, Number], required: true },
@@ -149,56 +152,19 @@ async function load() {
 watch(() => [props.planId, props.maxDepth], load, { immediate: true })
 defineExpose({ reload: load })
 
-function serialize() {
-  const src = svgRef.value
-  if (!src) return null
-  const clone = src.cloneNode(true)
-  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-  clone.removeAttribute('class')
-  // 白底：导出的图多半要贴进 PPT 或邮件，透明底在深色版式上就成了看不清的一团
-  const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-  bg.setAttribute('x', '0'); bg.setAttribute('y', '0')
-  bg.setAttribute('width', String(spec.value.width))
-  bg.setAttribute('height', String(spec.value.height))
-  bg.setAttribute('fill', '#ffffff')
-  clone.insertBefore(bg, clone.firstChild)
-  return new XMLSerializer().serializeToString(clone)
-}
-
-function stamp() {
-  return new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19)
-}
-
 async function onExport(kind) {
   if (!drawable.value) { ElMessage.warning('图上还没有可导出的内容'); return }
   exporting.value = true
-  const base = 'wbs-diagram'
+  const base = `wbs-diagram-${stamp()}`
   try {
-    const xml = serialize()
+    const xml = serializeSvg(svgRef.value, spec.value.width, spec.value.height)
     if (!xml) throw new Error('图还没画出来')
     if (kind === 'svg') {
-      downloadBlob(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }), `${base}-${stamp()}.svg`)
+      downloadBlob(svgBlob(xml), `${base}.svg`)
       ElMessage.success('已导出 SVG')
       return
     }
-    const scale = 2   // 2 倍图，贴进 PPT 放大不糊
-    const url = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)))
-    const img = new Image()
-    await new Promise((resolve, reject) => {
-      img.onload = resolve
-      img.onerror = () => reject(new Error('图片渲染失败'))
-      img.src = url
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = spec.value.width * scale
-    canvas.height = spec.value.height * scale
-    const ctx = canvas.getContext('2d')
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
-    if (!blob) throw new Error('导出 PNG 失败')
-    downloadBlob(blob, `${base}-${stamp()}.png`)
+    downloadBlob(await svgToPngBlob(xml, spec.value.width, spec.value.height), `${base}.png`)
     ElMessage.success('已导出 PNG')
   } catch (e) {
     ElMessage.error(e?.message || '导出失败')

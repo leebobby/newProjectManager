@@ -53,6 +53,10 @@
         <el-select v-model="exportDepth" size="small" style="width: 128px" :persistent="false">
           <el-option v-for="o in depthOptions" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
+        <!-- A 图是**另一张图**，和调试框图各答各的（见 wbs_timeline 模块说明）。
+             页面**默认还是表**，图放在预览弹窗里：不是每次进来都要看图，
+             而它一展开就占掉一屏 -->
+        <el-button size="small" type="primary" plain @click="timelineOn = true">预览 A 图</el-button>
         <el-button size="small" :type="showDiagram ? 'primary' : ''" :plain="showDiagram"
                    @click="showDiagram = !showDiagram">调试框图</el-button>
         <el-button size="small" :icon="Download" :loading="exporting" @click="exportXlsx">导出 Excel</el-button>
@@ -68,7 +72,7 @@
         <span class="muted">可以「套用标准调试模板」一次生成 6 个分组，再往里逐层拆；也可以直接新增一个分组。</span>
       </el-empty>
 
-      <el-table v-else :data="visible" border size="small" row-key="id"
+      <el-table v-else :data="visible" border size="small" row-key="id" class="wbs-table"
                 :row-class-name="rowClass">
         <el-table-column label="编号" width="132">
           <!-- 缩进用**定宽的 inline-block**，不是给空 span 加 padding：
@@ -182,13 +186,48 @@
         </ol>
       </div>
 
+      <!-- A 图：一根真日期横轴 + 大框套中框套小框。导出的 Excel 第 3 页是同一张图
+           （版面在服务端算，两处共用一份），所以这儿看到什么样，导出就是什么样 -->
+      <el-dialog v-model="timelineOn" title="A 图（时间轴嵌套框图）" width="94%" top="4vh"
+                 destroy-on-close>
+        <WbsTimeline v-if="timelineOn" :plan-id="route.params.id"
+                     :max-depth="exportDepth || null" />
+        <template #footer>
+          <span class="dlg-foot">导出的 Excel 第 3 页就是这张图；上面那个「导出到第几层」
+            同时管表、调试框图和这张 A 图——各裁各的话同一个「到第 2 层」在表里是 8 行、
+            图上是 11 个框。</span>
+        </template>
+      </el-dialog>
+
       <el-drawer v-model="drawer" :title="drawerRow?.name || '工作包详情'" size="440px">
         <div class="dcode">WBS {{ drawerRow?.code }} · 第 {{ drawerRow?.depth }} 层 ·
           {{ drawerRow?.is_leaf ? '叶子（可填人天/完成度/状态）' : '父行（人天、完成度、日期均为汇总）' }}</div>
         <el-form label-position="top">
           <el-form-item label="交付物"><el-input v-model="dform.deliverable" type="textarea" :rows="2" /></el-form-item>
           <el-form-item label="完成标准（DoD）"><el-input v-model="dform.dod" type="textarea" :rows="2" /></el-form-item>
-          <el-form-item label="前置 WBS（编号，逗号分隔）"><el-input v-model="dform.predecessor" /></el-form-item>
+          <!-- 前置**存 id 不存编号**：编号（1.2.3）是按位置现算的，存编号的话上移
+               一行之后它就指到另一件活上去了，而两行单独看都合法 -->
+          <el-form-item label="前置任务（在这份 WBS 里选）">
+            <el-select v-model="dform.predecessor_ids" multiple filterable clearable
+                       :persistent="false" style="width: 100%"
+                       placeholder="选一个或多个先做的任务">
+              <el-option v-for="o in predOptions" :key="o.id" :label="o.label" :value="o.id" />
+            </el-select>
+            <div v-if="predLinks.length" class="predlinks">
+              <span class="ptip">点进去看：</span>
+              <template v-for="p in predLinks" :key="p.id">
+                <el-button v-if="!p.missing" link type="primary" size="small"
+                           @click="gotoItem(p.id)">{{ p.code }} {{ p.name }} →</el-button>
+                <!-- 指向的行被删掉时照样摆出来：悄悄滤掉的话，填的人以为自己没填过 -->
+                <span v-else class="pgone">（已删除 #{{ p.id }}）</span>
+              </template>
+            </div>
+            <div v-if="drawerRow?.predecessor" class="plegacy">
+              老写法（手填的编号）：<b>{{ drawerRow.predecessor }}</b>。编号会随行的位置变，
+              已改成按任务关联——照着它把上面的前置选好之后，可以
+              <el-button link type="primary" size="small" @click="dropLegacy">清掉这行老值</el-button>。
+            </div>
+          </el-form-item>
           <el-form-item label="假设 · 范围外 · 风险"><el-input v-model="dform.remark" type="textarea" :rows="3" /></el-form-item>
         </el-form>
         <el-button type="primary" @click="saveDrawer">保存</el-button>
@@ -199,7 +238,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElDatePicker, ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus } from '@element-plus/icons-vue'
@@ -207,6 +246,7 @@ import { apiError, downloadBlob, resourceGroupApi, userApi, wbsApi } from '../ap
 import { auth } from '../store/auth'
 import { reloadWbs } from '../store/wbs'
 import WbsDiagram from '../components/WbsDiagram.vue'
+import WbsTimeline from '../components/WbsTimeline.vue'
 // 各级任务的字号阶梯与后端 enums.WBS_LEVEL_FONTS **两端各一份、必须同步**：
 // 分叉的表现是页面上分组比子任务大一号、导出的 Excel 里一样大
 import { levelStyle } from '../utils/wbsLevel'
@@ -248,12 +288,15 @@ const onlyFlag = ref(false)
 const drawer = ref(false)
 const drawerRow = ref(null)
 const showDiagram = ref(false)
+const timelineOn = ref(false)
+// 顺着前置跳过去的那一行：高亮留着不自动消，弹窗一关还看得见自己跳到了哪儿
+const hlId = ref(null)
 const diagramRef = ref(null)
 const exporting = ref(false)
 // 0 ＝ 全部。默认全部：先给全量，要收再收——默认砍掉几层的话，
 // 导出的人根本不知道自己少拿了东西
 const exportDepth = ref(0)
-const dform = reactive({ deliverable: '', dod: '', predecessor: '', remark: '' })
+const dform = reactive({ deliverable: '', dod: '', predecessor_ids: [], remark: '' })
 
 const ymd = (v) => (v ? String(v).slice(0, 10) : '—')
 const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v))
@@ -276,7 +319,7 @@ async function exportXlsx() {
     const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null)
     const suffix = exportDepth.value ? `-第${exportDepth.value}层` : ''
     downloadBlob(data, `${plan.value.name || 'wbs'}${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`)
-    ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图）')
+    ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图，第 3 页是 A 图）')
   } catch (e) {
     ElMessage.error(apiError(e, '导出失败'))
   } finally {
@@ -299,7 +342,10 @@ const visible = computed(() => {
   }
   return out
 })
-function rowClass({ row }) { return row.issues.length ? 'flagged' : (row.is_leaf ? 'leaf' : 'parent') }
+function rowClass({ row }) {
+  const base = row.issues.length ? 'flagged' : (row.is_leaf ? 'leaf' : 'parent')
+  return row.id === hlId.value ? `${base} hl` : base
+}
 function toggle(id) {
   const s = new Set(collapsed.value)
   s.has(id) ? s.delete(id) : s.add(id)
@@ -388,12 +434,54 @@ function openDrawer(row) {
   drawerRow.value = row
   Object.assign(dform, {
     deliverable: row.deliverable || '', dod: row.dod || '',
-    predecessor: row.predecessor || '', remark: row.remark || '',
+    // 回填的是**服务端给的那几个 id**（含指向已删除行的那些）：照着现算的编号
+    // 反填的话，行一挪编号就变了，等于每次打开都换一批关联
+    predecessor_ids: (row.predecessors || []).map((p) => p.id),
+    remark: row.remark || '',
   })
   drawer.value = true
 }
 async function saveDrawer() {
   if (await patch(drawerRow.value, { ...dform })) drawer.value = false
+}
+
+// 前置可选项＝这份 WBS 里除自己以外的全部行（含分组：一整段做完才能开下一段
+// 是常态）。**不排除子孙**：前置只是先后，不是层级，拦掉反而会让人绕着填
+const predOptions = computed(() => items.value
+  .filter((r) => r.id !== drawerRow.value?.id)
+  .map((r) => ({ id: r.id, label: `${r.code} ${r.name}` })))
+
+// 选了就能点，不用先保存。编号取**页面上这一份**（服务端算好发下来的），
+// 不在前端按位置另算一遍
+const predLinks = computed(() => (dform.predecessor_ids || []).map((id) => {
+  const it = items.value.find((r) => r.id === id)
+  return it ? { id, code: it.code, name: it.name, missing: false }
+    : { id, code: '', name: '', missing: true }
+}))
+
+/** 顺着前置切到那一行：展开它的上级、滚过去、高亮，并把抽屉换成它自己的。 */
+function gotoItem(id) {
+  const row = items.value.find((r) => r.id === id)
+  if (!row) { ElMessage.warning('这条前置指向的工作包已经被删掉了'); return }
+  // 上级收着的话跳过去那一行根本不在 DOM 里，看着像"点了没反应"
+  const s = new Set(collapsed.value)
+  let cur = row
+  while (cur?.parent_id) {
+    s.delete(cur.parent_id)
+    cur = items.value.find((r) => r.id === cur.parent_id)
+  }
+  collapsed.value = s
+  onlyFlag.value = false      // 「只看待补录」开着时目标行可能被筛掉了
+  hlId.value = id
+  openDrawer(row)
+  nextTick(() => {
+    document.querySelector('.wbs-table .hl')?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+}
+
+/** 老写法那一行值只在人确认之后才清，不在保存时顺手抹掉——那上面是别人填的东西。 */
+function dropLegacy() {
+  if (drawerRow.value) patch(drawerRow.value, { predecessor: '' })
 }
 
 async function rename() {
@@ -424,6 +512,15 @@ onMounted(load)
 
 <style scoped>
 .page { padding: 4px 2px 24px; }
+/* 顺着前置跳过去的那一行：**高亮不自动消**，不然滚过去的一瞬间就没了，
+   人还得自己找是哪一行（:deep 是因为行的 class 由 el-table 挂在内部节点上） */
+.wbs-table :deep(.hl > td) { background: #FDF6EC !important; box-shadow: inset 0 0 0 1px #E6A23C; }
+.predlinks { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.predlinks .ptip { color: #909399; font-size: 12px; }
+.predlinks .pgone { color: #F56C6C; font-size: 12px; }
+.plegacy { margin-top: 6px; color: #8a6d3b; background: #fdf6ec; border-left: 3px solid #E6A23C;
+  border-radius: 3px; padding: 5px 9px; font-size: 12px; line-height: 1.7; }
+.dlg-foot { color: #909399; font-size: 12px; line-height: 1.7; display: block; text-align: left; }
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .page-head h2 { margin: 2px 0 4px; font-size: 18px; }
 .crumb a { color: #409EFF; text-decoration: none; font-size: 12px; }
