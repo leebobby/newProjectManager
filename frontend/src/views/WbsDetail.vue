@@ -47,7 +47,15 @@
         <el-button size="small" @click="expandAll(true)">全部展开</el-button>
         <el-button size="small" @click="expandAll(false)">全部收起</el-button>
         <el-checkbox v-model="onlyFlag" size="small" style="margin-left: 8px">只看待补录</el-checkbox>
+        <span class="grow" />
+        <el-button size="small" :type="showDiagram ? 'primary' : ''" :plain="showDiagram"
+                   @click="showDiagram = !showDiagram">调试框图</el-button>
+        <el-button size="small" :icon="Download" :loading="exporting" @click="exportXlsx">导出 Excel</el-button>
       </div>
+
+      <!-- 框图与表格是同一份数据的两种看法：表看每一行填了什么，图看这件事分几步走。
+           默认收着——不是每次进来都要看图，而它一展开就占掉一屏 -->
+      <WbsDiagram v-if="showDiagram" ref="diagramRef" :plan-id="route.params.id" class="diagram" />
 
       <el-empty v-if="!items.length" description="这份 WBS 还是空的">
         <span class="muted">可以「套用标准调试模板」一次生成 6 个分组，再往里逐层拆；也可以直接新增一个分组。</span>
@@ -55,19 +63,24 @@
 
       <el-table v-else :data="visible" border size="small" row-key="id"
                 :row-class-name="rowClass">
-        <el-table-column label="编号" width="104">
+        <el-table-column label="编号" width="132">
+          <!-- 缩进用**定宽的 inline-block**，不是给空 span 加 padding：
+               层级一深，padding 那种写法会把编号挤到折行，看着像编号错位了 -->
           <template #default="{ row }">
-            <span :style="{ paddingLeft: (row.depth - 1) * 16 + 'px' }" />
-            <el-button v-if="!row.is_leaf" link class="caret" @click="toggle(row.id)">
-              {{ collapsed.has(row.id) ? '▸' : '▾' }}
-            </el-button>
-            <span v-else class="caret" />
-            <span class="code">{{ row.code }}</span>
+            <span class="codecell">
+              <i class="indent" :style="{ width: (row.depth - 1) * 14 + 'px' }" />
+              <el-button v-if="!row.is_leaf" link class="caret" @click="toggle(row.id)">
+                {{ collapsed.has(row.id) ? '▸' : '▾' }}
+              </el-button>
+              <span v-else class="caret" />
+              <span class="code" :style="codeStyle(row.depth)">{{ row.code }}</span>
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="工作包" min-width="230">
           <template #default="{ row }">
             <el-input v-model="row.name" size="small" class="cell"
+                      :input-style="levelStyle(row.depth)"
                       @change="patch(row, { name: row.name })" />
             <el-tooltip v-if="row.issues.length" :content="row.issues.join(' · ')">
               <span class="warn">⚠ {{ row.issues.length }}</span>
@@ -182,10 +195,14 @@
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElDatePicker, ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
-import { apiError, resourceGroupApi, userApi, wbsApi } from '../api'
+import { Download, Plus } from '@element-plus/icons-vue'
+import { apiError, downloadBlob, resourceGroupApi, userApi, wbsApi } from '../api'
 import { auth } from '../store/auth'
 import { reloadWbs } from '../store/wbs'
+import WbsDiagram from '../components/WbsDiagram.vue'
+// 各级任务的字号阶梯与后端 enums.WBS_LEVEL_FONTS **两端各一份、必须同步**：
+// 分叉的表现是页面上分组比子任务大一号、导出的 Excel 里一样大
+import { levelStyle } from '../utils/wbsLevel'
 
 // 六档与后端 enums.PROGRESS_STATUSES 一致；着色只上在状态那一格，不整行铺
 const STATUSES = ['未开始', '进行中', '已完成', '已延期', '已变更', '不涉及']
@@ -223,12 +240,30 @@ const collapsed = ref(new Set())
 const onlyFlag = ref(false)
 const drawer = ref(false)
 const drawerRow = ref(null)
+const showDiagram = ref(false)
+const diagramRef = ref(null)
+const exporting = ref(false)
 const dform = reactive({ deliverable: '', dod: '', predecessor: '', remark: '' })
 
 const ymd = (v) => (v ? String(v).slice(0, 10) : '—')
 const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v))
 const clampPct = (v) => Math.max(0, Math.min(100, Number(v) || 0))
 const statusStyle = (s) => (FILL[s] ? { background: FILL[s], color: '#1F242E' } : {})
+// 编号跟着名字一起分档，但不跟着加粗：一列等宽数字全加粗会比名字还抢眼
+const codeStyle = (d) => ({ ...levelStyle(d), fontWeight: 400 })
+
+async function exportXlsx() {
+  exporting.value = true
+  try {
+    const { data } = await wbsApi.exportXlsx(plan.value.id)
+    downloadBlob(data, `${plan.value.name || 'wbs'}-${new Date().toISOString().slice(0, 10)}.xlsx`)
+    ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图）')
+  } catch (e) {
+    ElMessage.error(apiError(e, '导出失败'))
+  } finally {
+    exporting.value = false
+  }
+}
 
 // 收起某一行时，它整棵子树都不显示——只藏直接子行的话，孙行会浮在外面变成孤儿
 const visible = computed(() => {
@@ -281,6 +316,8 @@ async function call(fn, okMsg) {
   try {
     const { data } = await fn()
     apply(data)
+    // 图跟着树走：不重拉的话，加了一行之后图还停在上一版，而页面和图看着都对
+    if (showDiagram.value) diagramRef.value?.reload()
     if (okMsg) ElMessage.success(okMsg)
     return true
   } catch (e) {
@@ -382,9 +419,13 @@ onMounted(load)
 .stat.flagged .v { color: #f56c6c; }
 .excluded { background: #fff; border: 1px solid #ebeef5; border-left: 3px solid #409EFF;
   border-radius: 3px; padding: 7px 12px; margin-bottom: 12px; color: #606266; font-size: 12px; }
-.tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.tools { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.grow { flex: 1 1 auto; }
+.diagram { margin-bottom: 12px; }
+.codecell { display: flex; align-items: center; white-space: nowrap; }
+.indent { display: inline-block; flex: 0 0 auto; }
 .code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: #606266; }
-.caret { display: inline-block; width: 18px; padding: 0; }
+.caret { display: inline-block; width: 18px; flex: 0 0 auto; padding: 0; }
 .cell :deep(.el-input__wrapper), .cell :deep(.el-select__wrapper) { box-shadow: none; background: transparent; padding: 0 4px; }
 .cell :deep(.el-input__wrapper):hover, .cell :deep(.el-select__wrapper):hover { box-shadow: 0 0 0 1px #dcdfe6 inset; }
 .num :deep(input) { text-align: right; font-variant-numeric: tabular-nums; }
