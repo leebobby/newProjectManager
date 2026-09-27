@@ -42,6 +42,7 @@ import enums
 import models
 import schemas
 import wbs_diagram
+import wbs_timeline
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
@@ -117,6 +118,29 @@ def _rollup(node: models.WbsItem, kids: Dict, out: Dict[int, dict]) -> dict:
     return rec
 
 
+def _is_overdue(item: models.WbsItem, is_leaf: bool, today: Optional[date] = None) -> int:
+    """这一行延期了多少天。没延期（或判不了）返回 0。
+
+    **判定只有这一份实现**：页面上那条「待补录」提示（`_issues`）与框图上的红框
+    都走它。两处各写一份的表现是**表格里写着延期、图上不红**，而两边单独看都对。
+
+    - **只判叶子**：父行的计划起止本来就是汇总来的，判它等于骂错人
+      （父行红不红由它底下有没有红的叶子决定，见 `_diagram_rows`）。
+    - **「已变更 / 不涉及」不算延期**：那条本轮就不做了，算进去会让「延期 N 行」
+      里混着一批根本没人要做的活。
+    - **「超过」才算，当天到期不算**——记成延期会让人白紧张一天（同领域管理的超期口径）。
+    - 没填计划完成日的**不算延期**，但要单独报（框图的 `undated`）：
+      记成"没延期"等于把一批说不出交期的行悄悄记成达标。
+    """
+    if not is_leaf or (item.status or "") in _UNCOUNTED:
+        return 0
+    if not item.planned_end or item.status == "已完成":
+        return 0
+    today = today or date.today()
+    gap = (today - item.planned_end.date()).days
+    return gap if gap > 0 else 0
+
+
 def _issues(item: models.WbsItem, is_leaf: bool, today: Optional[date] = None) -> List[str]:
     """待补录提示。**只判叶子**：父行的这几项本来就是汇总来的，判它等于骂错人。
 
@@ -135,8 +159,8 @@ def _issues(item: models.WbsItem, is_leaf: bool, today: Optional[date] = None) -
         out.append("状态是已完成，完成度却不到 100%")
     if item.planned_start and item.planned_end and item.planned_end < item.planned_start:
         out.append("计划完成早于计划开始")
-    # 「超过」才算，当天到期不算——记成超期会让人白紧张一天（同领域管理的超期口径）
-    if item.planned_end and item.planned_end.date() < today and item.status != "已完成":
+    # 「超过」才算，当天到期不算——判定收口在 _is_overdue()，框图的红框走的是同一个
+    if _is_overdue(item, is_leaf, today):
         out.append(f"已过计划完成日（{item.planned_end.date()}），状态还不是已完成")
     return out
 
@@ -161,7 +185,56 @@ def _flatten(items: List[models.WbsItem]) -> List[dict]:
     return acc
 
 
-def _item_out(rec: dict) -> schemas.WbsItemOut:
+def _ref_map(rows: List[dict]) -> Dict[int, dict]:
+    """id → 这一行现在的编号与名字。编号不入库，所以前置关联的显示名只能现算。"""
+    return {r["item"].id: {"code": r["code"], "name": r["item"].name or ""} for r in rows}
+
+
+def _predecessors(item: models.WbsItem, refs: Dict[int, dict]) -> List[schemas.WbsItemRef]:
+    """存着的 id 串 → 页面要画的那几条超链接。
+
+    **指向的行已经被删掉时照样返回一条**（`missing=True`）：悄悄滤掉的话，
+    页面上那条前置凭空消失，填的人以为自己没填过，也就永远不会去修。
+    """
+    out: List[schemas.WbsItemRef] = []
+    for tok in str(item.predecessor_ids or "").split(","):
+        tok = tok.strip()
+        if not tok.isdigit():
+            continue
+        pid = int(tok)
+        got = refs.get(pid)
+        out.append(schemas.WbsItemRef(id=pid, code=(got or {}).get("code", ""),
+                                      name=(got or {}).get("name", ""), missing=got is None))
+    return out
+
+
+def _norm_predecessors(db: Session, item: models.WbsItem, ids) -> str:
+    """前置关联入库前的归一：去重、保序、限同一份 WBS、不许指向自己。
+
+    **只认同一份 WBS 里的行**：前置表达的是同一件事内部的先后，跨 WBS 的先后
+    是两份计划之间的事，得由别的东西表达（那条超链接也就不是"切到这棵树里的
+    另一行"了）。指向自己返回 400——存进去之后那条链接点了原地不动，看着像坏了。
+    """
+    out: List[str] = []
+    seen = set()
+    for raw in (ids or []):
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "前置工作包 id 不合法")
+        if pid == item.id:
+            raise HTTPException(400, "前置工作包不能是它自己")
+        if pid in seen:
+            continue
+        other = db.get(models.WbsItem, pid)
+        if other is None or other.plan_id != item.plan_id:
+            raise HTTPException(400, "前置工作包不在这份 WBS 里")
+        seen.add(pid)
+        out.append(str(pid))
+    return ",".join(out)
+
+
+def _item_out(rec: dict, refs: Optional[Dict[int, dict]] = None) -> schemas.WbsItemOut:
     it = rec["item"]
     o = schemas.WbsItemOut.model_validate(it)
     o.code, o.depth = rec["code"], rec["depth"]
@@ -170,6 +243,7 @@ def _item_out(rec: dict) -> schemas.WbsItemOut:
     o.roll_start, o.roll_end = rec["roll_start"], rec["roll_end"]
     o.leaf_count, o.excluded = rec["leaf_count"], rec["excluded"]
     o.issues = _issues(it, rec["is_leaf"])
+    o.predecessors = _predecessors(it, refs or {})
     return o
 
 
@@ -315,7 +389,9 @@ def _detail(db: Session, plan: models.WbsPlan) -> schemas.WbsPlanDetail:
     rows = _flatten(db.query(models.WbsItem)
                     .filter(models.WbsItem.plan_id == plan.id).all())
     base = _plan_out(db, plan, rows)
-    return schemas.WbsPlanDetail(**base.model_dump(), items=[_item_out(r) for r in rows])
+    refs = _ref_map(rows)
+    return schemas.WbsPlanDetail(**base.model_dump(),
+                                 items=[_item_out(r, refs) for r in rows])
 
 
 @router.put("/plans/{plan_id}", response_model=schemas.WbsPlanDetail)
@@ -412,6 +488,8 @@ def update_item(item_id: int, payload: schemas.WbsItemUpdate, db: Session = Depe
     if has_kids:
         for f in ("man_days", "progress_pct", "status", "planned_start", "planned_end"):
             data.pop(f, None)
+    if "predecessor_ids" in data:
+        data["predecessor_ids"] = _norm_predecessors(db, it, data["predecessor_ids"])
     _fill_snapshots(db, data)
     for k, v in data.items():
         setattr(it, k, v)
@@ -494,26 +572,119 @@ def move_item(item_id: int, payload: schemas.WbsMove, db: Session = Depends(get_
     return _detail(db, _get_plan(db, it.plan_id))
 
 
-# ─── 导出：Excel 表 + 调试框图 ──────────────────────────────────────────────
-def _diagram_rows(rows: List[dict]) -> List[dict]:
-    """拍平的树 → 框图要的纯字典。`wbs_diagram` 刻意不吃 ORM 对象，见那边的说明。"""
+# ─── 导出：Excel 表 + 两张图 ────────────────────────────────────────────────
+def _clip_depth(rows: List[dict], max_depth: Optional[int]) -> tuple:
+    """只保留前 N 层，返回 (保留的行, 折叠掉的条数)。
+
+    **汇总数字一个都不变**：人天 / 完成度 / 计划起止本来就是从叶子算上来的
+    （`_rollup`），砍掉显示层级只是不再逐条列出来，第 N 层那一行显示的仍是
+    它整棵子树的汇总。这也正是能这么砍的原因。
+
+    **折叠了几条要如实报出来**——只筛不报的表现是「导出的表怎么少了一半」，
+    而没人说得清少的是哪些（同 `excluded` / `unassigned` / `match_rate`）。
+    """
+    if not max_depth or max_depth <= 0:
+        return rows, 0
+    kept = [r for r in rows if r["depth"] <= max_depth]
+    return kept, len(rows) - len(kept)
+
+
+def _diagram_rows(rows: List[dict], today: Optional[date] = None) -> List[dict]:
+    """拍平的树 → 框图要的纯字典。`wbs_diagram` 刻意不吃 ORM 对象，见那边的说明。
+
+    **父行的延期是从叶子推上来的**，不是拿汇总的计划完成日再判一次：父行的日期本身
+    就是汇总值，再判一遍会把「子任务都按期、只是整段跨到了今天之后」也标成延期。
+    父行红 ＝ 它底下**真的有**延期的叶子。
+    """
+    late_by_code = {}
+    for r in rows:
+        n = _is_overdue(r["item"], r["is_leaf"], today)
+        if n:
+            late_by_code[r["code"]] = n
+
+    def sub_late(code: str) -> int:
+        pre = code + "."
+        return max((v for k, v in late_by_code.items() if k == code or k.startswith(pre)),
+                   default=0)
+
     out = []
     for r in rows:
-        it = r["item"]
+        it, leaf = r["item"], r["is_leaf"]
+        late = late_by_code.get(r["code"], 0) if leaf else sub_late(r["code"])
         out.append({
             "code": r["code"], "name": it.name or "", "depth": r["depth"],
-            "status": (it.status or "") if r["is_leaf"] else "",
+            "status": (it.status or "") if leaf else "",
             "owner": (it.owner or "").strip(),
             "days": r["roll_days"], "pct": r["roll_pct"],
-            "is_leaf": r["is_leaf"], "leaf_count": r["leaf_count"],
+            "is_leaf": leaf, "leaf_count": r["leaf_count"],
+            # 叶子用自己填的，父行用汇总——与表格里显示的那两列同一个口径
+            "start": it.planned_start if leaf else r["roll_start"],
+            "end": it.planned_end if leaf else r["roll_end"],
+            "overdue": bool(late), "overdue_days": late,
         })
     return out
 
 
+def _fold_counts(all_rows: List[dict], max_depth: Optional[int]) -> Dict[str, int]:
+    """被 `max_depth` 折掉的子孙，按「折在谁身上」分别计数。
+
+    总数（`folded`）回答"少了几条"，这一份回答"少的是谁底下的"——A 图把它画成
+    名字后面的 `+N`。只给总数的话，看图的人知道有东西被折了，却不知道该点开哪个。
+    """
+    if not max_depth or max_depth <= 0:
+        return {}
+    out: Dict[str, int] = {}
+    for r in all_rows:
+        if r["depth"] != max_depth:
+            continue
+        pre = r["code"] + "."
+        n = sum(1 for x in all_rows if x["code"].startswith(pre))
+        if n:
+            out[r["code"]] = n
+    return out
+
+
+def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
+                   max_depth: Optional[int]) -> dict:
+    """A 图（时间轴嵌套框图）的版面。深度裁剪同样在这儿统一做一次。
+
+    与调试框图**吃同一批行、同一份延期判定**（`_diagram_rows`），只是排法不同：
+    那张按阶段分列、这张摊到真日期轴上。两张图的数对不上的话，看的人会以为
+    其中一张是旧的。
+    """
+    kept, folded = _clip_depth(all_rows, max_depth)
+    folds = _fold_counts(all_rows, max_depth)
+    rows = _diagram_rows(kept)
+    for r in rows:
+        r["folded"] = folds.get(r["code"], 0)
+    ref = _ref_name(db, plan)
+    sub = " · ".join(x for x in (plan.name,
+                                 enums.WBS_KIND_LABELS.get(plan.kind, plan.kind), ref) if x)
+    return wbs_timeline.build_timeline(rows, subtitle=sub, max_depth=max_depth,
+                                       folded=folded)
+
+
+def _build_view(db: Session, plan: models.WbsPlan, rows: List[dict],
+                max_depth: Optional[int]) -> dict:
+    """框图的版面。深度裁剪在这儿统一做一次——页面和导出各裁各的话，
+    同一个「到第 2 层」在页面上是 8 个方框、在导出的图里是 11 个。
+    """
+    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
+    kept, folded = _clip_depth(rows, max_depth)
+    spec = wbs_diagram.build_diagram(_diagram_rows(kept), title=plan.name, subtitle=sub)
+    spec["folded"] = folded
+    spec["max_depth"] = max_depth or 0
+    return spec
+
+
 @router.get("/plans/{plan_id}/diagram")
-def plan_diagram(plan_id: int, db: Session = Depends(get_db),
+def plan_diagram(plan_id: int, max_depth: Optional[int] = None,
+                 db: Session = Depends(get_db),
                  _: models.User = Depends(get_current_user)):
     """调试框图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
+
+    每个方框自带计划日期与延期标记（红框），所以这张图不只是一份事务清单。
+    `max_depth` 只保留前 N 层（空＝全部），汇总数字不受影响。
 
     读权限一档＝登录用户，与详情页同档。版面算在服务端而不是前端，是为了让页面
     和导出的图长得一模一样——两边各排一次的话，同一份 WBS 在页面上 4 列、
@@ -522,13 +693,48 @@ def plan_diagram(plan_id: int, db: Session = Depends(get_db),
     plan = _get_plan(db, plan_id)
     rows = _flatten(db.query(models.WbsItem)
                     .filter(models.WbsItem.plan_id == plan_id).all())
-    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
-    return wbs_diagram.build_diagram(_diagram_rows(rows), title=plan.name, subtitle=sub)
+    return _build_view(db, plan, rows, max_depth)
 
 
-def _xlsx_rows(rows: List[dict]) -> List[list]:
+@router.get("/plans/{plan_id}/timeline")
+def plan_timeline(plan_id: int, max_depth: Optional[int] = None,
+                  db: Session = Depends(get_db),
+                  _: models.User = Depends(get_current_user)):
+    """**A 图**的版面（不是图片）：一根真日期横轴 + 大框套中框套小框。
+
+    与 `/diagram` 是两张图、两份版面，刻意不合并（见 `wbs_timeline` 模块说明）：
+    框图答"这件事分几步走"，A 图答"每件事哪天该完、今天看拖了没有"。
+    页面拿这份版面画 SVG，Excel 导出拿**同一份**画 PNG——两边各排一次的话，
+    同一份 WBS 在页面上和导出的图里框的位置不一样，而两边单独看都正常。
+
+    `max_depth` 只画到第 N 层（空＝全部），折掉的子孙数挂在上级名字后面的 `+N`，
+    汇总数字不受影响。读权限一档＝登录用户，与详情页同档。
+    """
+    plan = _get_plan(db, plan_id)
+    rows = _flatten(db.query(models.WbsItem)
+                    .filter(models.WbsItem.plan_id == plan_id).all())
+    return _timeline_view(db, plan, rows, max_depth)
+
+
+def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
     def ymd(v):
         return str(v)[:10] if v else ""
+
+    def pred(it) -> str:
+        """前置那一格写**现算的编号**，不写库里存的 id——id 对看表的人没有意义。
+        指向的行已经删掉时写明「已删除」，留空会被当成没填过。
+        老写法（手填的编号串）还在的话一并带上，否则导出里看不到它。
+        """
+        parts = []
+        for r in _predecessors(it, refs):
+            parts.append(f"{r.code} {r.name}".strip() if not r.missing
+                         else f"（已删除 #{r.id}）")
+        txt = "；".join(parts)
+        legacy = (it.predecessor or "").strip()
+        if legacy:
+            txt = (txt + " ") if txt else ""
+            txt += f"（老写法：{legacy}）"
+        return txt
 
     out = []
     for r in rows:
@@ -549,7 +755,7 @@ def _xlsx_rows(rows: List[dict]) -> List[list]:
             (it.status or "") if leaf else "",
             (it.deliverable or "").strip(),
             (it.dod or "").strip(),
-            (it.predecessor or "").strip(),
+            pred(it),
             (it.remark or "").strip(),
             " · ".join(_issues(it, leaf)),
         ])
@@ -557,16 +763,21 @@ def _xlsx_rows(rows: List[dict]) -> List[list]:
 
 
 @router.get("/plans/{plan_id}/export.xlsx")
-def export_xlsx(plan_id: int, db: Session = Depends(get_db),
+def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
+                db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
-    """整份 WBS 导出成 Excel：第 1 页是表、第 2 页是调试框图。
+    """整份 WBS 导出成 Excel：第 1 页是表、第 2 页是调试框图、第 3 页是 A 图。
 
-    三条与页面一致的口径，**不在导出里另算一遍**（同专项总览 PPT 复用 overview()）：
+    `max_depth` ＝**导出到第几层**（空＝全部）。深于它的行不再逐条列出，但
+    **汇总数字一个都不变**——人天 / 完成度 / 计划起止本来就是从叶子算上来的，
+    第 N 层那一行显示的仍是它整棵子树的汇总。折叠了几条在表尾如实写出来。
+    两页吃的是**同一次裁剪**，各裁各的话同一个「导出到第 2 层」在表里是 8 行、
+    在图里是 11 个方框。
+
+    另外三条与页面一致的口径，**不在导出里另算一遍**（同专项总览 PPT 复用 overview()）：
     分组行的人天/完成度/计划起止是汇总值、状态留空；「已变更 / 不涉及」的行照导
-    （那是计划的一部分），但排除了几条、多少人天在表尾如实写出来。
-
-    **各级任务的字号跟着 `enums.wbs_level_font()` 走**，与页面表格同一份阶梯——
-    在这儿另写一套数的话，导出的 Excel 里分组和子任务一样大，而页面上是分层的。
+    （那是计划的一部分），但排除了几条、多少人天在表尾如实写出来；
+    **各级任务的字号跟着 `enums.wbs_level_font()` 走**，与页面表格同一份阶梯。
     """
     import io
 
@@ -574,9 +785,12 @@ def export_xlsx(plan_id: int, db: Session = Depends(get_db),
     from openpyxl.styles import Alignment, Font, PatternFill
 
     plan = _get_plan(db, plan_id)
-    rows = _flatten(db.query(models.WbsItem)
-                    .filter(models.WbsItem.plan_id == plan_id).all())
-    base = _plan_out(db, plan, rows)
+    all_rows = _flatten(db.query(models.WbsItem)
+                        .filter(models.WbsItem.plan_id == plan_id).all())
+    # 合计走**全量**：砍的是"列出来的层级"，不是"算进去的活"。
+    # 拿裁剪后的行去算合计，导出到第 1 层就会得到一个只数了 6 行的人天。
+    base = _plan_out(db, plan, all_rows)
+    rows, folded = _clip_depth(all_rows, max_depth)
 
     headers = ["编号", "工作包", "类型", "负责人", "PL组", "计划开始", "计划完成",
                "人天", "完成度%", "状态", "交付物", "完成标准（DoD）", "前置",
@@ -585,7 +799,7 @@ def export_xlsx(plan_id: int, db: Session = Depends(get_db),
     ws = wb.active
     ws.title = "WBS"
     style_header(ws, headers)
-    for line in _xlsx_rows(rows):
+    for line in _xlsx_rows(rows, _ref_map(all_rows)):
         ws.append(line)
     last = 1 + len(rows)
     ws.column_dimensions["B"].width = 42
@@ -623,46 +837,97 @@ def export_xlsx(plan_id: int, db: Session = Depends(get_db),
                          "状态一栏留空是因为状态由叶子填，分组没有状态。")
     ws.cell(note + 3, 1, f"待补录 {base.flagged} 条，见最后一列。字号按层级分档，"
                          f"第 1 层最大——与系统页面上同一份阶梯。")
+    if folded:
+        # 只筛不报的表现是「导出的表怎么少了一半」，而没人说得清少的是哪些
+        ws.cell(note + 4, 1, f"本次只导出到第 {max_depth} 层，另有 {folded} 行在更深的层级上"
+                             f"没有逐条列出。**上面的合计仍然把它们算在内**——"
+                             f"人天与完成度本来就是从最底层的叶子汇总上来的。")
 
-    # ── 第 2 页：调试框图。版面与页面共用 wbs_diagram，这里只负责画 ──────
-    ws2 = wb.create_sheet("调试框图")
-    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
-    spec = wbs_diagram.build_diagram(_diagram_rows(rows), title=plan.name, subtitle=sub)
-    ws2.cell(1, 1, f"{plan.name} · 调试框图")
-    ws2.cell(2, 1, f"第 1 层是调试阶段，从左到右按顺序走；每一列底下是它的子任务，"
-                   f"越深一层字越小。共 {spec['stage_count']} 个阶段 / {spec['box_count']} 个方框。")
-    png = wbs_diagram.render_png(spec) if spec["box_count"] else None
-    if not spec["box_count"]:
-        # 空 WBS 与「画不出来」是两回事，混成一句会让人去装字体
-        ws2.cell(4, 1, "这份 WBS 还没有任何工作包，框图是空的。")
-        tail = 6
-    elif png:
-        from openpyxl.drawing.image import Image as XLImage
-        stream = io.BytesIO(png)
-        xi = XLImage(stream)
-        # 图片是浮在格子上的、不占行：按像素预留行数，少留会压住下面的说明文字
-        xi.width, xi.height = spec["width"], spec["height"]
-        ws2.add_image(xi, "A4")
-        tail = 4 + int(spec["height"] / 20) + 2
-    else:
-        # 找不到中文字体就如实说，绝不回退 PIL 默认字体（画出来是一排方块）
-        ws2.cell(4, 1, "这台服务器上没找到能渲染中文的字体，框图没有画出来。"
-                       "装一个中文字体（如 Noto Sans CJK / 微软雅黑）或设 APP_CJK_FONT 后重导即可；"
-                       "系统页面上的框图不受影响，它是浏览器画的。")
-        tail = 6
-    if spec["skipped"]:
-        ws2.cell(tail, 1, f"另有 {spec['skipped']} 行没画进图里（整份 WBS 太大，"
-                          f"画出来每个方框细得看不见）。第 1 页的表是全量的。")
-    ws2.column_dimensions["A"].width = 120
+    _blocks_sheet(wb, db, plan, rows, folded, max_depth)
+    _timeline_sheet(wb, db, plan, all_rows, max_depth)
 
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
     fname = f"wbs-{plan_id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
     log_op(db, action="导出Excel", target="wbs_plan", target_id=plan_id,
-           detail=f"rows={len(rows)} stages={spec['stage_count']}", user=user)
+           detail=f"rows={len(rows)} folded={folded} max_depth={max_depth or 0}", user=user)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+def _place_png(ws, png: Optional[bytes], spec: dict, anchor_row: int) -> int:
+    """把图贴进工作表，返回下一段文字该写在第几行。
+
+    图片是**浮在格子上的、不占行**，必须按像素预留（同 `xlsx_utils._rows_for_px`）——
+    少留的话下面那段说明会被图压住，看着像"这句话没导出来"。
+    """
+    import io
+
+    if not png:
+        return anchor_row + 2
+    from openpyxl.drawing.image import Image as XLImage
+    xi = XLImage(io.BytesIO(png))
+    xi.width, xi.height = spec["width"], spec["height"]
+    ws.add_image(xi, f"A{anchor_row}")
+    return anchor_row + int(spec["height"] / 20) + 2
+
+
+_NO_FONT = ("这台服务器上没找到能渲染中文的字体，图没有画出来。"
+            "装一个中文字体（如 Noto Sans CJK / 微软雅黑）或设 APP_CJK_FONT 后重导即可；"
+            "系统页面上的图不受影响，它是浏览器画的。")
+
+
+def _blocks_sheet(wb, db: Session, plan: models.WbsPlan, rows: List[dict],
+                  folded: int, max_depth: Optional[int]) -> None:
+    """第 2 页：调试框图。版面与页面共用 wbs_diagram，这里只负责画。"""
+    ws = wb.create_sheet("调试框图")
+    ws.column_dimensions["A"].width = 120
+    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
+    spec = wbs_diagram.build_diagram(_diagram_rows(rows), title=plan.name, subtitle=sub)
+    ws.cell(1, 1, f"{plan.name} · 调试框图")
+    ws.cell(2, 1, f"共 {spec['stage_count']} 个阶段 / {spec['box_count']} 个方框。"
+                  + " ".join(spec["note_lines"]))
+    if not spec["box_count"]:
+        ws.cell(4, 1, "这份 WBS 还没有任何工作包，框图是空的。")
+        return
+    png = wbs_diagram.render_png(spec)
+    tail = _place_png(ws, png, spec, 4)
+    if not png:
+        ws.cell(4, 1, _NO_FONT)
+    if spec["skipped"]:
+        ws.cell(tail, 1, f"另有 {spec['skipped']} 行没画进图里（整份 WBS 太大，"
+                         f"画出来每个方框细得看不见）。第 1 页的表是全量的。")
+        tail += 1
+    if folded:
+        ws.cell(tail, 1, f"本图只画到第 {max_depth} 层，另有 {folded} 行在更深的层级上"
+                         f"没有画出来；它们的工期仍然算在上级方框的汇总里。")
+
+
+def _timeline_sheet(wb, db: Session, plan: models.WbsPlan, all_rows: List[dict],
+                    max_depth: Optional[int]) -> None:
+    """第 3 页：A 图（时间轴嵌套框图）。版面与页面共用 `wbs_timeline`，这里只负责画。
+
+    **不画标题**（现场要求："有这样的图后坐标的标题就不需要了"）——日期轴自己就说明了
+    这是什么图；是哪份 WBS、截至哪天写在图底那段说明里，落单的一张截图仍找得回出处。
+    """
+    ws = wb.create_sheet("A图（时间轴）")
+    ws.column_dimensions["A"].width = 120
+    spec = _timeline_view(db, plan, all_rows, max_depth)
+    ws.cell(1, 1, f"{plan.name} · A 图（时间轴嵌套框图）")
+    ws.cell(2, 1, f"共 {spec['row_count']} 行 / {spec['box_count']} 个框。"
+                  + " ".join(spec["note_lines"]))
+    if not spec["row_count"]:
+        ws.cell(4, 1, "这份 WBS 还没有任何工作包，A 图是空的。")
+        return
+    png = wbs_timeline.render_png(spec)
+    tail = _place_png(ws, png, spec, 4)
+    if not png:
+        # 「这份 WBS 是空的」与「这台机器没字体」要分开说，混成一句会让人白装一遍字体
+        ws.cell(4, 1, _NO_FONT)
+    if not spec["dated"]:
+        ws.cell(tail, 1, "这份 WBS 一行计划日期都没填，横轴上只剩「今天」那一根线。"
+                         "A 图靠计划起止排版，填上日期之后再导一次就有内容了。")

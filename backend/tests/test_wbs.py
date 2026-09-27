@@ -253,3 +253,82 @@ def test_only_admin_can_delete_a_whole_plan(client, admin_headers, special_id):
 
     assert client.delete(f"/api/wbs/plans/{pid}", headers=uh).status_code == 403
     assert client.delete(f"/api/wbs/plans/{pid}", headers=admin_headers).status_code == 200
+
+
+# ─── 前置关联：存 id 不存编号 ───────────────────────────────────────────────
+@pytest.fixture
+def two(client, admin_headers, plan):
+    """两个分组，拿来互相挂前置。"""
+    pid = plan["id"]
+    a = _add(client, admin_headers, pid, name="前一步")
+    b = _add(client, admin_headers, pid, name="后一步")
+    ids = {i["name"]: i["id"] for i in b["items"]}
+    return pid, ids["前一步"], ids["后一步"]
+
+
+def _link(client, headers, item_id, ids, version=0):
+    r = client.put(f"/api/wbs/items/{item_id}",
+                   json={"predecessor_ids": ids, "version": version}, headers=headers)
+    return r
+
+
+def test_predecessor_survives_a_reorder(client, admin_headers, two):
+    """**存 id 不存编号**：编号是按位置现算的，上移一行之后存着的编号就指到
+    另一件活上去了，而两行单独看都合法。关联跟着行走，显示的编号跟着位置走。"""
+    pid, first, second = two
+    d = _link(client, admin_headers, second, [first]).json()
+    got = [i for i in d["items"] if i["id"] == second][0]
+    assert [(p["id"], p["code"]) for p in got["predecessors"]] == [(first, "7")]
+
+    # 把它挪到最前面：编号从 7 变成 1，关联一个字都不用改
+    ids = [i["id"] for i in d["items"] if i["depth"] == 1]
+    ids.remove(first)
+    client.post(f"/api/wbs/plans/{pid}/reorder",
+                json={"parent_id": None, "ids": [first] + ids}, headers=admin_headers)
+    d = client.get(f"/api/wbs/plans/{pid}", headers=admin_headers).json()
+    got = [i for i in d["items"] if i["id"] == second][0]
+    assert [(p["id"], p["code"]) for p in got["predecessors"]] == [(first, "1")]
+
+
+def test_predecessor_refuses_itself(client, admin_headers, two):
+    """自己指自己 → 400。存进去的话页面上那条链接点了原地不动，看着像坏了。"""
+    _pid, first, _second = two
+    assert _link(client, admin_headers, first, [first]).status_code == 400
+
+
+def test_predecessor_refuses_another_plan(client, admin_headers, two, special_id):
+    """只认同一份 WBS 里的行：跨 WBS 的先后是两份计划之间的事，那条超链接也就
+    不是"切到这棵树里的另一行"了。"""
+    _pid, first, second = two
+    other = client.post("/api/wbs/plans",
+                        json={"name": "别的 WBS", "kind": "special", "special_id": special_id},
+                        headers=admin_headers).json()
+    alien = _add(client, admin_headers, other["id"], name="别人家的活")["items"][0]["id"]
+    r = _link(client, admin_headers, second, [first, alien])
+    assert r.status_code == 400
+    # 整次保存被拒，不是"挂上一半"
+    d = client.get(f"/api/wbs/plans/{_pid}", headers=admin_headers).json()
+    assert [i for i in d["items"] if i["id"] == second][0]["predecessors"] == []
+
+
+def test_predecessor_dedupes_and_keeps_order(client, admin_headers, two, plan):
+    """去重保序：重复挂一条不报错（多半是点了两下），但也不该存两遍。"""
+    pid, first, second = two
+    third = [i for i in plan["items"] if i["depth"] == 1][0]["id"]
+    d = _link(client, admin_headers, second, [third, first, third]).json()
+    got = [i for i in d["items"] if i["id"] == second][0]
+    assert [p["id"] for p in got["predecessors"]] == [third, first]
+
+
+def test_deleted_predecessor_is_reported_not_swallowed(client, admin_headers, two):
+    """指向的行被删掉时照样返回一条（missing=True）。悄悄滤掉的话，页面上那条
+    前置凭空消失，填的人以为自己没填过，也就永远不会去修。"""
+    _pid, first, second = two
+    d = _link(client, admin_headers, second, [first]).json()
+    ver = [i for i in d["items"] if i["id"] == second][0]["version"]
+    d = client.delete(f"/api/wbs/items/{first}", headers=admin_headers).json()
+    got = [i for i in d["items"] if i["id"] == second][0]
+    assert got["predecessors"] == [{"id": first, "code": "", "name": "", "missing": True}]
+    # 清空是**传空列表**，不是把它藏起来
+    d = _link(client, admin_headers, second, [], version=ver).json()
+    assert [i for i in d["items"] if i["id"] == second][0]["predecessors"] == []

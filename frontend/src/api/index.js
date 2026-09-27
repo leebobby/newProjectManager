@@ -129,10 +129,19 @@ export const wbsApi = {
   removeItem: (id) => http.delete(`/wbs/items/${id}`),
   reorder: (planId, parent_id, ids) => http.post(`/wbs/plans/${planId}/reorder`, { parent_id, ids }),
   move: (id, new_parent_id, version) => http.post(`/wbs/items/${id}/move`, { new_parent_id, version }),
-  // 调试框图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
+  // 两张图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
   // 前端自己再排一次的话，页面上是 4 列、导出的图里是 5 列，而两边单独看都正常。
-  diagram: (id) => http.get(`/wbs/plans/${id}/diagram`),
-  exportXlsx: (id) => http.get(`/wbs/plans/${id}/export.xlsx`, { responseType: 'blob' }),
+  // diagram ＝调试框图（按阶段分列，看"这件事分几步走"）
+  // timeline ＝ A 图（真日期横轴 + 大框套中框套小框，看"哪天该完、拖了没有"）
+  // 两张刻意不合并：合成一张的话，两个问题里必然有一个答不出来。
+  diagram: (id, max_depth = null) =>
+    http.get(`/wbs/plans/${id}/diagram`, { params: max_depth ? { max_depth } : {} }),
+  timeline: (id, max_depth = null) =>
+    http.get(`/wbs/plans/${id}/timeline`, { params: max_depth ? { max_depth } : {} }),
+  // max_depth＝导出到第几层（空＝全部）。汇总数字不受它影响，折叠了几行写在表尾。
+  exportXlsx: (id, max_depth = null) =>
+    http.get(`/wbs/plans/${id}/export.xlsx`,
+      { responseType: 'blob', params: max_depth ? { max_depth } : {} }),
 }
 
 export const specialApi = {

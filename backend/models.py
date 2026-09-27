@@ -1633,6 +1633,13 @@ class WbsItem(Base):
     deliverable = Column(Text, default="", comment="交付物")
     dod = Column(Text, default="", comment="完成标准（DoD）")
     predecessor = Column(String(200), default="", comment="前置 WBS 编号，逗号分隔（不参与计算）")
+    # 前置关联**存 id 不存编号**：编号（1.2.3）是按 parent_id + sort_order 现算的，
+    # 上移一行、加一个子项之后它就和位置对不上了——存编号的话，那条前置会安安静静
+    # 指到另一件活上，而两行单独看都合法。上面那一列 `predecessor` 是改成按任务
+    # 关联之前手填的老值，留着显示（页面上标成「老写法」），不参与关联也不做迁移：
+    # 编号在改成关联的那一刻就已经可能漂了，照着它反猜一个 id 是在替人做主。
+    predecessor_ids = Column(String(400), default="",
+                             comment="前置工作包 id，逗号分隔（限同一份 WBS 内）")
 
     owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
                            nullable=True, index=True, comment="负责人")
