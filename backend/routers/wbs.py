@@ -209,7 +209,7 @@ def _predecessors(item: models.WbsItem, refs: Dict[int, dict]) -> List[schemas.W
 
 
 def _norm_predecessors(db: Session, item: models.WbsItem, ids) -> str:
-    """前置关联入库前的归一：去重、保序、限同一份 WBS、不许指向自己。
+    """前置关联入库前的归一：去重、保序、限同一份 WBS、不许自引用或成环。
 
     **只认同一份 WBS 里的行**：前置表达的是同一件事内部的先后，跨 WBS 的先后
     是两份计划之间的事，得由别的东西表达（那条超链接也就不是"切到这棵树里的
@@ -231,6 +231,32 @@ def _norm_predecessors(db: Session, item: models.WbsItem, ids) -> str:
             raise HTTPException(400, "前置工作包不在这份 WBS 里")
         seen.add(pid)
         out.append(str(pid))
+
+    # 边的方向是「当前行 → 它的前置行」。必须把这次保存替换进去再检查；否则更新
+    # 已有依赖时会拿旧边判断，既可能漏报，也可能把已经被本次删除的边算进去。
+    items = db.query(models.WbsItem).filter(models.WbsItem.plan_id == item.plan_id).all()
+    present = {it.id for it in items}
+    graph: Dict[int, List[int]] = {}
+    for it in items:
+        graph[it.id] = [int(tok) for tok in str(it.predecessor_ids or "").split(",")
+                        if tok.strip().isdigit() and int(tok) in present]
+    graph[item.id] = [int(pid) for pid in out]
+
+    def reaches_current(start: int) -> bool:
+        pending = [start]
+        visited = set()
+        while pending:
+            node = pending.pop()
+            if node == item.id:
+                return True
+            if node in visited:
+                continue
+            visited.add(node)
+            pending.extend(graph.get(node, []))
+        return False
+
+    if any(reaches_current(pid) for pid in graph[item.id]):
+        raise HTTPException(400, "前置关系会形成循环")
     return ",".join(out)
 
 
