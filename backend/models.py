@@ -1599,6 +1599,8 @@ class WbsPlan(Base):
     description = Column(Text, default="", comment="说明")
     sort_order = Column(Integer, default=0, comment="排序")
     version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
+    tree_version = Column(Integer, nullable=False, default=0,
+                          comment="整棵 WBS 树的结构乐观锁版本号")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
