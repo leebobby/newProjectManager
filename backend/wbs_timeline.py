@@ -20,11 +20,9 @@ A 图把同一棵树摊到一根日期轴上，代价是阶段之间会留出大
 子孙行**、横向铺它汇总出来的计划起止。于是第 1 层是大框，第 2 层的框画在它里面，
 第 3 层的再画在第 2 层里面——嵌套关系与时间位置同时看得见。
 
-**框里不写字，名字全在左边那一栏**：短活的框只有十来个像素宽，字写在框里必然
-戳出去（第一版就是这么坏的：「6 交付与固化」被裁成一半）。左栏定宽、按层级缩进、
-字号走 `enums.wbs_level_font()` 那一份阶梯，右端再对齐一小列「人天 · 完成度」，
-可以竖着扫。**延期天数写在左栏这一列、不写在图上**：图上父子各印一遍会堆成三行
-压在框上，而红边已经把"哪个框延期了"说清楚了。
+**编号、名称和进度直接写在框里**，不再另画一列任务清单。框会保证最小内容宽度，
+短工期也不会把字裁掉。任务间的前置关系用箭头从前置框指向后置框；日期仍由框的
+左边缘定位，因内容而加宽的框只影响可读宽度，不改变起点。
 
 **这张图不画标题**（现场原话："有这样的图后坐标的标题就不需要了"）——日期轴自己
 就说明了这是什么图。但底注第一行仍然写明这是哪一份 WBS、截至哪天：导出的 PNG
@@ -43,16 +41,15 @@ from wbs_diagram import (BAR_FILL, BAR_TRACK, LATE_STROKE, STROKE, cap_stages,
                          clip_text, split_stages, text_w)
 
 PAD = 22
-NAME_W = 348              # 左栏定宽。按内容变宽的话，换一份 WBS 整张图就左右跳，
-                          # 两份图没法并排看
-GUT = 18                  # 左栏与时间轴之间的沟，竖分隔线画在这中间
+NAME_W = 0                # A 图不再保留左侧信息列，内容直接写入任务框
+GUT = 0
 AXIS_H = 44               # 顶上留给月份刻度与「今天」胶囊的高度
 INDENT = 16               # 左栏每深一层缩进
 META_PX = 10.5            # 右端那一小列的字号（不属于层级阶梯，它不是任务名）
 META_W = 82               # 那一列占的宽度
 ROW_RATIO = 2.3           # 行高 = 本层字号 × 这个数。行高跟着字号走而不是另写一张
                           # 表：字号阶梯一调，行高就跟着对，不会出现"字变大了、行没变"
-ROW_MIN = 22.0
+ROW_MIN = 40.0             # 框内同时容纳任务名与进度两行
 BOX_PAD_TOP = 4.0         # 框在自己那一行里的上留白（父框多留一点，见下）
 BOX_PAD_BOT = 5.0         # 叶子框的下留白
 BOX_NEST_PAD = 2.0        # **每往上一层，下沿就多探出这么多**：父框的下沿必须在
@@ -60,6 +57,8 @@ BOX_NEST_PAD = 2.0        # **每往上一层，下沿就多探出这么多**：
                           # 父框半截，而"框里套框"正是这张图要表达的东西
 BOX_INSET = 4.0           # 父框横向比子框各外扩这么多
 MIN_BOX_W = 9.0           # 一天的活也要看得见
+CONTENT_MIN_W = 138.0     # 足够放下编号、任务名和一项进度信息
+BOX_TEXT_PAD = 6.0
 BAR_H = 2.5               # 叶子框底部那条完成度细条
 DAY_PX = 11.0             # 一天多宽（会被 PLOT_MIN/MAX 夹住）
 PLOT_MIN, PLOT_MAX = 660.0, 1180.0
@@ -222,20 +221,9 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
     def X(d: date) -> float:
         return plot_x + (d - d0).days / span * plot_w
 
-    # ── 斑马：只给第 1 层的**整段**上，且只上在左栏 ──────────────────────
+    # 不再绘制左栏，阶段斑马也随之取消。
     # 一行一条会把嵌套关系切碎；铺到图区则会和中框同色，中框就看不见了
     bands: List[dict] = []
-    stage_i = 0
-    for i, r in enumerate(kept):
-        if depths[i] != 1:
-            continue
-        stage_i += 1
-        if stage_i % 2 == 0:
-            j = last_row(i)
-            bands.append({"x": round(PAD - 6, 1), "y": round(row_top[i], 1),
-                          "w": round(NAME_W + 6, 1),
-                          "h": round(row_top[j] + row_h[j] - row_top[i], 1),
-                          "fill": BAND_FILL})
 
     # ── 左栏 + 框 ───────────────────────────────────────────────────────
     out_rows: List[dict] = []
@@ -247,23 +235,18 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
         size = float(f["px"])
         baseline = row_top[i] + row_h[i] / 2 + size * 0.35
         code = str(r.get("code") or "")
-        tx = PAD + (depth - 1) * INDENT
-        code_w = text_w(code, size) + 7
-        avail = NAME_W - (tx - PAD) - code_w - META_W
         meta, meta_color = _meta_text(r)
         out_rows.append({
             "y": round(baseline, 1), "row_top": round(row_top[i], 1),
             "row_h": round(row_h[i], 1), "depth": depth,
-            "code": code, "code_x": round(tx, 1),
-            "name": clip_text(r.get("name") or "（未命名）", size, avail),
-            "name_x": round(tx + code_w, 1),
+            "code": code,
+            "name": r.get("name") or "（未命名）",
             "font_px": size, "font_pt": float(f["pt"]),
             "bold": bool(f["bold"]), "color": "#" + f["color"],
-            "meta": meta, "meta_x": round(PAD + NAME_W - 4, 1),
+            "meta": meta,
             "meta_px": META_PX, "meta_color": meta_color,
             # 折叠掉的子孙数就挂在名字后面：只筛不报的表现是「这几行怎么没了」
             "fold": f"+{int(r['folded'])}" if int(r.get("folded") or 0) else "",
-            "fold_x": round(tx + code_w + text_w(clip_text(r.get("name") or "", size, avail), size) + 6, 1),
         })
 
         s0, s1 = _as_date(r.get("start")), _as_date(r.get("end"))
@@ -271,11 +254,10 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
         if r.get("is_leaf") and st_word and st_word not in used_status:
             used_status.append(st_word)
         if not (s0 and s1):
-            # 没填计划日期的**行照样占着**（左栏写明原因），图区留白。
-            # 藏起来的话，那批最该被追着去补日期的行就从图上消失了
             if r.get("is_leaf") and st_word not in enums.WBS_UNCOUNTED_STATUSES:
                 undated += 1
-            continue
+            # 没日期也必须有承载内容的框；统一放在时间轴起点，并在框内标明原因。
+            s0 = s1 = d0
         leaf = bool(r.get("is_leaf"))
         j = last_row(i)
         # 下沿按「底下还有几层」往外探：叶子探 0，父框每多罩一层多探一档。
@@ -287,7 +269,11 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
         inset = 0.0 if leaf else BOX_INSET
         bx = X(s0) - inset
         # 结束日**算整天**：条走到 s1 那天的末尾，不然"9-10 到 9-10"是一根零宽的线
-        bw = max(MIN_BOX_W, X(s1 + timedelta(days=1)) - X(s0) + inset * 2)
+        label = f"{code} {r.get('name') or '（未命名）'}".strip()
+        meta_label = meta + (f"  +{int(r.get('folded') or 0)}" if r.get("folded") else "")
+        content_w = max(text_w(label, size), text_w(meta_label, META_PX)) + BOX_TEXT_PAD * 2
+        bw = max(MIN_BOX_W, CONTENT_MIN_W, content_w,
+                 X(s1 + timedelta(days=1)) - X(s0) + inset * 2)
         fill, stroke, sw = _box_style(r, depth)
         pct = max(0, min(100, int(r.get("pct") or 0)))
         # 完成度细条只给**还没做完、且算进统计**的叶子画：100% 的框已经是整块绿的，
@@ -302,12 +288,55 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
             "overdue": bool(int(r.get("overdue_days") or 0)),
             "overdue_days": int(r.get("overdue_days") or 0),
             "tip": _tip(r),
+            "label": clip_text(label, size, bw - BOX_TEXT_PAD * 2),
+            "label_x": round(bx + BOX_TEXT_PAD, 1),
+            "label_y": round(by0 + size + 2, 1),
+            "label_px": size, "label_bold": bool(f["bold"]), "label_color": "#262626",
+            "meta": clip_text(meta_label, META_PX, bw - BOX_TEXT_PAD * 2),
+            "meta_x": round(bx + BOX_TEXT_PAD, 1),
+            "meta_y": round(by0 + size + META_PX + 4, 1),
+            "meta_px": META_PX, "meta_color": meta_color,
             "bar": ({"x": round(bx + 1.5, 1), "y": round(by1 - BAR_H - 1.5, 1),
                      "w": round(max(0.0, (bw - 3) * pct / 100.0), 1),
                      "h": BAR_H, "fill": LATE_STROKE if int(r.get("overdue_days") or 0)
                      else BAR_FILL, "track": BAR_TRACK,
                      "track_w": round(bw - 3, 1)} if show_bar else None),
         })
+
+    # 内容最小宽度可能让子框越过按日期算出的父框右沿；父框仍须完整包住子框。
+    for outer in boxes:
+        prefix = outer["code"] + "."
+        descendant_right = max((b["x"] + b["w"] for b in boxes
+                                if b["code"].startswith(prefix)), default=outer["x"] + outer["w"])
+        outer["w"] = round(max(outer["w"], descendant_right - outer["x"] + BOX_INSET), 1)
+
+    # 依赖关系只在两端都实际画出框时连线。箭头终点停在后置框左边缘，避免穿字。
+    by_code = {b["code"]: b for b in boxes}
+    arrows: List[dict] = []
+    for r in kept:
+        target = by_code.get(str(r.get("code") or ""))
+        if not target:
+            continue
+        for pred_code in r.get("predecessors") or []:
+            source = by_code.get(str(pred_code))
+            if not source:
+                continue
+            x1, y1 = source["x"] + source["w"], source["y"] + source["h"] / 2
+            y2 = target["y"] + target["h"] / 2
+            if target["x"] > x1 + 8:
+                x2 = target["x"]
+                elbow = round((x1 + x2) / 2, 1)
+            else:
+                # 工期很短的框因承载文字而相互重叠时，从两框右侧绕行。
+                x2 = target["x"] + target["w"]
+                elbow = round(max(x1, x2) + 12, 1)
+            arrows.append({"from": str(pred_code), "to": target["code"],
+                           "points": [[round(x1, 1), round(y1, 1)], [elbow, round(y1, 1)],
+                                      [elbow, round(y2, 1)], [round(x2, 1), round(y2, 1)]],
+                           "color": "#606266"})
+
+    if boxes:
+        width = max(width, int(max(b["x"] + b["w"] for b in boxes) + PAD))
 
     # ── 刻度与分隔线 ────────────────────────────────────────────────────
     ticks: List[dict] = []
@@ -331,9 +360,6 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
     lines = [
         {"x1": round(plot_x, 1), "y1": round(axis_y, 1),
          "x2": round(plot_x + plot_w, 1), "y2": round(axis_y, 1),
-         "color": AXIS_LINE, "w": 1.0},
-        {"x1": round(plot_x - GUT / 2, 1), "y1": round(axis_y - 12, 1),
-         "x2": round(plot_x - GUT / 2, 1), "y2": round(bottom, 1),
          "color": AXIS_LINE, "w": 1.0},
     ]
     grid = [{"x": t["x"], "y1": round(axis_y, 1), "y2": round(bottom, 1),
@@ -387,7 +413,7 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
         "top": round(top, 1), "bottom": round(bottom, 1),
         "width": width, "height": height,
         "date_start": d0.isoformat(), "date_end": d1.isoformat(), "dated": dated,
-        "rows": out_rows, "boxes": boxes, "bands": bands,
+        "rows": out_rows, "boxes": boxes, "bands": bands, "arrows": arrows,
         "ticks": ticks, "grid": grid, "lines": lines, "today": todaym,
         "legend": legend, "legend_y": round(legend_y, 1), "legend_px": LEGEND_PX,
         "note_lines": note_lines, "note_y": round(note_y, 1),
@@ -431,10 +457,9 @@ def timeline_note(subtitle: str = "", today: Optional[date] = None, overdue: int
                     "计划起止，框里套的就是下一层。红竖线是今天。"]
     if overdue:
         parts.append(f"红框＝已过计划完成日、状态还不是「已完成」，共 {overdue} 个工作包"
-                     f"（只数叶子；上级框跟着红，不另计）。延期天数写在左栏右端那一列。")
+                     f"（只数叶子；上级框跟着红，不另计）。延期天数写在对应框内。")
     if undated:
-        parts.append(f"另有 {undated} 行没填计划完成日，排不上时间轴——它们在图区里是空白的，"
-                     f"左栏写明了原因，行照样占着。")
+        parts.append(f"另有 {undated} 行没填计划完成日，统一放在时间轴起点，框内写明了原因。")
     if not dated:
         parts.append("这份 WBS 一行计划日期都没填，横轴只剩「今天」这一根线。")
     if folded:
@@ -506,23 +531,27 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
             d.rectangle([bx, by, bx + S(bar["track_w"]), by + S(bar["h"])], fill=bar["track"])
             if bar["w"] > 0.5:
                 d.rectangle([bx, by, bx + S(bar["w"]), by + S(bar["h"])], fill=bar["fill"])
+        f_label = font(b["label_px"], bold=b["label_bold"])
+        f_meta = font(b["meta_px"])
+        if f_label is not None:
+            d.text((S(b["label_x"]), S(b["label_y"] - b["label_px"])), b["label"],
+                   font=f_label, fill=b["label_color"])
+        if f_meta is not None and b["meta"]:
+            d.text((S(b["meta_x"]), S(b["meta_y"] - b["meta_px"])), b["meta"],
+                   font=f_meta, fill=b["meta_color"])
 
-    f_meta = font(spec["rows"][0]["meta_px"]) if spec["rows"] else None
-    for r in spec["rows"]:
-        f = font(r["font_px"], bold=r["bold"])
-        if f is None:
-            return None
-        ty = S(r["y"] - r["font_px"])
-        d.text((S(r["code_x"]), ty), r["code"], font=f, fill=r["color"])
-        d.text((S(r["name_x"]), ty), r["name"], font=f, fill=r["color"])
-        if f_meta is not None:
-            if r["meta"]:
-                w = int(text_w(r["meta"], r["meta_px"]) * scale)
-                d.text((S(r["meta_x"]) - w, S(r["y"] - r["meta_px"])), r["meta"],
-                       font=f_meta, fill=r["meta_color"])
-            if r["fold"]:
-                d.text((S(r["fold_x"]), S(r["y"] - r["meta_px"])), r["fold"],
-                       font=f_meta, fill=META_TEXT)
+    # 父框面积很大，依赖线必须后画，否则会被父框底色整个盖住。
+    for arrow in spec.get("arrows", []):
+        pts = [(S(x), S(y)) for x, y in arrow["points"]]
+        d.line(pts, fill=arrow["color"], width=max(1, S(1.5)))
+        if len(pts) >= 2:
+            import math
+            (_x0, _y0), (x1, y1) = pts[-2], pts[-1]
+            angle = math.atan2(y1 - _y0, x1 - _x0)
+            n = S(7)
+            wings = [(x1 - n * math.cos(angle - 0.55), y1 - n * math.sin(angle - 0.55)),
+                     (x1 - n * math.cos(angle + 0.55), y1 - n * math.sin(angle + 0.55))]
+            d.polygon([(x1, y1), wings[0], wings[1]], fill=arrow["color"])
 
     t = spec["today"]
     d.line([(S(t["x"]), S(t["y1"])), (S(t["x"]), S(t["y2"]))], fill=t["color"],
