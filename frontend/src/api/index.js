@@ -126,9 +126,11 @@ export const wbsApi = {
   applyTemplate: (id) => http.post(`/wbs/plans/${id}/apply-template`),
   addItem: (planId, data) => http.post(`/wbs/plans/${planId}/items`, data),
   updateItem: (id, data) => http.put(`/wbs/items/${id}`, data),
-  removeItem: (id) => http.delete(`/wbs/items/${id}`),
-  reorder: (planId, parent_id, ids) => http.post(`/wbs/plans/${planId}/reorder`, { parent_id, ids }),
-  move: (id, new_parent_id, version) => http.post(`/wbs/items/${id}/move`, { new_parent_id, version }),
+  removeItem: (id, tree_version) => http.delete(`/wbs/items/${id}`, { data: { tree_version } }),
+  reorder: (planId, parent_id, ids, tree_version) =>
+    http.post(`/wbs/plans/${planId}/reorder`, { parent_id, ids, tree_version }),
+  move: (id, new_parent_id, version, tree_version) =>
+    http.post(`/wbs/items/${id}/move`, { new_parent_id, version, tree_version }),
   // 两张图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
   // 前端自己再排一次的话，页面上是 4 列、导出的图里是 5 列，而两边单独看都正常。
   // diagram ＝调试框图（按阶段分列，看"这件事分几步走"）

@@ -176,10 +176,12 @@ def test_move_refuses_to_create_a_cycle(client, admin_headers, plan):
     b = _add(client, admin_headers, pid, parent["id"], name="子")
     child = _by_code(b)["3.1.1"]
     r = client.post(f"/api/wbs/items/{parent['id']}/move",
-                    json={"new_parent_id": child["id"]}, headers=admin_headers)
+                    json={"new_parent_id": child["id"], "tree_version": b["tree_version"]},
+                    headers=admin_headers)
     assert r.status_code == 400
     r2 = client.post(f"/api/wbs/items/{parent['id']}/move",
-                     json={"new_parent_id": parent["id"]}, headers=admin_headers)
+                     json={"new_parent_id": parent["id"], "tree_version": b["tree_version"]},
+                     headers=admin_headers)
     assert r2.status_code == 400
 
 
@@ -192,7 +194,8 @@ def test_move_promotes_with_its_subtree(client, admin_headers, plan):
     b = _add(client, admin_headers, pid, node["id"], name="子")
     kid_id = _by_code(b)["3.1.1"]["id"]
     r = client.post(f"/api/wbs/items/{node['id']}/move",
-                    json={"new_parent_id": None}, headers=admin_headers)
+                    json={"new_parent_id": None, "tree_version": b["tree_version"]},
+                    headers=admin_headers)
     assert r.status_code == 200
     items = {i["id"]: i for i in r.json()["items"]}
     assert items[node["id"]]["depth"] == 1
@@ -209,11 +212,13 @@ def test_reorder_rejects_rows_from_another_level(client, admin_headers, plan):
     roots = [i["id"] for i in d["items"] if i["depth"] == 1]
     deep = next(i["id"] for i in d["items"] if i["depth"] == 2)
     r = client.post(f"/api/wbs/plans/{pid}/reorder",
-                    json={"parent_id": None, "ids": roots[:2] + [deep]},
+                    json={"parent_id": None, "ids": roots[:2] + [deep],
+                          "tree_version": d["tree_version"]},
                     headers=admin_headers)
     assert r.status_code == 400
     ok = client.post(f"/api/wbs/plans/{pid}/reorder",
-                     json={"parent_id": None, "ids": list(reversed(roots))},
+                     json={"parent_id": None, "ids": list(reversed(roots)),
+                           "tree_version": d["tree_version"]},
                      headers=admin_headers)
     assert ok.status_code == 200
     new_roots = [i["id"] for i in ok.json()["items"] if i["depth"] == 1]
@@ -230,6 +235,66 @@ def test_optimistic_lock(client, admin_headers, plan):
     r2 = client.put(f"/api/wbs/items/{item['id']}",
                     json={"name": "再改一次", "version": item["version"]}, headers=admin_headers)
     assert r2.status_code == 409
+
+
+def test_stale_tree_version_rejects_reorder_delete_and_move(client, admin_headers, plan):
+    """结构写入统一锁整棵树，而不是只锁被移动的那一行。"""
+    pid = plan["id"]
+    stale = plan["tree_version"]
+    changed = _add(client, admin_headers, pid, name="并发新增")
+    roots = [i for i in changed["items"] if i["depth"] == 1]
+    victim = roots[-1]
+
+    reorder = client.post(
+        f"/api/wbs/plans/{pid}/reorder",
+        json={"parent_id": None, "ids": [i["id"] for i in reversed(roots)],
+              "tree_version": stale}, headers=admin_headers)
+    assert reorder.status_code == 409
+
+    delete = client.request("DELETE", f"/api/wbs/items/{victim['id']}",
+                            json={"tree_version": stale}, headers=admin_headers)
+    assert delete.status_code == 409
+
+    move = client.post(
+        f"/api/wbs/items/{victim['id']}/move",
+        json={"new_parent_id": roots[0]["id"], "version": victim["version"],
+              "tree_version": stale}, headers=admin_headers)
+    assert move.status_code == 409
+
+
+def test_successful_structure_operations_increment_tree_version(client, admin_headers, plan):
+    """新增、排序、移动、删除和套模板每次成功提交都推进结构版本。"""
+    pid = plan["id"]
+    v = plan["tree_version"]
+
+    created = _add(client, admin_headers, pid, name="待搬工作包")
+    assert created["tree_version"] == v + 1
+    v = created["tree_version"]
+    row = next(i for i in created["items"] if i["name"] == "待搬工作包")
+    roots = [i for i in created["items"] if i["depth"] == 1]
+
+    ordered = client.post(
+        f"/api/wbs/plans/{pid}/reorder",
+        json={"parent_id": None, "ids": [i["id"] for i in reversed(roots)],
+              "tree_version": v}, headers=admin_headers).json()
+    assert ordered["tree_version"] == v + 1
+    v = ordered["tree_version"]
+
+    moved = client.post(
+        f"/api/wbs/items/{row['id']}/move",
+        json={"new_parent_id": roots[0]["id"], "version": row["version"],
+              "tree_version": v}, headers=admin_headers).json()
+    assert moved["tree_version"] == v + 1
+    v = moved["tree_version"]
+
+    deleted = client.request("DELETE", f"/api/wbs/items/{row['id']}",
+                             json={"tree_version": v}, headers=admin_headers).json()
+    assert deleted["tree_version"] == v + 1
+    v = deleted["tree_version"]
+
+    templated = client.post(f"/api/wbs/plans/{pid}/apply-template",
+                            headers=admin_headers).json()
+    assert templated["tree_version"] == v + 1
 
 
 def test_only_admin_can_delete_a_whole_plan(client, admin_headers, special_id):
@@ -249,7 +314,8 @@ def test_only_admin_can_delete_a_whole_plan(client, admin_headers, special_id):
     a = client.post(f"/api/wbs/plans/{pid}/items", json={"name": "普通用户加的"}, headers=uh)
     assert a.status_code == 200, "树里的增删改：登录用户就够"
     item_id = a.json()["items"][0]["id"]
-    assert client.delete(f"/api/wbs/items/{item_id}", headers=uh).status_code == 200
+    assert client.request("DELETE", f"/api/wbs/items/{item_id}",
+                          json={"tree_version": a.json()["tree_version"]}, headers=uh).status_code == 200
 
     assert client.delete(f"/api/wbs/plans/{pid}", headers=uh).status_code == 403
     assert client.delete(f"/api/wbs/plans/{pid}", headers=admin_headers).status_code == 200
@@ -284,7 +350,8 @@ def test_predecessor_survives_a_reorder(client, admin_headers, two):
     ids = [i["id"] for i in d["items"] if i["depth"] == 1]
     ids.remove(first)
     client.post(f"/api/wbs/plans/{pid}/reorder",
-                json={"parent_id": None, "ids": [first] + ids}, headers=admin_headers)
+                json={"parent_id": None, "ids": [first] + ids,
+                      "tree_version": d["tree_version"]}, headers=admin_headers)
     d = client.get(f"/api/wbs/plans/{pid}", headers=admin_headers).json()
     got = [i for i in d["items"] if i["id"] == second][0]
     assert [(p["id"], p["code"]) for p in got["predecessors"]] == [(first, "1")]
@@ -387,7 +454,8 @@ def test_deleted_predecessor_is_reported_not_swallowed(client, admin_headers, tw
     _pid, first, second = two
     d = _link(client, admin_headers, second, [first]).json()
     ver = [i for i in d["items"] if i["id"] == second][0]["version"]
-    d = client.delete(f"/api/wbs/items/{first}", headers=admin_headers).json()
+    d = client.request("DELETE", f"/api/wbs/items/{first}",
+                       json={"tree_version": d["tree_version"]}, headers=admin_headers).json()
     got = [i for i in d["items"] if i["id"] == second][0]
     assert got["predecessors"] == [{"id": first, "code": "", "name": "", "missing": True}]
     # 清空是**传空列表**，不是把它藏起来

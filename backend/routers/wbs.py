@@ -335,6 +335,11 @@ def _check_version(obj, incoming: Optional[int]) -> None:
         raise HTTPException(409, "数据已被他人修改，请刷新后重试")
 
 
+def _check_tree_version(plan: models.WbsPlan, incoming: int) -> None:
+    if incoming != (plan.tree_version or 0):
+        raise HTTPException(409, "WBS 结构已被他人修改，请刷新后重试")
+
+
 def _tail_sort_order(db: Session, plan_id: int, parent_id: Optional[int]) -> int:
     """新行排到同级末位。不重算的话新增的行会插进中间，看着像随机落点。"""
     q = db.query(models.WbsItem).filter(models.WbsItem.plan_id == plan_id)
@@ -477,6 +482,7 @@ def apply_template(plan_id: int, db: Session = Depends(get_db),
                               sort_order=order, status=enums.PROGRESS_DEFAULT))
         order += 1
         added += 1
+    plan.tree_version = (plan.tree_version or 0) + 1
     db.commit()
     log_op(db, action="update", target="wbs_plan", target_id=plan_id, detail=f"apply_template added={added}", user=user)
     return _detail(db, plan)
@@ -497,6 +503,7 @@ def create_item(plan_id: int, payload: schemas.WbsItemCreate, db: Session = Depe
     data["sort_order"] = _tail_sort_order(db, plan_id, payload.parent_id)
     it = models.WbsItem(**data)
     db.add(it)
+    plan.tree_version = (plan.tree_version or 0) + 1
     db.commit()
     log_op(db, action="create", target="wbs_item", target_id=it.id, detail=f"plan={plan_id} name={it.name}", user=user)
     return _detail(db, plan)
@@ -528,12 +535,15 @@ def update_item(item_id: int, payload: schemas.WbsItemUpdate, db: Session = Depe
 
 
 @router.delete("/items/{item_id}", response_model=schemas.WbsPlanDetail)
-def delete_item(item_id: int, db: Session = Depends(get_db),
+def delete_item(item_id: int, payload: schemas.WbsDelete, db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
     """连同子树一起删（DB 侧 CASCADE）。写权限一档＝登录用户：自己拆的活自己改。"""
     it = _get_item(db, item_id)
     plan_id, name = it.plan_id, it.name
+    plan = _get_plan(db, plan_id)
+    _check_tree_version(plan, payload.tree_version)
     db.delete(it)
+    plan.tree_version = (plan.tree_version or 0) + 1
     db.commit()
     log_op(db, action="delete", target="wbs_item", target_id=item_id, detail=f"plan={plan_id} name={name}", user=user)
     return _detail(db, _get_plan(db, plan_id))
@@ -547,6 +557,7 @@ def reorder(plan_id: int, payload: schemas.WbsReorder, db: Session = Depends(get
     别人刚新增的行不会被挤乱。
     """
     plan = _get_plan(db, plan_id)
+    _check_tree_version(plan, payload.tree_version)
     q = db.query(models.WbsItem).filter(models.WbsItem.plan_id == plan_id)
     q = q.filter(models.WbsItem.parent_id.is_(None) if payload.parent_id is None
                  else models.WbsItem.parent_id == payload.parent_id)
@@ -561,6 +572,7 @@ def reorder(plan_id: int, payload: schemas.WbsReorder, db: Session = Depends(get
     for rest in sorted(set(sibs) - set(payload.ids)):
         n += 1
         sibs[rest].sort_order = n
+    plan.tree_version = (plan.tree_version or 0) + 1
     db.commit()
     log_op(db, action="update", target="wbs_plan", target_id=plan_id, detail=f"reorder parent={payload.parent_id}", user=user)
     return _detail(db, plan)
@@ -575,8 +587,10 @@ def move_item(item_id: int, payload: schemas.WbsMove, db: Session = Depends(get_
     页面表现是"这几行凭空消失"，而库里一行没少，最难查的那类。
     """
     it = _get_item(db, item_id)
+    plan = _get_plan(db, it.plan_id)
     new_parent = payload.new_parent_id
     _check_version(it, payload.version)
+    _check_tree_version(plan, payload.tree_version)
     if new_parent is not None:
         parent = _get_item(db, new_parent)
         if parent.plan_id != it.plan_id:
@@ -595,6 +609,7 @@ def move_item(item_id: int, payload: schemas.WbsMove, db: Session = Depends(get_
     # 换了父级要重算成新父级的末位，带着旧 sort_order 过去会插进目标那一堆的中间
     it.sort_order = _tail_sort_order(db, it.plan_id, new_parent)
     it.version = (it.version or 0) + 1
+    plan.tree_version = (plan.tree_version or 0) + 1
     db.commit()
     log_op(db, action="update", target="wbs_item", target_id=item_id, detail=f"move parent={new_parent}", user=user)
     return _detail(db, _get_plan(db, it.plan_id))
