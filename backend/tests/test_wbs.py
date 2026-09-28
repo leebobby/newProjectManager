@@ -382,6 +382,8 @@ def test_deleted_predecessor_is_reported_not_swallowed(client, admin_headers, tw
     d = client.delete(f"/api/wbs/items/{first}", headers=admin_headers).json()
     got = [i for i in d["items"] if i["id"] == second][0]
     assert got["predecessors"] == [{"id": first, "code": "", "name": "", "missing": True}]
+    # 兼容只针对库里已经存在的悬空引用；不能借更新把已删除的 id 再写回去。
+    assert _link(client, admin_headers, second, [first], version=ver).status_code == 400
     # 清空是**传空列表**，不是把它藏起来
     d = _link(client, admin_headers, second, [], version=ver).json()
     assert [i for i in d["items"] if i["id"] == second][0]["predecessors"] == []
