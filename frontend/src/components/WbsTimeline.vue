@@ -2,9 +2,8 @@
   <div class="wt-wrap" v-loading="loading">
     <div class="wt-bar">
       <span class="wt-hint">
-        横轴是<b>真日期</b>；大框纵向罩住它底下所有子行、横向铺它汇总出来的计划起止，
-        框里套的就是下一层。<b class="wt-late">红框</b>＝已过计划完成日还没做完，
-        延期天数在左栏右端那一列。
+        横轴是<b>真日期</b>；任务编号、名称和进度直接写在框内，框里套的是下一层。
+        有前置关系的任务用箭头连接。<b class="wt-late">红框</b>＝已过计划完成日还没做完。
       </span>
       <span class="wt-grow" />
       <el-button size="small" :loading="exporting" @click="onExport('png')">导出 PNG</el-button>
@@ -20,7 +19,13 @@
            「页面上好好的，导出来全变成黑的默认色」 -->
       <svg ref="svgRef" :viewBox="`0 0 ${spec.width} ${spec.height}`"
            :width="spec.width" :height="spec.height" class="wt-svg">
-        <!-- 斑马只上在左栏：铺到图区会和中框同色，中框就看不见了 -->
+        <defs>
+          <marker id="wt-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#606266" />
+          </marker>
+        </defs>
+        <!-- bands 保留为空数组以兼容旧版版面协议。 -->
         <rect v-for="(b, i) in spec.bands" :key="'z' + i"
               :x="b.x" :y="b.y" :width="b.w" :height="b.h" :fill="b.fill" />
 
@@ -43,19 +48,16 @@
             <rect v-if="b.bar.w > 0.5" :x="b.bar.x" :y="b.bar.y" :width="b.bar.w"
                   :height="b.bar.h" rx="1.2" :fill="b.bar.fill" />
           </template>
+          <text :x="b.label_x" :y="b.label_y" :font-size="b.label_px"
+                :font-weight="b.label_bold ? 700 : 400" :fill="b.label_color">{{ b.label }}</text>
+          <text v-if="b.meta" :x="b.meta_x" :y="b.meta_y" :font-size="b.meta_px"
+                :fill="b.meta_color">{{ b.meta }}</text>
         </g>
 
-        <!-- 左栏：名字按层级缩进 + 字号分档，右端对齐一小列可以竖着扫 -->
-        <g v-for="(r, i) in spec.rows" :key="'r' + i">
-          <text :x="r.code_x" :y="r.y" :font-size="r.font_px" :font-weight="r.bold ? 700 : 400"
-                :fill="r.color">{{ r.code }}</text>
-          <text :x="r.name_x" :y="r.y" :font-size="r.font_px" :font-weight="r.bold ? 700 : 400"
-                :fill="r.color">{{ r.name }}</text>
-          <text v-if="r.meta" :x="r.meta_x" :y="r.y" :font-size="r.meta_px"
-                text-anchor="end" :fill="r.meta_color">{{ r.meta }}</text>
-          <text v-if="r.fold" :x="r.fold_x" :y="r.y" :font-size="r.meta_px"
-                fill="#A8ABB2">{{ r.fold }}</text>
-        </g>
+        <!-- 依赖线压在父级底色上；折线路由避开框内文字，只在终点接触任务框。 -->
+        <polyline v-for="(a, i) in spec.arrows" :key="'a' + i"
+                  :points="a.points.map(p => p.join(',')).join(' ')" fill="none"
+                  :stroke="a.color" stroke-width="1.5" marker-end="url(#wt-arrow)" />
 
         <!-- 今天：整张图唯一一处红 -->
         <line :x1="spec.today.x" :y1="spec.today.y1" :x2="spec.today.x" :y2="spec.today.y2"
@@ -109,7 +111,7 @@ const warnText = computed(() => {
   const s = spec.value
   if (!s) return ''
   const p = []
-  if (s.undated) p.push(`有 ${s.undated} 行没填计划完成日，排不上时间轴——图区留白，左栏写明了原因，行照样占着。`)
+  if (s.undated) p.push(`有 ${s.undated} 行没填计划完成日，已放在时间轴起点并在框内标明。`)
   if (s.folded) p.push(`只画到第 ${s.max_depth} 层，另有 ${s.folded} 行折在上级框里（名字后面的 +N）；它们的工期仍然算在上级框的汇总里。`)
   if (s.skipped) p.push(`另有 ${s.skipped} 行没画进图里（整份 WBS 太大），按整段阶段截的。上面的表格是全量的。`)
   return p.join(' ')

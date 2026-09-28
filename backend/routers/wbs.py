@@ -650,6 +650,8 @@ def _diagram_rows(rows: List[dict], today: Optional[date] = None) -> List[dict]:
         return max((v for k, v in late_by_code.items() if k == code or k.startswith(pre)),
                    default=0)
 
+    # A 图的依赖线必须按稳定 id 找目标，不能存当前显示编号：编号会随着拖动排序改变。
+    id_to_code = {r["item"].id: r["code"] for r in rows}
     out = []
     for r in rows:
         it, leaf = r["item"], r["is_leaf"]
@@ -664,6 +666,9 @@ def _diagram_rows(rows: List[dict], today: Optional[date] = None) -> List[dict]:
             "start": it.planned_start if leaf else r["roll_start"],
             "end": it.planned_end if leaf else r["roll_end"],
             "overdue": bool(late), "overdue_days": late,
+            "predecessors": [id_to_code[int(token)]
+                             for token in str(it.predecessor_ids or "").split(",")
+                             if token.strip().isdigit() and int(token) in id_to_code],
         })
     return out
 

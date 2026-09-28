@@ -109,13 +109,10 @@ def test_deeper_rows_get_smaller_type(client, admin_headers, tree):
 
 
 # ─── 排不上时间轴的行：留着，并如实报 ───────────────────────────────────────
-def test_undated_rows_keep_their_line_and_get_counted(client, admin_headers, tree):
-    """没填计划完成日的行**照样占一行**，图区留白，左栏写明原因，底注报条数。
-
-    藏起来的话，那批最该被追着去补日期的行就从图上消失了（同 overdue_unknown）。
-    """
+def test_undated_rows_keep_a_box_and_get_counted(client, admin_headers, tree):
+    """没填日期的任务也必须有框承载内容，不能因取消左栏而从 A 图消失。"""
     spec = _spec(client, admin_headers, tree)
-    assert _box(spec, "1.2") is None
+    assert _box(spec, "1.2") is not None
     assert _row(spec, "1.2")["meta"] == "未填完成日"
     assert spec["undated"] == 1
     assert "1 行没填计划完成日" in " ".join(spec["note_lines"])
@@ -128,7 +125,7 @@ def test_changed_row_is_drawn_grey_and_not_called_undated(client, admin_headers,
     assert spec["undated"] == 1            # 只算 1.2 那一条
 
 
-# ─── 延期：红框在图上，天数在左栏，只数叶子 ─────────────────────────────────
+# ─── 延期：红框与框内天数，只数叶子 ─────────────────────────────────────────
 def test_overdue_leaf_is_outlined_red_and_parents_follow(client, admin_headers, tree):
     """延期**改边框不改底色**：底色被状态占着，而"进行中"和"已延期"要同时看到。"""
     import wbs_diagram
@@ -147,11 +144,25 @@ def test_overdue_count_only_counts_leaves(client, admin_headers, tree):
     assert spec["overdue"] == 1
 
 
-def test_overdue_days_go_in_the_left_column_not_on_the_chart(client, admin_headers, tree):
-    """天数写在左栏右端那一列。图上父子各印一遍会堆成三行压在框上（第一版就是这样）。"""
+def test_overdue_days_go_inside_the_box(client, admin_headers, tree):
+    """取消左栏后，延期信息和任务名称都直接放在对应任务框中。"""
     spec = _spec(client, admin_headers, tree)
     assert _row(spec, "1.1.1")["meta"].startswith("延期 ")
-    assert all("延期" not in str(b.get("label", "")) for b in spec["boxes"])
+    assert _box(spec, "1.1.1")["meta"].startswith("延期 ")
+
+
+def test_box_contains_task_text_and_dependency_arrow(client, admin_headers, tree):
+    detail = client.get(f"/api/wbs/plans/{tree}", headers=admin_headers).json()
+    before = next(x for x in detail["items"] if x["name"] == "拖了的活")
+    after = next(x for x in detail["items"] if x["name"] == "按期的活")
+    r = client.put(f"/api/wbs/items/{after['id']}",
+                   json={"predecessor_ids": [before["id"]], "version": after["version"]},
+                   headers=admin_headers)
+    assert r.status_code == 200, r.text
+    spec = _spec(client, admin_headers, tree)
+    target = _box(spec, "1.1.2")
+    assert "按期的活" in target["label"] and target["label_x"] >= target["x"]
+    assert any(a["from"] == "1.1.1" and a["to"] == "1.1.2" for a in spec["arrows"])
 
 
 # ─── 裁剪与截断 ─────────────────────────────────────────────────────────────

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A 图 · 框内信息与依赖箭头 Demo</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px; color: #303133; background: #f4f6f9;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+  }
+  .page { max-width: 1440px; margin: auto; }
+  h1 { margin: 0 0 4px; color: #1d3a6b; font-size: 22px; }
+  .subtitle { margin: 0 0 18px; color: #7f8792; }
+  .toolbar, .chart-card {
+    background: #fff; border: 1px solid #e6e9ef; border-radius: 10px;
+    box-shadow: 0 3px 14px rgba(31, 45, 61, .07);
+  }
+  .toolbar {
+    display: flex; align-items: center; gap: 18px; margin-bottom: 12px; padding: 11px 16px;
+  }
+  .toolbar label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .toolbar .legend { margin-left: auto; display: flex; gap: 14px; color: #737b87; font-size: 12px; }
+  .dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+  .chart-card { padding: 14px; overflow-x: auto; }
+  svg { display: block; min-width: 1120px; background: #fff; }
+  .axis { stroke: #bdc3ce; stroke-width: 1; }
+  .grid { stroke: #edf0f5; stroke-width: 1; }
+  .tick { fill: #7f8792; font-size: 12px; }
+  .today-line { stroke: #f56c6c; stroke-width: 1.5; stroke-dasharray: 4 3; }
+  .today-pill { fill: #f56c6c; }
+  .stage { fill: #eaf2fa; stroke: #95a9bd; stroke-width: 1.2; }
+  .group { fill: #f5f7fa; stroke: #b9c3cf; stroke-width: 1; }
+  .task { fill: #fff; stroke: #8c9bab; stroke-width: 1.2; }
+  .task.doing { fill: #fdf6ec; stroke: #e6a23c; }
+  .task.done { fill: #f0f9eb; stroke: #67c23a; }
+  .task.late, .stage.late { stroke: #f56c6c; stroke-width: 2; }
+  .task.undated { fill: #fafafa; stroke: #a8abb2; stroke-dasharray: 5 3; }
+  .title { fill: #273444; font-size: 13px; font-weight: 600; }
+  .meta { fill: #7f8792; font-size: 11px; }
+  .late-text { fill: #f56c6c; }
+  .dependency { fill: none; stroke: #596575; stroke-width: 1.6; marker-end: url(#arrow); }
+  .dependency.optional { stroke-dasharray: 5 4; }
+  .progress-bg { fill: #ebeef5; }
+  .progress { fill: #e6a23c; }
+  .note { color: #7f8792; font-size: 12px; margin: 12px 4px 0; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main class="page">
+  <h1>A 图 Demo：内容直接放进框内</h1>
+  <p class="subtitle">没有左侧信息列；实线箭头表示前置依赖，虚线箭头表示跨阶段依赖。</p>
+
+  <section class="toolbar" aria-label="演示控制">
+    <label><input id="showDependencies" type="checkbox" checked> 显示依赖箭头</label>
+    <label><input id="showUndated" type="checkbox" checked> 显示未排期任务</label>
+    <div class="legend">
+      <span><i class="dot" style="background:#f0f9eb"></i>已完成</span>
+      <span><i class="dot" style="background:#fdf6ec"></i>进行中</span>
+      <span><i class="dot" style="background:#fff;border:2px solid #f56c6c"></i>已延期</span>
+    </div>
+  </section>
+
+  <section class="chart-card">
+    <svg viewBox="0 0 1320 590" role="img" aria-label="WBS A 图框内信息及依赖箭头演示">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="#596575" />
+        </marker>
+      </defs>
+
+      <!-- 日期轴 -->
+      <line class="axis" x1="40" y1="58" x2="1280" y2="58" />
+      <g>
+        <line class="grid" x1="40" y1="58" x2="40" y2="516" />
+        <line class="grid" x1="350" y1="58" x2="350" y2="516" />
+        <line class="grid" x1="660" y1="58" x2="660" y2="516" />
+        <line class="grid" x1="970" y1="58" x2="970" y2="516" />
+        <line class="grid" x1="1280" y1="58" x2="1280" y2="516" />
+        <text class="tick" x="45" y="43">2026年9月</text>
+        <text class="tick" x="355" y="43">10月</text>
+        <text class="tick" x="665" y="43">11月</text>
+        <text class="tick" x="975" y="43">12月</text>
+      </g>
+      <line class="today-line" x1="492" y1="26" x2="492" y2="516" />
+      <rect class="today-pill" x="451" y="12" width="82" height="22" rx="11" />
+      <text x="492" y="27" text-anchor="middle" fill="#fff" font-size="11">今天 10-15</text>
+
+      <!-- 第一阶段：父框中直接带标题与汇总信息 -->
+      <rect class="stage late" x="55" y="78" width="706" height="250" rx="7" />
+      <text class="title" x="66" y="98">1 方案设计与开发</text>
+      <text class="meta late-text" x="66" y="115">汇总 23 人天 · 48% · 延期 5 天</text>
+
+      <rect class="group" x="78" y="130" width="350" height="178" rx="6" />
+      <text class="title" x="89" y="150">1.1 需求与方案设计</text>
+      <text class="meta" x="89" y="167">汇总 8 人天 · 100%</text>
+
+      <rect class="task done" x="96" y="182" width="150" height="48" rx="5" />
+      <text class="title" x="105" y="201">1.1.1 需求澄清</text>
+      <text class="meta" x="105" y="218">王敏 · 3天 · 100%</text>
+
+      <rect class="task done" x="260" y="246" width="150" height="48" rx="5" />
+      <text class="title" x="269" y="265">1.1.2 方案评审</text>
+      <text class="meta" x="269" y="282">李杰 · 5天 · 100%</text>
+
+      <rect class="group late" x="445" y="130" width="294" height="178" rx="6" />
+      <text class="title" x="456" y="150">1.2 开发实现</text>
+      <text class="meta late-text" x="456" y="167">汇总 15 人天 · 延期 5 天</text>
+
+      <rect class="task doing late" x="464" y="182" width="166" height="48" rx="5" />
+      <text class="title" x="473" y="201">1.2.1 接口开发</text>
+      <text class="meta late-text" x="473" y="218">赵强 · 8天 · 60% · 延期5天</text>
+      <rect class="progress-bg" x="466" y="225" width="162" height="3" rx="1.5" />
+      <rect class="progress" x="466" y="225" width="97" height="3" rx="1.5" />
+
+      <rect class="task" x="550" y="246" width="170" height="48" rx="5" />
+      <text class="title" x="559" y="265">1.2.2 前端页面开发</text>
+      <text class="meta" x="559" y="282">周倩 · 7天 · 30%</text>
+
+      <!-- 第二阶段 -->
+      <rect class="stage" x="735" y="350" width="530" height="166" rx="7" />
+      <text class="title" x="746" y="370">2 联调与交付</text>
+      <text class="meta" x="746" y="387">汇总 12 人天 · 15%</text>
+
+      <rect class="task" x="770" y="405" width="175" height="48" rx="5" />
+      <text class="title" x="779" y="424">2.1 联调验证</text>
+      <text class="meta" x="779" y="441">陈晨 · 7天 · 20%</text>
+
+      <rect class="task" x="1015" y="457" width="175" height="48" rx="5" />
+      <text class="title" x="1024" y="476">2.2 发布验收</text>
+      <text class="meta" x="1024" y="493">刘洋 · 5天 · 0%</text>
+
+      <!-- 没有日期仍然用框表达，而不是放回左侧列表 -->
+      <g id="undatedTask">
+        <rect class="task undated" x="1060" y="84" width="190" height="48" rx="5" />
+        <text class="title" x="1069" y="103">1.3 安全评审材料</text>
+        <text class="meta" x="1069" y="120">负责人待定 · 未填计划日期</text>
+      </g>
+
+      <!-- 依赖关系均从前置框边缘指向后置框边缘 -->
+      <g id="dependencies">
+        <path class="dependency" d="M246 206 H252 V270 H260" />
+        <path class="dependency" d="M410 270 H437 V206 H464" />
+        <path class="dependency" d="M630 206 H750 V270 H720" />
+        <path class="dependency optional" d="M720 270 H750 V429 H770" />
+        <path class="dependency" d="M945 429 H980 V481 H1015" />
+      </g>
+    </svg>
+    <p class="note">提示：这是独立 HTML 原型，可直接用浏览器打开。复选框可用于检查依赖线和未排期任务的显示效果。</p>
+  </section>
+</main>
+<script>
+  const dependencies = document.querySelector('#dependencies')
+  const undatedTask = document.querySelector('#undatedTask')
+  document.querySelector('#showDependencies').addEventListener('change', (event) => {
+    dependencies.classList.toggle('hidden', !event.target.checked)
+  })
+  document.querySelector('#showUndated').addEventListener('change', (event) => {
+    undatedTask.classList.toggle('hidden', !event.target.checked)
+  })
+</script>
+</body>
+</html>
