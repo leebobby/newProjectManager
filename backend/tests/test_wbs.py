@@ -320,6 +320,55 @@ def test_predecessor_dedupes_and_keeps_order(client, admin_headers, two, plan):
     assert [p["id"] for p in got["predecessors"]] == [third, first]
 
 
+def test_predecessor_refuses_two_item_cycle(client, admin_headers, two):
+    """A 是 B 的前置后，再让 B 成为 A 的前置会形成最短的两节点环。"""
+    _pid, first, second = two
+    assert _link(client, admin_headers, second, [first]).status_code == 200
+    r = _link(client, admin_headers, first, [second])
+    assert r.status_code == 400
+    assert "前置关系会形成循环" in r.json()["detail"]
+
+
+def test_predecessor_refuses_three_item_cycle(client, admin_headers, two):
+    """环检测必须沿整条前置链查找，不能只检查新前置的直接前置。"""
+    pid, first, second = two
+    detail = _add(client, admin_headers, pid, name="第三步")
+    third = next(i["id"] for i in detail["items"] if i["name"] == "第三步")
+    assert _link(client, admin_headers, second, [first]).status_code == 200
+    assert _link(client, admin_headers, third, [second]).status_code == 200
+    assert _link(client, admin_headers, first, [third]).status_code == 400
+
+
+def test_predecessor_allows_diamond(client, admin_headers, two):
+    """共享祖先的菱形是合法 DAG，visited 不能把汇合误判成循环。"""
+    pid, first, second = two
+    detail = _add(client, admin_headers, pid, name="并行步骤")
+    parallel = next(i["id"] for i in detail["items"] if i["name"] == "并行步骤")
+    detail = _add(client, admin_headers, pid, name="汇合步骤")
+    join = next(i["id"] for i in detail["items"] if i["name"] == "汇合步骤")
+    assert _link(client, admin_headers, second, [first]).status_code == 200
+    assert _link(client, admin_headers, parallel, [first]).status_code == 200
+    r = _link(client, admin_headers, join, [second, parallel])
+    assert r.status_code == 200
+    got = next(i for i in r.json()["items"] if i["id"] == join)
+    assert [p["id"] for p in got["predecessors"]] == [second, parallel]
+
+
+def test_predecessor_update_replaces_edges_before_cycle_check(client, admin_headers, two, plan):
+    """更新已有依赖时用待保存值替换旧边，并在新边会闭环时原子拒绝整次更新。"""
+    pid, first, second = two
+    old = plan["items"][0]["id"]
+    detail = _link(client, admin_headers, first, [old]).json()
+    first_version = next(i["version"] for i in detail["items"] if i["id"] == first)
+    assert _link(client, admin_headers, second, [first]).status_code == 200
+
+    r = _link(client, admin_headers, first, [second], version=first_version)
+    assert r.status_code == 400
+    detail = client.get(f"/api/wbs/plans/{pid}", headers=admin_headers).json()
+    got = next(i for i in detail["items"] if i["id"] == first)
+    assert [p["id"] for p in got["predecessors"]] == [old]
+
+
 def test_deleted_predecessor_is_reported_not_swallowed(client, admin_headers, two):
     """指向的行被删掉时照样返回一条（missing=True）。悄悄滤掉的话，页面上那条
     前置凭空消失，填的人以为自己没填过，也就永远不会去修。"""
