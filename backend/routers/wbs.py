@@ -209,7 +209,7 @@ def _predecessors(item: models.WbsItem, refs: Dict[int, dict]) -> List[schemas.W
 
 
 def _norm_predecessors(db: Session, item: models.WbsItem, ids) -> str:
-    """前置关联入库前的归一：去重、保序、限同一份 WBS、不许指向自己。
+    """前置关联入库前的归一：去重、保序、限同一份 WBS、不许自引用或成环。
 
     **只认同一份 WBS 里的行**：前置表达的是同一件事内部的先后，跨 WBS 的先后
     是两份计划之间的事，得由别的东西表达（那条超链接也就不是"切到这棵树里的
@@ -231,6 +231,34 @@ def _norm_predecessors(db: Session, item: models.WbsItem, ids) -> str:
             raise HTTPException(400, "前置工作包不在这份 WBS 里")
         seen.add(pid)
         out.append(str(pid))
+
+    # 边的方向是「工作包 -> 它的前置工作包」。先用库里的整份计划建图，再用本次
+    # 待保存的值替换当前节点；否则更新依赖时会拿旧边判断，既可能漏报也可能误报。
+    # 历史数据允许保留已删除的前置 id（详情页仍显示 missing=True），但不存在的节点
+    # 不可能再通向任何节点，环检测时应忽略。新请求写入缺失 id 已在上面的校验中拒绝。
+    items = db.query(models.WbsItem).filter(models.WbsItem.plan_id == item.plan_id).all()
+    node_ids = {row.id for row in items}
+    graph: Dict[int, List[int]] = {}
+    for row in items:
+        predecessors: List[int] = []
+        for token in str(row.predecessor_ids or "").split(","):
+            token = token.strip()
+            if token.isdigit() and int(token) in node_ids:
+                predecessors.append(int(token))
+        graph[row.id] = predecessors
+    graph[item.id] = [int(pid) for pid in out]
+
+    for predecessor_id in graph[item.id]:
+        pending = [predecessor_id]
+        visited = set()
+        while pending:
+            current = pending.pop()
+            if current == item.id:
+                raise HTTPException(400, "前置关系会形成循环")
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(graph.get(current, []))
     return ",".join(out)
 
 
