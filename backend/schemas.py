@@ -2198,6 +2198,7 @@ class WbsPlanOut(WbsPlanBase):
     kind_label: str = ""            # 响应字段，非模型列
     ref_name: str = ""              # 归属对象的名字（专项名 / 客户+机台号）
     version: int = 0
+    tree_version: int = 0
     created_at: LocalDT
     updated_at: LocalDT
     # 下面几个是整份 WBS 的汇总，由服务端算，**前端不重算**——两端各加一次迟早对不上
@@ -2311,9 +2312,16 @@ class WbsReorder(BaseModel):
     的顺序，而顺序错了不报错、只是看着不对（同版本三层的 /reorder）。"""
     parent_id: Optional[int] = None
     ids: List[int] = []
+    tree_version: int
+
+
+class WbsDelete(BaseModel):
+    """删除子树前带回整棵树的结构版本，避免误删并发新增/移动的内容。"""
+    tree_version: int
 
 
 class WbsMove(BaseModel):
     """改层级：把一行连同它的子树挂到 new_parent_id 下（None＝提到最外层）。"""
     new_parent_id: Optional[int] = None
     version: Optional[int] = None
+    tree_version: int

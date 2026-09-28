@@ -399,7 +399,7 @@ async function removeRow(row) {
   const kids = items.value.filter((r) => r.code.startsWith(row.code + '.')).length
   const msg = kids ? `「${row.name}」下面还有 ${kids} 行，一并删除？` : `删除「${row.name}」？`
   try { await ElMessageBox.confirm(msg, '确认', { type: 'warning' }) } catch { return }
-  await call(() => wbsApi.removeItem(row.id))
+  await call(() => wbsApi.removeItem(row.id, plan.value.tree_version))
 }
 
 // ── 层级与顺序 ──────────────────────────────────────────────
@@ -412,12 +412,12 @@ function demote(row) {
   const sib = siblings(row)
   const i = sib.findIndex((r) => r.id === row.id)
   if (i <= 0) return
-  return call(() => wbsApi.move(row.id, sib[i - 1].id, row.version))
+  return call(() => wbsApi.move(row.id, sib[i - 1].id, row.version, plan.value.tree_version))
 }
 function promote(row) {
   const parent = items.value.find((r) => r.id === row.parent_id)
   if (!parent) return
-  return call(() => wbsApi.move(row.id, parent.parent_id ?? null, row.version))
+  return call(() => wbsApi.move(row.id, parent.parent_id ?? null, row.version, plan.value.tree_version))
 }
 function shift(row, dir) {
   const sib = siblings(row)
@@ -426,7 +426,7 @@ function shift(row, dir) {
   if (i < 0 || j < 0 || j >= sib.length) return
   const ids = sib.map((r) => r.id)
   ids.splice(j, 0, ids.splice(i, 1)[0])
-  return call(() => wbsApi.reorder(route.params.id, row.parent_id ?? null, ids))
+  return call(() => wbsApi.reorder(route.params.id, row.parent_id ?? null, ids, plan.value.tree_version))
 }
 
 // ── 抽屉：长字段摊在表里的话一行要横拉到底 ──────────────────
