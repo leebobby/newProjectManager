@@ -449,8 +449,7 @@ const isAdmin = auth.isAdmin
 // 顶层 tab：各项目（走 API）在前，local=历史数据（旧的本地报表）在后
 // 默认停在第一个项目上；配置加载完才知道项目列表，见 onMounted
 const topTab = ref('local')
-// 项目 Tab 列表 + 顺序由管理员配置（config.issue_api_projects）；无配置时回退默认
-const DEFAULT_PROJECTS = ['YLS3000', 'YLS5000', 'YLS8000']
+// 项目 Tab 列表 + 顺序由管理员配置；空列表表示没有配置采集项目。
 const apiProjects = computed(() => cfg.value.apiProjects)
 const newProject = ref('')
 
@@ -541,9 +540,9 @@ async function loadCfg() {
     cfg.value.snapshotDir = data.issue_snapshot_dir || ''
     cfg.value.rawExcelDir = data.issue_excel_raw_dir || ''
     cfg.value.analysisExcelDir = data.issue_excel_analysis_dir || ''
-    cfg.value.apiProjects = Array.isArray(data.issue_api_projects) && data.issue_api_projects.length
+    cfg.value.apiProjects = Array.isArray(data.issue_api_projects)
       ? data.issue_api_projects.slice()
-      : DEFAULT_PROJECTS.slice()
+      : []
     cfg.value.snapshotEnabled = data.issue_snapshot_enabled !== false
     cfg.value.snapshotTime = /^\d{1,2}:\d{2}$/.test(data.issue_snapshot_time || '') ? data.issue_snapshot_time : '07:30'
     cfg.value.scriptTimeout = Number(data.issue_script_timeout) > 0 ? Number(data.issue_script_timeout) : 600

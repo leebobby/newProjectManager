@@ -1258,6 +1258,11 @@ DateTime 列有两类，**口径不同，别混**：
 模板是 `backend/config.example.json`，读不到 `config.json` 时回落到它
 （回落到 `{}` 会让 `hw_machine_cell_options` 这类**词表**默认值一起空掉，
 新装实例里那几个下拉是空的，看着像功能坏了）。
+系统名称统一读取 `project_name`，为空时兼容 `about_content` 首行，再回落到「项目管理系统」。
+登录页、侧栏及折叠简称、首页标题/标识和浏览器标题共用 `store/projectConfig.js`，
+`configApi` 的 GET/PUT 响应都会同步更新。简介优先用 `project_description`，否则用关于内容中标题后的第一段。
+页面保存立即生效；直接编辑文件后刷新页面、切换路由或重新聚焦窗口会重新读取，不要求重启或重新构建。
+空 `hero_badges` 表示不显示标签，不能重新塞回技术栈默认标签；关于内容是独立正文，显式名称不会自动改写它。
 数据库属于部署实例的状态而非源码——新库由 `create_all` + `seed_initial_data` 自动生成，
 备份按 [部署指南](doc/部署指南.md) 第 6 章的定时 `.backup` 走。
 

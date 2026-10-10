@@ -1,6 +1,7 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import { auth } from '../store/auth'
+import { applyProjectConfig } from '../store/projectConfig'
 
 const http = axios.create({
   baseURL: '/api',
@@ -266,9 +267,26 @@ export const notificationApi = {
   broadcast: (data) => http.post('/notifications/broadcast', data),
 }
 
+let configRead = null
+let configVersion = 0
 export const configApi = {
-  get: () => http.get('/config'),
-  save: (data) => http.put('/config', data),
+  get: () => {
+    if (!configRead) {
+      const version = configVersion
+      configRead = http.get('/config').then(response => {
+        // 保存期间发出的旧读响应不能覆盖已保存的配置。
+        if (version === configVersion) applyProjectConfig(response.data)
+        return response
+      }).finally(() => { configRead = null })
+    }
+    return configRead
+  },
+  save: async (data) => {
+    const version = ++configVersion
+    const response = await http.put('/config', data)
+    if (version === configVersion) applyProjectConfig(response.data)
+    return response
+  },
 }
 
 export const issueApi = {

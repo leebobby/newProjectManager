@@ -1,7 +1,7 @@
 import json
 import pathlib
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 import models
@@ -36,9 +36,10 @@ def _load() -> dict:
 
 
 @router.get("")
-def get_config():
+def get_config(response: Response):
     """读取项目级配置，前端启动时拉取一次即可。"""
     try:
+        response.headers["Cache-Control"] = "no-store"
         return _load()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"配置文件解析失败: {exc}")

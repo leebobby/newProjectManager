@@ -2,11 +2,9 @@
   <div class="intro-page">
     <div class="hero">
       <div class="hero-inner">
-        <div class="hero-tag">岳麓山 · 项目管理</div>
-        <h1 class="hero-title">岳麓山项目管理系统</h1>
-        <p class="hero-sub">
-          统一管理客户面状态、版本发布与迭代规划，让团队成员实时同步进度、关键问题与变更。
-        </p>
+        <div class="hero-tag">{{ appName }} · 项目管理</div>
+        <h1 class="hero-title">{{ appName }}</h1>
+        <p class="hero-sub">{{ projectDescription }}</p>
         <div class="hero-stack">
           <span v-for="(b, i) in heroBadges" :key="i" class="badge" :class="`badge-c${i % 4}`">{{ b }}</span>
           <button v-if="isAdmin" class="badge-edit-btn" title="编辑标签" @click="startEditBadges">
@@ -107,10 +105,11 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, Edit, Plus } from '@element-plus/icons-vue'
 import { auth } from '../store/auth'
+import { appName, projectConfig, projectDescription } from '../store/projectConfig'
 import {
   annualIterationApi,
   configApi,
@@ -161,8 +160,7 @@ const roadmaps = ref([])
 const roadmapsLoading = ref(true)
 
 // ── 标签（hero badges）──────────────────────────────
-const DEFAULT_BADGES = ['Python · FastAPI', 'Vue 3 · Element Plus', 'SQLite · SQLAlchemy', 'JWT · bcrypt']
-const heroBadges          = ref([...DEFAULT_BADGES])
+const heroBadges = computed(() => Array.isArray(projectConfig.value.hero_badges) ? projectConfig.value.hero_badges : [])
 const badgesDialogVisible = ref(false)
 const badgesDraft         = ref([])
 const badgesSaving        = ref(false)
@@ -181,7 +179,6 @@ async function saveBadges() {
   try {
     const filtered = badgesDraft.value.map(b => b.trim()).filter(Boolean)
     await configApi.save({ hero_badges: filtered })
-    heroBadges.value = filtered.length ? filtered : [...DEFAULT_BADGES]
     badgesDialogVisible.value = false
     ElMessage.success('已保存')
   } catch (e) {
@@ -192,18 +189,14 @@ async function saveBadges() {
 }
 
 // ── 关于内容 ──────────────────────────────────────────
-const aboutContent  = ref('')
+const aboutContent = computed(() => projectConfig.value.about_content || '')
 const aboutEditing  = ref(false)
 const aboutDraft    = ref('')
 const aboutSaving   = ref(false)
 
 async function loadAbout() {
   try {
-    const { data } = await configApi.get()
-    aboutContent.value = data.about_content || ''
-    if (Array.isArray(data.hero_badges) && data.hero_badges.length) {
-      heroBadges.value = data.hero_badges
-    }
+    await configApi.get()
   } catch { /* 非阻塞 */ }
 }
 
@@ -220,7 +213,6 @@ async function saveAbout() {
   aboutSaving.value = true
   try {
     await configApi.save({ about_content: aboutDraft.value })
-    aboutContent.value = aboutDraft.value
     aboutEditing.value = false
     ElMessage.success('已保存')
   } catch (e) {
