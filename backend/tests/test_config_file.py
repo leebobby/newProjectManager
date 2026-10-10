@@ -33,3 +33,34 @@ def test_saving_config_creates_the_real_file(client, admin_headers, monkeypatch,
     assert r.json()["current_stages"] == ["甲", "乙"]
     # 模板里的其余键要一并落进新文件，不能只剩刚提交的那一个
     assert real.exists() and "hw_machine_cell_options" in r.json()
+
+
+def test_config_file_edits_are_visible_without_a_server_restart(client, monkeypatch, tmp_path):
+    import json
+    from routers import config as config_router
+
+    real = tmp_path / "config.json"
+    monkeypatch.setattr(config_router, "CONFIG_PATH", real)
+    for name in ("项目甲", "项目乙"):
+        real.write_text(json.dumps({"project_name": name, "about_content": name + "\n\n项目介绍",
+                                   "current_stages": [name], "hero_badges": []}), encoding="utf-8")
+        response = client.get("/api/config")
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.json()["project_name"] == name
+        assert response.json()["current_stages"] == [name]
+        assert response.json()["hero_badges"] == []
+
+
+def test_partial_save_preserves_project_identity_and_other_config(client, admin_headers, monkeypatch, tmp_path):
+    import json
+    from routers import config as config_router
+
+    real = tmp_path / "config.json"
+    monkeypatch.setattr(config_router, "CONFIG_PATH", real)
+    cfg = {"project_name": "新项目", "project_description": "项目目标", "issue_report_path": "/example/report.xlsx"}
+    real.write_text(json.dumps(cfg), encoding="utf-8")
+    response = client.put("/api/config", headers=admin_headers, json={"hero_badges": []})
+    assert response.status_code == 200
+    assert response.json() == dict(cfg, hero_badges=[])
+    assert json.loads(real.read_text(encoding="utf-8")) == response.json()

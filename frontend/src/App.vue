@@ -7,8 +7,8 @@
       :class="{ 'is-collapsed': sidebarCollapsed }"
       :style="{ '--el-aside-width': sidebarCollapsed ? '64px' : '220px' }"
     >
-      <div class="app-logo" :class="{ collapsed: sidebarCollapsed }">
-        {{ sidebarCollapsed ? '岳' : '岳麓山管理系统' }}
+      <div class="app-logo" :class="{ collapsed: sidebarCollapsed }" :title="appName">
+        {{ sidebarCollapsed ? appInitial : appName }}
       </div>
       <el-menu
         class="aside-menu"
@@ -179,7 +179,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Aim, DataLine, Expand, Fold, Setting } from '@element-plus/icons-vue'
-import { authApi } from './api'
+import { authApi, configApi } from './api'
+import { appInitial, appName } from './store/projectConfig'
 import { auth, installCrossTabAuth } from './store/auth'
 import { startIdleWatcher } from './store/idleWatcher'
 import { specials, reloadSpecials, clearSpecials } from './store/specials'
@@ -195,6 +196,11 @@ function toggleSidebar() {
 
 const route = useRoute()
 const router = useRouter()
+function refreshProjectConfig() {
+  configApi.get().catch(() => { /* 配置暂不可用时保留上次展示，不阻塞页面 */ })
+}
+watch(appName, name => { document.title = name }, { immediate: true })
+watch(() => route.path, refreshProjectConfig)
 // 侧边栏分组顺序；未列出的分组不会渲染
 // 侧栏分组的顺序与**全集**。这里漏写一个分组名，那一组的页面在侧栏里直接消失，
 // 而路由还在、直接敲地址也进得去——最难发现的那类。改 meta.group 时对照着改这里。
@@ -301,6 +307,8 @@ function gotoLogin(reason) {
 }
 
 onMounted(() => {
+  refreshProjectConfig()
+  window.addEventListener('focus', refreshProjectConfig)
   installCrossTabAuth((reason) => gotoLogin(reason))
   stopIdle = startIdleWatcher({
     idleMs: IDLE_MS,
@@ -320,6 +328,7 @@ watch(() => auth.isLoggedIn.value, (v) => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshProjectConfig)
   if (stopIdle) stopIdle()
 })
 </script>

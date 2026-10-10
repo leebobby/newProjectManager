@@ -29,22 +29,13 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
-import { authApi, configApi } from '../api'
+import { authApi } from '../api'
 import { auth } from '../store/auth'
-
-const appName = ref('AI 项目管理系统')
-
-onMounted(async () => {
-  try {
-    const { data } = await configApi.get()
-    const firstLine = (data.about_content || '').split('\n')[0].trim()
-    if (firstLine) appName.value = firstLine
-  } catch { /* 非阻塞，保留默认标题 */ }
-})
+import { appName } from '../store/projectConfig'
 
 const router = useRouter()
 const route = useRoute()
