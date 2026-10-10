@@ -227,14 +227,23 @@ def dated(client, admin_headers, special_id):
 
 def _boxes(client, headers, pid, **params):
     d = client.get(f"/api/wbs/plans/{pid}/diagram", headers=headers, params=params).json()
-    return d, {b["lines"][0].split(" ", 1)[1]: b for b in d["boxes"] if b["is_leaf"]}
+    return d, {b["name"]: b for b in d["boxes"] if b["is_leaf"]}
 
 
-def test_every_box_carries_its_planned_date(client, admin_headers, dated):
-    """方框第三行是计划日期——这正是它和一份事务清单的区别。"""
-    _, by = _boxes(client, admin_headers, dated)
-    assert by["按期的活"]["date"] == "计划 12-01 → 12-20"
-    assert by["只填完成日的活"]["date"] == "计划 完成 12-25"
+def test_diagram_boxes_only_show_name_and_owner(client, admin_headers, dated):
+    """框只显示名称与责任人；表格仍保留计划、完成度等完整数据。"""
+    spec, by = _boxes(client, admin_headers, dated)
+    for name, box in by.items():
+        assert "".join(box["lines"]) == name
+        assert box["owner_lines"] == [box["owner"]]
+        assert box["meta"] == box["owner"]
+        assert box["date"] == "" and box["bar"] is None
+    assert spec["reference_axis"]["start"] == "2026-01"
+    assert spec["reference_axis"]["end"] == "2099-12"
+    detail = client.get(f"/api/wbs/plans/{dated}", headers=admin_headers).json()
+    item = next(x for x in detail["items"] if x["name"] == "拖了的活")
+    assert item["planned_end"].startswith("2026-01-20")
+    assert item["progress_pct"] == 40
 
 
 def test_box_marks_only_real_overdue_rows(client, admin_headers, dated):
@@ -246,7 +255,7 @@ def test_box_marks_only_real_overdue_rows(client, admin_headers, dated):
     d, by = _boxes(client, admin_headers, dated)
     late = {k for k, b in by.items() if b["overdue"]}
     assert late == {"拖了的活"}
-    assert "已延期" in by["拖了的活"]["date"]
+    assert by["拖了的活"]["overdue_days"] > 0
     assert d["overdue"] == 1          # **只数叶子**，父行跟着红但不另计
 
 
@@ -261,13 +270,13 @@ def test_overdue_changes_the_border_not_the_fill(client, admin_headers, dated):
     assert b["fill"] == "#" + brand.STATUS_FILLS["进行中"]     # 底色仍是状态色
 
 
-def test_box_says_so_when_the_due_date_is_missing(client, admin_headers, dated):
+def test_note_reports_missing_due_dates_without_filling_the_box(client, admin_headers, dated):
     """没填计划完成日的如实写出来，不留空：留空会被读成"没有交期要求"，
     而那批行正是最该被追着去补的（同 overdue_unknown）。"""
     d, by = _boxes(client, admin_headers, dated)
-    assert by["什么都没填的活"]["date"] == "未填计划完成日"
+    assert by["什么都没填的活"]["date"] == ""
     assert d["undated"] == 1
-    assert "没填计划完成日" in " ".join(d["note_lines"])
+    assert "没填计划完成日" in "".join(d["note_lines"])
 
 
 def test_uncounted_rows_get_no_date_line_and_no_progress_bar(client, admin_headers, dated):
@@ -296,7 +305,7 @@ def test_parent_box_is_red_only_when_a_leaf_under_it_is(client, admin_headers, d
     d, _ = _boxes(client, admin_headers, dated)
     parent = [b for b in d["boxes"] if not b["is_leaf"]][0]
     assert parent["overdue"] is True          # 底下有「拖了的活」
-    assert parent["date"].startswith("汇总 ")   # 父行的日期明写是汇总值
+    assert parent["date"] == ""              # 父行同样只显示名称与责任人
 
 
 # ─── 导出到第几层 ──────────────────────────────────────────────────────────
@@ -332,3 +341,117 @@ def test_diagram_depth_clip_reports_what_it_folded(client, admin_headers, plan):
                    params={"max_depth": 1}).json()
     assert d["box_count"] == 2                   # 两个阶段，子任务都折叠了
     assert d["folded"] == 4 and d["max_depth"] == 1
+
+
+# ─── 全局月份参考：不改变阶段的位置或任务框尺寸 ───────────────────────────
+@pytest.mark.parametrize("max_depth", [2, 3, 4])
+def test_parent_boxes_enclose_only_their_visible_descendants(max_depth):
+    import wbs_diagram
+
+    tasks = [("1", "阶段甲"), ("1.1", "父任务"), ("1.1.1", "子分组"),
+             ("1.1.1.1", "子任务甲"), ("1.1.1.2", "子任务乙"),
+             ("1.1.2", "同级任务"), ("1.2", "独立任务"), ("2", "阶段乙")]
+    rows = [{"code": code, "name": name, "depth": code.count(".") + 1,
+             "owner": "张明", "is_leaf": code not in {"1", "1.1", "1.1.1"}}
+            for code, name in tasks if code.count(".") + 1 <= max_depth]
+    spec = wbs_diagram.build_diagram(rows)
+    boxes = {b["code"]: b for b in spec["boxes"]}
+    for code, box in boxes.items():
+        children = [b for c, b in boxes.items() if c.rpartition(".")[0] == code]
+        assert box["container"] == (box["depth"] >= 2 and bool(children))
+        if box["container"]:
+            for child in children:
+                assert child["parent_code"] == code
+                assert box["x"] < child["x"]
+                assert child["x"] + child["w"] < box["x"] + box["w"]
+                assert child["y"] >= box["y"] + box["header_h"]
+                assert child["y"] + child["h"] < box["y"] + box["h"]
+        else:
+            assert box["h"] == box["header_h"]
+        for left, right in zip(children, children[1:]):
+            assert left["y"] + left["h"] < right["y"]
+    assert boxes["1.1"]["y"] + boxes["1.1"]["h"] < boxes["1.2"]["y"]
+    assert boxes["1"]["x"] + boxes["1"]["w"] < boxes["2"]["x"]
+    assert spec["legend_y"] > max(b["y"] + b["h"] for b in boxes.values())
+
+
+def test_reference_range_keeps_layout_and_depth_independent(client, admin_headers, dated):
+    base_url = f"/api/wbs/plans/{dated}/diagram"
+    full = client.get(base_url, headers=admin_headers).json()
+    clipped = client.get(base_url, params={"max_depth": 1}, headers=admin_headers).json()
+    assert clipped["reference_axis"] == full["reference_axis"]
+    assert clipped["boxes"][0]["overdue"] == full["boxes"][0]["overdue"]
+    assert any(item["label"] == "已延期（红框）" for item in clipped["legend"])
+    custom = client.get(base_url, params={"reference_start": "2027-01", "reference_end": "2027-08"},
+                        headers=admin_headers).json()
+    assert custom["reference_axis"]["start"] == "2027-01"
+    assert custom["reference_axis"]["end"] == "2027-08"
+    assert [(b["x"], b["y"], b["w"], b["h"]) for b in custom["boxes"]] == [
+        (b["x"], b["y"], b["w"], b["h"]) for b in full["boxes"]]
+
+
+@pytest.mark.parametrize("params", [
+    {"reference_start": "2026-01"},
+    {"reference_end": "2026-01"},
+    {"reference_start": "2026-13", "reference_end": "2027-01"},
+    {"reference_start": "2027-01", "reference_end": "2026-12"},
+    {"reference_start": "bad", "reference_end": "2027-01"},
+])
+def test_reference_range_rejects_invalid_requests(client, admin_headers, plan, params):
+    for suffix in ("diagram", "export.xlsx"):
+        response = client.get(f"/api/wbs/plans/{plan}/{suffix}", params=params, headers=admin_headers)
+        assert response.status_code == 400
+
+
+def test_reference_axis_defaults_to_six_months_and_never_overlaps_boxes():
+    import wbs_diagram
+
+    rows = [{"code": "1", "name": "准备", "depth": 1, "is_leaf": True,
+             "start": "2026-10-03", "end": "2026-10-20", "owner": "张明"}]
+    spec = wbs_diagram.build_diagram(rows)
+    axis = spec["reference_axis"]
+    assert (axis["start"], axis["end"]) == ("2026-10", "2027-03")
+    assert axis["y"] < min(b["y"] for b in spec["boxes"])
+    ticks = axis["ticks"]
+    for left, right in zip(ticks, ticks[1:]):
+        assert left["label_x"] + wbs_diagram.text_w(left["label"], spec["legend_px"]) < right["label_x"]
+    assert ticks[-1]["label_x"] + wbs_diagram.text_w(ticks[-1]["label"], spec["legend_px"]) <= axis["x2"]
+
+
+def test_long_owner_wraps_without_expanding_stage_width():
+    import wbs_diagram
+
+    owner = "很长的责任人姓名及团队名称" * 3
+    spec = wbs_diagram.build_diagram([{"code": "1", "name": "任务", "owner": owner,
+                                     "depth": 1, "is_leaf": True}])
+    box = spec["boxes"][0]
+    assert len(box["owner_lines"]) == 2
+    assert box["owner"] == owner
+    assert box["w"] == wbs_diagram.COL_W
+    assert all(wbs_diagram.text_w(line, box["meta_px"]) <= box["w"] - 20
+               for line in box["owner_lines"])
+
+
+def test_excel_diagram_uses_the_same_reference_axis(client, admin_headers, dated, monkeypatch):
+    import openpyxl
+    import wbs_diagram
+
+    params = {"max_depth": 1, "reference_start": "2026-10", "reference_end": "2027-03"}
+    expected = client.get(f"/api/wbs/plans/{dated}/diagram", params=params, headers=admin_headers).json()
+    captured = []
+    render = wbs_diagram.render_png
+
+    def capture(spec, *args, **kwargs):
+        captured.append(spec)
+        return render(spec, *args, **kwargs)
+
+    monkeypatch.setattr(wbs_diagram, "render_png", capture)
+    response = client.get(f"/api/wbs/plans/{dated}/export.xlsx", params=params, headers=admin_headers)
+    assert response.status_code == 200
+    workbook = openpyxl.load_workbook(io.BytesIO(response.content))
+    assert "调试框图" in workbook.sheetnames
+    assert len(captured) == 1
+    assert captured[0]["reference_axis"] == expected["reference_axis"]
+    assert captured[0]["boxes"] == expected["boxes"]
+    if render(expected) is not None:
+        assert len(workbook["调试框图"]._images) == 1

@@ -2,12 +2,18 @@
   <div class="wd-wrap" v-loading="loading">
     <div class="wd-bar">
       <span class="wd-hint">
-        第 1 层是<b>调试阶段</b>，箭头是推进顺序；方框第三行是<b>计划日期</b>，
-        <b class="wd-late">红框</b>＝已过计划完成日还没做完。
+        第 1 层是<b>调试阶段</b>，第 2 层起<b>父框包含子任务</b>，框内只显示<b>名称和责任人</b>；
+        顶部月份仅作全局参考，<b class="wd-late">红框</b>表示延期。
       </span>
       <span class="wd-grow" />
-      <el-button size="small" :loading="exporting" @click="onExport('png')">导出 PNG</el-button>
-      <el-button size="small" :loading="exporting" @click="onExport('svg')">导出 SVG</el-button>
+      <el-date-picker :model-value="referenceRange" type="monthrange" size="small"
+                      value-format="YYYY-MM" format="YYYY年MM月"
+                      start-placeholder="参考开始月份" end-placeholder="参考结束月份"
+                      range-separator="至" aria-label="框图参考月份范围"
+                      style="width: 260px; flex: 0 0 260px"
+                      @update:model-value="emit('update:referenceRange', $event)" />
+      <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('png')">导出 PNG</el-button>
+      <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('svg')">导出 SVG</el-button>
     </div>
 
     <!-- 版面（每根条 / 每个方框的 x/y/w/h 与折好的行）由服务端 wbs_diagram 算，
@@ -34,11 +40,25 @@
               :y="spec.pad + spec.title_px * 1.5 + spec.sub_px" :font-size="spec.sub_px"
               fill="#808080">{{ spec.subtitle }}</text>
 
+        <g v-if="spec.reference_axis" class="wd-reference-axis">
+          <text :x="spec.pad" :y="spec.reference_axis.title_y"
+                :font-size="spec.legend_px" fill="#8A94A6">全局日期参考（按月）</text>
+          <line :x1="spec.reference_axis.x1" :x2="spec.reference_axis.x2"
+                :y1="spec.reference_axis.y" :y2="spec.reference_axis.y"
+                stroke="#BFBFBF" stroke-width="1" />
+          <g v-for="(tick, i) in spec.reference_axis.ticks" :key="'month' + i">
+            <line :x1="tick.x" :x2="tick.x" :y1="spec.reference_axis.y - 5"
+                  :y2="spec.reference_axis.y" stroke="#BFBFBF" stroke-width="1" />
+            <text :x="tick.label_x" :y="spec.reference_axis.label_y"
+                  :font-size="spec.legend_px" fill="#8A94A6">{{ tick.label }}</text>
+          </g>
+        </g>
+
         <line v-for="(a, i) in spec.arrows" :key="'a' + i"
               :x1="a.x1 + 6" :y1="a.y1" :x2="a.x2 - 8" :y2="a.y2"
               :stroke="spec.arrow_color" stroke-width="1.6" marker-end="url(#wd-arrow)" />
 
-        <g v-for="(b, i) in spec.boxes" :key="'b' + i">
+        <g v-for="(b, i) in spec.boxes" :key="'b' + i" class="wd-task-box" :data-code="b.code">
           <!-- 延期＝红色粗边框，**底色照旧**：底色表达的是状态（绿＝已完成、
                黄＝进行中），拿它表示延期就得二选一，而那正是要同时看到的两件事 -->
           <rect :x="b.x" :y="b.y" :width="b.w" :height="b.h" rx="3"
@@ -49,18 +69,10 @@
                 :x="b.x + 10" :y="b.y + 7 + (k + 1) * b.line_h - b.line_h * 0.28"
                 :font-size="b.font_px" :font-weight="b.bold ? 700 : 400"
                 :fill="b.color">{{ l }}</text>
-          <text v-if="b.meta" :x="b.x + 10"
-                :y="b.y + 7 + b.lines.length * b.line_h + b.meta_h * 0.72"
-                :font-size="b.meta_px" fill="#808080">{{ b.meta }}</text>
-          <text v-if="b.date" :x="b.x + 10"
-                :y="b.y + 7 + b.lines.length * b.line_h + (b.meta ? b.meta_h : 0) + b.meta_h * 0.72"
-                :font-size="b.meta_px" :fill="b.date_color">{{ b.date }}</text>
-          <template v-if="b.bar">
-            <rect :x="b.x + 10" :y="b.y + b.h - 3.5 - b.bar.h"
-                  :width="b.bar.track_w" :height="b.bar.h" rx="1.5" :fill="b.bar.track" />
-            <rect v-if="b.bar.w > 0.5" :x="b.x + 10" :y="b.y + b.h - 3.5 - b.bar.h"
-                  :width="b.bar.w" :height="b.bar.h" rx="1.5" :fill="b.bar.fill" />
-          </template>
+          <text v-for="(owner, k) in b.owner_lines" :key="'owner' + k"
+                :x="b.x + 10"
+                :y="b.y + 7 + b.lines.length * b.line_h + (k + 0.72) * b.meta_h"
+                :font-size="b.meta_px" fill="#808080">{{ owner }}</text>
         </g>
 
         <!-- 图例与底注：两张图共用同一段位置 -->
@@ -95,8 +107,10 @@ import { serializeSvg, stamp, svgBlob, svgToPngBlob } from '../utils/svgExport'
 const props = defineProps({
   planId: { type: [String, Number], required: true },
   maxDepth: { type: [String, Number], default: null },
+  referenceRange: { type: Array, default: null },
 })
 
+const emit = defineEmits(['update:referenceRange'])
 const spec = ref(null)
 const loading = ref(false)
 const exporting = ref(false)
@@ -107,7 +121,7 @@ const warnText = computed(() => {
   const s = spec.value
   if (!s) return ''
   const p = []
-  if (s.folded) p.push(`只画到第 ${s.max_depth} 层，另有 ${s.folded} 行在更深的层级上没有画出来；它们的工期仍然算在上级方框的汇总里。`)
+  if (s.folded) p.push(`只画到第 ${s.max_depth} 层，另有 ${s.folded} 行在更深的层级上没有画出来；汇总数据仍按完整任务树计算。`)
   if (s.skipped) p.push(`另有 ${s.skipped} 行没画进图里（整份 WBS 太大，全画出来每个方框细得看不见）。上面的表格是全量的。`)
   return p.join(' ')
 })
@@ -132,24 +146,31 @@ const legendPos = computed(() => {
 
 // 方框里的字是**折过行、可能截断**的，悬停给全的那一份
 function boxTip(b) {
-  const bits = [b.lines.join(''), b.meta, b.date].filter(Boolean)
-  if (b.overdue) bits.push(`已过计划完成日 ${b.overdue_days} 天，状态还不是「已完成」`)
-  return bits.join('\n')
+  return [b.name, b.owner].filter(Boolean).join('\n')
 }
 
+let loadVersion = 0
 async function load() {
-  if (!props.planId) return
+  const version = ++loadVersion
+  if (!props.planId) { spec.value = null; return }
   loading.value = true
   try {
-    const { data } = await wbsApi.diagram(props.planId, props.maxDepth)
-    spec.value = data
+    const reference = props.referenceRange?.length === 2
+      ? { reference_start: props.referenceRange[0], reference_end: props.referenceRange[1] }
+      : {}
+    const { data } = await wbsApi.diagram(props.planId, props.maxDepth, reference)
+    if (version === loadVersion) spec.value = data
   } catch (e) {
-    ElMessage.error(apiError(e, '加载调试框图失败'))
+    if (version === loadVersion) {
+      spec.value = null
+      ElMessage.error(apiError(e, '加载调试框图失败'))
+    }
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
-watch(() => [props.planId, props.maxDepth], load, { immediate: true })
+watch(() => [props.planId, props.maxDepth, ...(props.referenceRange || [])], load, { immediate: true })
+
 defineExpose({ reload: load })
 
 async function onExport(kind) {

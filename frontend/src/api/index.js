@@ -136,14 +136,14 @@ export const wbsApi = {
   // diagram ＝调试框图（按阶段分列，看"这件事分几步走"）
   // timeline ＝ A 图（真日期横轴 + 大框套中框套小框，看"哪天该完、拖了没有"）
   // 两张刻意不合并：合成一张的话，两个问题里必然有一个答不出来。
-  diagram: (id, max_depth = null) =>
-    http.get(`/wbs/plans/${id}/diagram`, { params: max_depth ? { max_depth } : {} }),
+  diagram: (id, max_depth = null, reference = {}) =>
+    http.get(`/wbs/plans/${id}/diagram`, { params: { ...reference, ...(max_depth ? { max_depth } : {}) } }),
   timeline: (id, max_depth = null) =>
     http.get(`/wbs/plans/${id}/timeline`, { params: max_depth ? { max_depth } : {} }),
   // max_depth＝导出到第几层（空＝全部）。汇总数字不受它影响，折叠了几行写在表尾。
-  exportXlsx: (id, max_depth = null) =>
+  exportXlsx: (id, max_depth = null, reference = {}) =>
     http.get(`/wbs/plans/${id}/export.xlsx`,
-      { responseType: 'blob', params: max_depth ? { max_depth } : {} }),
+      { responseType: 'blob', params: { ...reference, ...(max_depth ? { max_depth } : {}) } }),
 }
 
 export const specialApi = {

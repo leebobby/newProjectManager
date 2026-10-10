@@ -2,20 +2,11 @@
 
 一份 WBS 拆出来的树，横着扫表格能看清每一行填了什么，却看不出"这件事分几步走、
 每一步底下挂着哪些活、哪一步已经拖了"。框图答的就是这几个问题：
-**第 1 层＝调试阶段，从左到右一列一列排开；每一列底下按层级缩进摆它的子任务**。
+**第 1 层＝调试阶段，从左到右一列一列排开；从第 2 层开始，父任务框包住子任务框**。
 
-**每个方框自带计划日期与延期标记**，这是这张图和一张普通清单的区别所在。
-第一版的方框只有"名字 + 负责人 + 人天 + 完成度"，现场反馈是"这就是个事务清单，
-看不出谁该什么时候完、谁已经拖了"。所以盒子里现在是三行：
-
-    2.2.2 解算并回代验证              ← 标题（字号按层级分档）
-    陈曦 · 2 人天 · 60% · 进行中       ← 谁在做、做到哪儿
-    计划 08-27 → 09-04 · 已延期 23 天  ← 哪天该完、拖了没有（延期时整行转红）
-
-**刻意不改成甘特图**：甘特图把每条活摊到一根时间轴上，时间看得清楚了，
-"这件事分几步走、每步底下挂着哪些活"却读不出来——那是一排按日期散开的条，
-看不出谁属于哪个阶段、阶段之间的推进顺序是什么。框图保住的是拆解结构，
-日期作为方框里的一行跟着走。
+每个方框只显示任务名称和责任人；状态底色、延期红框、阶段分列与层级字号保持原样。
+图顶部是一根按月的全局日期参考轴，不按日期移动或拉长任务框，不作为精确排程。
+默认跨度至少六个月，允许指定参考月份范围；裁剪显示层级不改变参考范围。
 
 这个模块**只吐一份版面描述**（每个盒子的 x/y/w/h、已经折好行的文字、颜色），
 两个出口各自照着画：
@@ -56,6 +47,7 @@
 - **父行画细的汇总条**（子行的最早开始 → 最晚完成），与表格里那个汇总同一个口径。
 """
 from datetime import date, timedelta
+from math import floor
 from typing import List, Optional, Tuple
 
 import brand
@@ -70,7 +62,7 @@ BOX_GAP = 8
 INDENT = 14              # 每深一层缩进多少
 BOX_PAD_X = 10
 BOX_PAD_Y = 7
-META_PX = 10.5           # 盒子里第二行那串小字（负责人/人天/完成度），不属于层级阶梯
+META_PX = 10.5           # 盒子里第二行的责任人，不属于层级阶梯
 TITLE_PX = 17.0          # 图头：这两个也不属于层级阶梯，它们不是任务
 SUB_PX = 11.5
 LEGEND_PX = 11.0
@@ -265,7 +257,68 @@ def _colors(row: dict, depth: int):
     return LEAF_FILL, "#" + (text or enums.wbs_level_font(depth)["color"])
 
 
-def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict:
+def reference_months(rows: List[dict], start: Optional[str] = None,
+                     end: Optional[str] = None) -> Tuple[int, int]:
+    """参考跨度来自整棵树；自定义月份必须成对给出，默认至少六个月。"""
+    def number(v: str) -> int:
+        import re
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}", v):
+            raise ValueError("参考月份应为 YYYY-MM")
+        d = date.fromisoformat(v + "-01")
+        return d.year * 12 + d.month - 1
+
+    if start is not None or end is not None:
+        if start is None or end is None:
+            raise ValueError("请同时指定参考开始和结束月份")
+        first, last = number(start), number(end)
+        if last < first:
+            raise ValueError("参考结束月份不能早于开始月份")
+        return first, last
+
+    months = []
+    for r in rows:
+        if (r.get("status") or "").strip() in enums.WBS_UNCOUNTED_STATUSES:
+            continue
+        for key in ("start", "end"):
+            if r.get(key):
+                months.append(number(str(r[key])[:7]))
+    today = date.today()
+    first = min(months) if months else today.year * 12 + today.month - 1
+    last = max(months) if months else first
+    return first, min(9999 * 12 + 11, max(first + 5, last))
+
+
+def _reference_axis(first: int, last: int, width: float, y: float) -> dict:
+    """刻度按月；跨度很长时疏排刻度，所有标注仍保留年份和月份。"""
+    count = last - first + 1
+    capacity = max(2, int(width // 100))
+    step = max(1, (count + capacity - 1) // capacity)
+    ticks = []
+    for offset in range(0, count, step):
+        month = first + offset
+        label = f"{month // 12}年{month % 12 + 1}月"
+        x = PAD + offset / count * width
+        label_x = min(x + 4, PAD + width - text_w(label, LEGEND_PX))
+        ticks.append({"x": round(x, 1), "label_x": floor(label_x * 10) / 10,
+                      "label": label})
+    # 即使疏排刻度，最末月份仍明确显示，避免用户误判参考范围。
+    end_label = f"{last // 12}年{last % 12 + 1}月"
+    if ticks[-1]["label"] != end_label:
+        label_x = PAD + width - text_w(end_label, LEGEND_PX)
+        if label_x < ticks[-1]["label_x"] + text_w(ticks[-1]["label"], LEGEND_PX) + 12:
+            ticks.pop()
+        ticks.append({"x": round(PAD + width, 1), "label_x": floor(label_x * 10) / 10,
+                      "label": end_label})
+    return {"start": f"{first // 12:04d}-{first % 12 + 1:02d}",
+            "end": f"{last // 12:04d}-{last % 12 + 1:02d}",
+            "x1": PAD, "x2": round(PAD + width, 1), "y": round(y, 1),
+            "label_y": round(y - 10, 1), "title_y": round(y - 32, 1),
+            "ticks": ticks}
+
+
+def build_diagram(rows: List[dict], title: str = "", subtitle: str = "",
+                  reference_start: Optional[str] = None, reference_end: Optional[str] = None,
+                  reference_rows: Optional[List[dict]] = None) -> dict:
     """把拍平的 WBS（按页面顺序、带 code/depth）排成框图版面。
 
     `rows` 是**纯字典**，不吃 ORM 对象：这个模块被 Excel 导出和接口两处调用，
@@ -273,6 +326,8 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
     每行认这些键：code / name / depth / status / owner / days / pct / is_leaf / leaf_count。
     """
     # 切段与整段截断收口在 split_stages / cap_stages，A 图吃的是同一份
+    first_month, last_month = reference_months(
+        reference_rows if reference_rows is not None else rows, reference_start, reference_end)
     stages, skipped = split_stages(rows)
     stages, dropped = cap_stages(stages, MAX_BOXES)
     skipped += dropped
@@ -287,7 +342,8 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
     # 截进别的材料，落单的一张没有标题就找不回出处（同 `pptx_utils` 的页脚三件套、
     # 同 VersionTimeline 把图例画进 svg）。所以版面里给它们留位置，两个出口照着填。
     head_h = TITLE_PX * 1.5 + (SUB_PX * 1.6 if subtitle else 0) + 14
-    y_band = PAD + head_h
+    axis_y = PAD + head_h + 34
+    y_band = axis_y + 22
     used_status: List[str] = []
 
     for band in bands:
@@ -296,30 +352,34 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
         for ci, st in enumerate(band):
             x_col = PAD + ci * (COL_W + COL_GAP)
             y = y_band
-            for r in st:
+            containers: List[dict] = []
+
+            def close_containers(next_depth: int):
+                nonlocal y
+                while containers and containers[-1]["depth"] >= next_depth:
+                    parent = containers.pop()
+                    # 子任务之间留原来的间距，最末子任务与外框留底部内边距。
+                    parent["h"] = round(y - BOX_GAP + BOX_PAD_Y - parent["y"], 1)
+                    y = parent["y"] + parent["h"] + BOX_GAP
+
+            for ri, r in enumerate(st):
                 depth = max(1, int(r.get("depth") or 1))
+                close_containers(depth)
                 fs = enums.wbs_level_font(depth)
                 size = float(fs["px"])
                 indent = 0 if depth == 1 else (depth - 2) * INDENT
                 x = x_col + indent
-                w = COL_W - indent
+                w = COL_W - 2 * indent
                 inner = w - 2 * BOX_PAD_X
-                lines = _wrap(f"{r.get('code', '')} {r.get('name') or '（未命名）'}".strip(),
+                lines = _wrap(str(r.get("name") or "（未命名）"),
                               size, inner, TITLE_MAX_LINES)
-                meta = _meta_text(r)
-                meta_lines = _wrap(meta, META_PX, inner, 1) if meta else []
-                dates = _date_text(r)
-                date_lines = _wrap(dates, META_PX, inner, 1) if dates else []
+                owner = str(r.get("owner") or "未指定").strip() or "未指定"
+                owner_lines = _wrap(owner, META_PX, inner, 2)
                 late_days = int(r.get("overdue_days") or 0)
                 lh = round(size * LINE_RATIO, 1)
                 mh = round(META_PX * LINE_RATIO, 1)
                 pct_now = max(0, min(100, int(r.get("pct") or 0)))
-                # 完成度细条只给**算进统计**的行画：「已变更 / 不涉及」的 0%
-                # 画一条空槽出来，看着像"一点没做"，而它其实是不做了
-                show_bar = (r.get("status") or "").strip() not in enums.WBS_UNCOUNTED_STATUSES
-                h = (2 * BOX_PAD_Y + len(lines) * lh
-                     + (mh if meta_lines else 0) + (mh if date_lines else 0)
-                     + (BAR_H + 4 if show_bar else 0))
+                h = 2 * BOX_PAD_Y + len(lines) * lh + len(owner_lines) * mh
                 fill, color = _colors(r, depth)
                 st_word = (r.get("status") or "").strip()
                 if r.get("is_leaf") and st_word and st_word not in used_status:
@@ -327,12 +387,18 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
                 box = {
                     "x": round(x, 1), "y": round(y, 1), "w": round(w, 1), "h": round(h, 1),
                     "depth": depth, "code": r.get("code", ""),
-                    "lines": lines, "meta": meta_lines[0] if meta_lines else "",
-                    "date": date_lines[0] if date_lines else "",
+                    "parent_code": containers[-1]["code"] if containers else (
+                        st[0].get("code", "") if depth > 1 else ""),
+                    "header_h": round(h, 1),
+                    "container": depth >= 2 and ri + 1 < len(st)
+                                 and int(st[ri + 1].get("depth") or 1) > depth,
+                    "lines": lines, "name": str(r.get("name") or "（未命名）"),
+                    "owner": owner, "owner_lines": owner_lines,
+                    "meta": owner_lines[0], "date": "",
                     "font_px": size, "font_pt": float(fs["pt"]), "bold": bool(fs["bold"]),
                     "line_h": lh, "meta_h": mh, "meta_px": META_PX,
                     "fill": fill, "color": color,
-                    # 延期＝红色粗边框 + 日期那行转红，**底色照旧**：底色表达的是状态，
+                    # 延期保留红色粗边框，**底色照旧**：底色表达的是状态，
                     # 拿它表示延期就得在"进行中"和"已延期"里二选一，而那正是要同看的两件事
                     "stroke": LATE_STROKE if late_days else STROKE,
                     "stroke_w": 2.0 if late_days else 1.0,
@@ -340,14 +406,17 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
                     "overdue": bool(late_days), "overdue_days": late_days,
                     "is_leaf": bool(r.get("is_leaf")),
                     "pct": pct_now,
-                    "bar": ({"track": BAR_TRACK, "fill": BAR_FILL, "h": BAR_H,
-                             "w": round((w - 2 * BOX_PAD_X) * pct_now / 100.0, 1),
-                             "track_w": round(w - 2 * BOX_PAD_X, 1)} if show_bar else None),
+                    "bar": None,
                 }
                 boxes.append(box)
                 if depth == 1:
                     stage_heads.append(box)
-                y += h + BOX_GAP
+                if box["container"]:
+                    containers.append(box)
+                    y += h
+                else:
+                    y += h + BOX_GAP
+            close_containers(1)
             band_h = max(band_h, y - y_band)
         # 阶段之间画箭头：只在**同一段内**相邻的两列之间，跨段不画（见模块说明）
         for a, b in zip(stage_heads, stage_heads[1:]):
@@ -360,8 +429,9 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
     legend = [{"label": s, "fill": "#" + brand.STATUS_FILLS[s]}
               for s in used_status if s in brand.STATUS_FILLS]
     overdue_n = sum(1 for b in boxes if b["overdue"] and b["is_leaf"])
-    undated_n = sum(1 for b in boxes if b["date"] == "未填计划完成日")
-    if overdue_n:
+    undated_n = sum(1 for r in rows if _date_text(r) == "未填计划完成日")
+    reference_axis = _reference_axis(first_month, last_month, width - 2 * PAD, axis_y)
+    if any(b["overdue"] for b in boxes):
         # 「已延期」是**边框**不是底色，图例里也画成一个空心红框才对得上
         legend.append({"label": "已延期（红框）", "fill": "#FFFFFF", "stroke": LATE_STROKE})
     legend_y = y_band - 30 + 10
@@ -379,6 +449,7 @@ def build_diagram(rows: List[dict], title: str = "", subtitle: str = "") -> dict
         "note_lines": note_lines, "note_y": round(note_y, 1),
         "width": int(width), "height": int(height),
         "boxes": boxes, "arrows": arrows, "legend": legend,
+        "reference_axis": reference_axis,
         "stage_count": len(stages), "box_count": len(boxes),
         # 只筛不报的数字比没有更糟：这两个都要摆到页面和图上
         # （overdue **只数叶子**：父行跟着红是推上来的，父子都数会把 4 条报成 8 条）
@@ -434,6 +505,19 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
         d.text((S(spec["pad"]), S(spec["pad"] + spec["title_px"] * 1.5)),
                spec["subtitle"], font=f_sub, fill="#" + brand.MUTED)
 
+    axis = spec["reference_axis"]
+    f_axis = _load_pil_font(max(7, S(LEGEND_PX * 0.78)))
+    if f_axis is not None:
+        d.text((S(PAD), S(axis["title_y"] - LEGEND_PX)), "全局日期参考（按月）",
+               font=f_axis, fill=DATE_TEXT)
+        d.line([(S(axis["x1"]), S(axis["y"])), (S(axis["x2"]), S(axis["y"]))],
+               fill=STROKE, width=max(1, S(1)))
+        for tick in axis["ticks"]:
+            d.line([(S(tick["x"]), S(axis["y"] - 5)), (S(tick["x"]), S(axis["y"]))],
+                   fill=STROKE, width=max(1, S(1)))
+            d.text((S(tick["label_x"]), S(axis["label_y"] - LEGEND_PX)),
+                   tick["label"], font=f_axis, fill=DATE_TEXT)
+
     for b in spec["boxes"]:
         x0, y0 = S(b["x"]), S(b["y"])
         x1, y1 = S(b["x"] + b["w"]), S(b["y"] + b["h"])
@@ -447,19 +531,10 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
         for ln in b["lines"]:
             d.text((x0 + S(BOX_PAD_X), ty), ln, font=f, fill=b["color"])
             ty += S(b["line_h"])
-        if b["meta"] and fm is not None:
-            d.text((x0 + S(BOX_PAD_X), ty), b["meta"], font=fm, fill="#" + brand.MUTED)
-            ty += S(b["meta_h"])
-        if b.get("date") and fm is not None:
-            d.text((x0 + S(BOX_PAD_X), ty), b["date"], font=fm, fill=b["date_color"])
-            ty += S(b["meta_h"])
-        bar = b.get("bar")
-        if bar:
-            by = y1 - S(BOX_PAD_Y * 0.5 + bar["h"])
-            bx = x0 + S(BOX_PAD_X)
-            d.rectangle([bx, by, bx + S(bar["track_w"]), by + S(bar["h"])], fill=bar["track"])
-            if bar["w"] > 0.5:
-                d.rectangle([bx, by, bx + S(bar["w"]), by + S(bar["h"])], fill=bar["fill"])
+        if fm is not None:
+            for line in b["owner_lines"]:
+                d.text((x0 + S(BOX_PAD_X), ty), line, font=fm, fill="#" + brand.MUTED)
+                ty += S(b["meta_h"])
 
     # 图例：只列图上真的出现过的状态。全档铺出来的话，一份全是「未开始」的 WBS
     # 底下挂着四种颜色的说明，看图的人会以为自己漏看了绿的那几个
@@ -491,13 +566,13 @@ def diagram_note(overdue: int, undated: int, wrapped: bool, skipped: int) -> str
     （同 `unassigned` / `overdue_unknown` / `match_rate`）。页面与 PNG 共用这一份，
     各写一份的表现是同一张图在页面上说"另有 3 行"、导出的图里说"另有 5 行"。
     """
-    parts = ["第 1 层＝调试阶段，箭头是推进顺序；越深一层字越小。"
-             "方框第三行是计划日期，底部细条是完成度。"]
+    parts = ["第 1 层＝调试阶段，箭头是推进顺序；从第 2 层开始，父任务框包住子任务框，越深一层字越小。"
+             "方框只显示任务名称和责任人；顶部月份仅作全局参考，不与阶段列精确对应。"]
     if overdue:
         parts.append(f"红框＝已过计划完成日、状态还不是「已完成」，共 {overdue} 个工作包"
                      f"（只数叶子；上级方框跟着红，不另计）。")
     if undated:
-        parts.append(f"另有 {undated} 个方框没填计划完成日，说不出哪天该完。")
+        parts.append(f"另有 {undated} 个任务没填计划完成日，详细日期请查看表格。")
     if wrapped:
         parts.append("阶段一行摆不下，折到了下一段（段与段之间不画箭头）。")
     if skipped:
