@@ -50,7 +50,7 @@
         <span class="grow" />
         <!-- 导出到第几层：深于它的行不再逐条列出，但**汇总数字一个都不变**
              （人天/完成度本来就是从叶子算上来的），折叠了几条写在表尾 -->
-        <el-select v-model="exportDepth" size="small" style="width: 128px" :persistent="false">
+        <el-select v-model="exportDepth" size="small" style="width: 144px" :persistent="false" aria-label="生成层级">
           <el-option v-for="o in depthOptions" :key="o.value" :label="o.label" :value="o.value" />
         </el-select>
         <!-- A 图是**另一张图**，和调试框图各答各的（见 wbs_timeline 模块说明）。
@@ -63,10 +63,10 @@
       </div>
 
       <!-- 框图与表格是同一份数据的两种看法：表看每一行填了什么，
-           图看这件事分几步走、每一步哪天该完、哪一步已经拖了。
+           图看这件事分几步走、每一步由谁负责、哪一步已经拖了。
            默认收着——不是每次进来都要看图，而它一展开就占掉一屏 -->
       <WbsDiagram v-if="showDiagram" ref="diagramRef" :plan-id="route.params.id"
-                  :max-depth="exportDepth || null" class="diagram" />
+                  :max-depth="exportDepth || null" v-model:reference-range="diagramReferenceRange" class="diagram" />
 
       <el-empty v-if="!items.length" description="这份 WBS 还是空的">
         <span class="muted">可以「套用标准调试模板」一次生成 6 个分组，再往里逐层拆；也可以直接新增一个分组。</span>
@@ -296,6 +296,7 @@ const exporting = ref(false)
 // 0 ＝ 全部。默认全部：先给全量，要收再收——默认砍掉几层的话，
 // 导出的人根本不知道自己少拿了东西
 const exportDepth = ref(0)
+const diagramReferenceRange = ref(null)
 const dform = reactive({ deliverable: '', dod: '', predecessor_ids: [], remark: '' })
 
 const ymd = (v) => (v ? String(v).slice(0, 10) : '—')
@@ -308,15 +309,18 @@ const codeStyle = (d) => ({ ...levelStyle(d), fontWeight: 400 })
 // 只列到「树里真有的那么深」+ 全部：铺一堆点进去和全量一样的档位没有意义
 const depthOptions = computed(() => {
   const max = plan.value?.max_depth || 1
-  const out = [{ value: 0, label: '导出全部层级' }]
-  for (let d = 1; d < max; d += 1) out.push({ value: d, label: `只导出到第 ${d} 层` })
+  const out = [{ value: 0, label: '生成全部层级' }]
+  for (let d = 1; d < max; d += 1) out.push({ value: d, label: `生成到第 ${d} 层` })
   return out
 })
 
 async function exportXlsx() {
   exporting.value = true
   try {
-    const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null)
+    const reference = diagramReferenceRange.value?.length === 2
+      ? { reference_start: diagramReferenceRange.value[0], reference_end: diagramReferenceRange.value[1] }
+      : {}
+    const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null, reference)
     const suffix = exportDepth.value ? `-第${exportDepth.value}层` : ''
     downloadBlob(data, `${plan.value.name || 'wbs'}${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`)
     ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图，第 3 页是 A 图）')
@@ -506,7 +510,11 @@ async function removePlan() {
   }
 }
 
-watch(() => route.params.id, load)
+watch(() => route.params.id, () => {
+  diagramReferenceRange.value = null
+  exportDepth.value = 0
+  load()
+})
 onMounted(load)
 </script>
 

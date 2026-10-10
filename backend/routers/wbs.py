@@ -713,13 +713,23 @@ def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
 
 
 def _build_view(db: Session, plan: models.WbsPlan, rows: List[dict],
-                max_depth: Optional[int]) -> dict:
+                max_depth: Optional[int], reference_start: Optional[str] = None,
+                reference_end: Optional[str] = None) -> dict:
     """框图的版面。深度裁剪在这儿统一做一次——页面和导出各裁各的话，
     同一个「到第 2 层」在页面上是 8 个方框、在导出的图里是 11 个。
     """
     sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
     kept, folded = _clip_depth(rows, max_depth)
-    spec = wbs_diagram.build_diagram(_diagram_rows(kept), title=plan.name, subtitle=sub)
+    # 先算全树的颜色/延期，再裁剪显示；月份轴同样来自完整计划。
+    chart_rows = _diagram_rows(rows)
+    kept_codes = {r["code"] for r in kept}
+    try:
+        spec = wbs_diagram.build_diagram(
+            [r for r in chart_rows if r["code"] in kept_codes], title=plan.name, subtitle=sub,
+            reference_start=reference_start, reference_end=reference_end,
+            reference_rows=chart_rows)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     spec["folded"] = folded
     spec["max_depth"] = max_depth or 0
     return spec
@@ -727,11 +737,12 @@ def _build_view(db: Session, plan: models.WbsPlan, rows: List[dict],
 
 @router.get("/plans/{plan_id}/diagram")
 def plan_diagram(plan_id: int, max_depth: Optional[int] = None,
+                 reference_start: Optional[str] = None, reference_end: Optional[str] = None,
                  db: Session = Depends(get_db),
                  _: models.User = Depends(get_current_user)):
     """调试框图的**版面**（不是图片）：页面拿它画 SVG，Excel 导出拿同一份画 PNG。
 
-    每个方框自带计划日期与延期标记（红框），所以这张图不只是一份事务清单。
+    方框只显示任务名称和责任人，保留状态底色和延期红框；顶部按月展示全局日期参考。
     `max_depth` 只保留前 N 层（空＝全部），汇总数字不受影响。
 
     读权限一档＝登录用户，与详情页同档。版面算在服务端而不是前端，是为了让页面
@@ -741,7 +752,7 @@ def plan_diagram(plan_id: int, max_depth: Optional[int] = None,
     plan = _get_plan(db, plan_id)
     rows = _flatten(db.query(models.WbsItem)
                     .filter(models.WbsItem.plan_id == plan_id).all())
-    return _build_view(db, plan, rows, max_depth)
+    return _build_view(db, plan, rows, max_depth, reference_start, reference_end)
 
 
 @router.get("/plans/{plan_id}/timeline")
@@ -812,6 +823,7 @@ def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
 
 @router.get("/plans/{plan_id}/export.xlsx")
 def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
+                reference_start: Optional[str] = None, reference_end: Optional[str] = None,
                 db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
     """整份 WBS 导出成 Excel：第 1 页是表、第 2 页是调试框图、第 3 页是 A 图。
@@ -891,7 +903,7 @@ def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
                              f"没有逐条列出。**上面的合计仍然把它们算在内**——"
                              f"人天与完成度本来就是从最底层的叶子汇总上来的。")
 
-    _blocks_sheet(wb, db, plan, rows, folded, max_depth)
+    _blocks_sheet(wb, db, plan, all_rows, folded, max_depth, reference_start, reference_end)
     _timeline_sheet(wb, db, plan, all_rows, max_depth)
 
     buf = io.BytesIO()
@@ -930,12 +942,12 @@ _NO_FONT = ("这台服务器上没找到能渲染中文的字体，图没有画�
 
 
 def _blocks_sheet(wb, db: Session, plan: models.WbsPlan, rows: List[dict],
-                  folded: int, max_depth: Optional[int]) -> None:
+                  folded: int, max_depth: Optional[int], reference_start: Optional[str] = None,
+                  reference_end: Optional[str] = None) -> None:
     """第 2 页：调试框图。版面与页面共用 wbs_diagram，这里只负责画。"""
     ws = wb.create_sheet("调试框图")
     ws.column_dimensions["A"].width = 120
-    sub = f"{enums.WBS_KIND_LABELS.get(plan.kind, plan.kind)} · {_ref_name(db, plan)}".strip(" ·")
-    spec = wbs_diagram.build_diagram(_diagram_rows(rows), title=plan.name, subtitle=sub)
+    spec = _build_view(db, plan, rows, max_depth, reference_start, reference_end)
     ws.cell(1, 1, f"{plan.name} · 调试框图")
     ws.cell(2, 1, f"共 {spec['stage_count']} 个阶段 / {spec['box_count']} 个方框。"
                   + " ".join(spec["note_lines"]))
