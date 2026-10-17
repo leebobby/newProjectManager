@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -2214,9 +2214,35 @@ class WbsPlanOut(WbsPlanBase):
     planned_end: Optional[datetime] = None
 
 
+class WbsIssueRisk(BaseModel):
+    kind: str = "问题"
+    description: str = ""
+    owner: str = ""
+    progress: str = ""
+    raised_on: Optional[date] = None
+    resolved_on: Optional[date] = None
+
+    @field_validator("kind")
+    @classmethod
+    def valid_kind(cls, value):
+        if value not in ("问题", "风险"):
+            raise ValueError("类型应为问题或风险")
+        return value
+
+    @field_validator("resolved_on")
+    @classmethod
+    def valid_resolution_date(cls, value, info):
+        raised = info.data.get("raised_on")
+        if value and raised and value < raised:
+            raise ValueError("解决时间不能早于提出时间")
+        return value
+
+
 class WbsItemBase(BaseModel):
     name: str = ""
     deliverable: str = ""
+    current_progress: str = ""
+    issues_risks: List[WbsIssueRisk] = []
     dod: str = ""
     predecessor: str = ""
     owner_user_id: Optional[int] = None
@@ -2254,6 +2280,8 @@ class WbsItemCreate(WbsItemBase):
 class WbsItemUpdate(BaseModel):
     name: Optional[str] = None
     deliverable: Optional[str] = None
+    current_progress: Optional[str] = None
+    issues_risks: Optional[List[WbsIssueRisk]] = None
     dod: Optional[str] = None
     predecessor: Optional[str] = None
     owner_user_id: Optional[int] = None

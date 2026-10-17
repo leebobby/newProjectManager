@@ -371,6 +371,16 @@ major_versions        大版本    C10SPC100        号段，自己不发布
 
 **导出与调试框图：版面只有一份，字号阶梯也只有一份**
 
+WBS 填报：选择 `owner_user_id` 时自动带出该用户的 `group_id`；显式提供组则尊重手动选择，
+人员未分组时保留已有组。普通用户下拉使用 `/users/options`，不使用管理员的 `/users`。
+叶子任务提交 `progress_pct=100` 时由后端同步 `status=已完成`，创建与更新口径相同；父任务仍只汇总。
+详情依次为 `current_progress`（复用专项富文本编辑器与后端清洗）、多选前置、`issues_risks` 条目。
+条目含类型、描述、责任人、进展、提出与解决日期；解决日期不得早于提出日期。
+旧交付物 / DoD / remark 保留，旧库通过 `0020_wbs_progress_risks` 增列，不把旧备注猜成新条目。
+Excel 在原列之后增加当前进展（纯文本）和问题风险，保留原字段导出。
+A 图 `dependency_mode` 支持 `arrows`（默认）、`lines`、`hidden`；只改变展示，不删除前置关联。
+页面 SVG / PNG 和 Excel 第 3 页传同一模式，PNG 画线时用 `arrowheads` 决定是否绘制箭头。
+
 `GET /plans/{id}/export.xlsx` 导出两页——第 1 页是整棵树的平表，第 2 页是调试框图；
 `GET /plans/{id}/diagram` 只回**版面**（每个方框的 x/y/w/h 与折好的行），页面拿它画 SVG。
 两处读权限都是**登录用户**，与详情页同档。
