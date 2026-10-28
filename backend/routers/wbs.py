@@ -31,7 +31,8 @@
 - **删整份 WBS ＝ 仅 admin**，按「删掉的是什么」定档：那是别人跟了几个月的计划。
 """
 from datetime import date, datetime
-from typing import Dict, List, Optional
+import json
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -265,6 +266,8 @@ def _norm_predecessors(db: Session, item: models.WbsItem, ids) -> str:
 def _item_out(rec: dict, refs: Optional[Dict[int, dict]] = None) -> schemas.WbsItemOut:
     it = rec["item"]
     o = schemas.WbsItemOut.model_validate(it)
+    o.issues_risks = [schemas.WbsIssueRisk.model_validate(entry)
+                     for entry in json.loads(it.issues_risks_json or "[]")]
     o.code, o.depth = rec["code"], rec["depth"]
     o.is_leaf, o.child_count = rec["is_leaf"], rec["child_count"]
     o.roll_days, o.roll_pct = rec["roll_days"], rec["roll_pct"]
@@ -356,6 +359,22 @@ def _fill_snapshots(db: Session, data: dict) -> None:
     if "group_id" in data:
         g = db.get(models.ResourceGroup, data["group_id"]) if data["group_id"] else None
         data["owner_group"] = g.name if g else ""
+
+
+def _prepare_item_data(db: Session, data: dict) -> None:
+    # 责任人与组在同一次保存中更新，显式指定组时尊重手动选择。
+    if data.get("owner_user_id") and "group_id" not in data:
+        user = db.get(models.User, data["owner_user_id"])
+        if user and user.group_id is not None:
+            data["group_id"] = user.group_id
+    if data.get("progress_pct") == 100:
+        data["status"] = "已完成"
+    if "current_progress" in data:
+        from routers.specials import _sanitize_rich
+        data["current_progress"] = _sanitize_rich(data["current_progress"] or "")
+    if "issues_risks" in data:
+        data["issues_risks_json"] = json.dumps(data.pop("issues_risks") or [],
+                                               ensure_ascii=False, default=lambda v: v.isoformat())
 
 
 def _validate_ref(db: Session, kind: str, special_id, machine_status_id) -> None:
@@ -498,6 +517,9 @@ def create_item(plan_id: int, payload: schemas.WbsItemCreate, db: Session = Depe
         if parent.plan_id != plan_id:
             raise HTTPException(400, "上级行不属于这份 WBS")
     data = payload.model_dump()
+    if "group_id" not in payload.model_fields_set:
+        data.pop("group_id", None)
+    _prepare_item_data(db, data)
     _fill_snapshots(db, data)
     data["plan_id"] = plan_id
     data["sort_order"] = _tail_sort_order(db, plan_id, payload.parent_id)
@@ -525,6 +547,7 @@ def update_item(item_id: int, payload: schemas.WbsItemUpdate, db: Session = Depe
             data.pop(f, None)
     if "predecessor_ids" in data:
         data["predecessor_ids"] = _norm_predecessors(db, it, data["predecessor_ids"])
+    _prepare_item_data(db, data)
     _fill_snapshots(db, data)
     for k, v in data.items():
         setattr(it, k, v)
@@ -693,7 +716,7 @@ def _fold_counts(all_rows: List[dict], max_depth: Optional[int]) -> Dict[str, in
 
 
 def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
-                   max_depth: Optional[int]) -> dict:
+                   max_depth: Optional[int], dependency_mode: str = "arrows") -> dict:
     """A 图（时间轴嵌套框图）的版面。深度裁剪同样在这儿统一做一次。
 
     与调试框图**吃同一批行、同一份延期判定**（`_diagram_rows`），只是排法不同：
@@ -709,7 +732,7 @@ def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
     sub = " · ".join(x for x in (plan.name,
                                  enums.WBS_KIND_LABELS.get(plan.kind, plan.kind), ref) if x)
     return wbs_timeline.build_timeline(rows, subtitle=sub, max_depth=max_depth,
-                                       folded=folded)
+                                       folded=folded, dependency_mode=dependency_mode)
 
 
 def _build_view(db: Session, plan: models.WbsPlan, rows: List[dict],
@@ -757,6 +780,7 @@ def plan_diagram(plan_id: int, max_depth: Optional[int] = None,
 
 @router.get("/plans/{plan_id}/timeline")
 def plan_timeline(plan_id: int, max_depth: Optional[int] = None,
+                  dependency_mode: Literal["arrows", "lines", "hidden"] = "arrows",
                   db: Session = Depends(get_db),
                   _: models.User = Depends(get_current_user)):
     """**A 图**的版面（不是图片）：一根真日期横轴 + 大框套中框套小框。
@@ -772,10 +796,11 @@ def plan_timeline(plan_id: int, max_depth: Optional[int] = None,
     plan = _get_plan(db, plan_id)
     rows = _flatten(db.query(models.WbsItem)
                     .filter(models.WbsItem.plan_id == plan_id).all())
-    return _timeline_view(db, plan, rows, max_depth)
+    return _timeline_view(db, plan, rows, max_depth, dependency_mode)
 
 
 def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
+    from xlsx_utils import _strip_html
     def ymd(v):
         return str(v)[:10] if v else ""
 
@@ -817,6 +842,11 @@ def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
             pred(it),
             (it.remark or "").strip(),
             " · ".join(_issues(it, leaf)),
+            _strip_html(it.current_progress or ""),
+            "\n\n".join(f"[{entry.get('kind', '问题')}] {entry.get('description') or ''}\n"
+                        f"责任人：{entry.get('owner') or ''}；进展：{entry.get('progress') or ''}\n"
+                        f"提出时间：{entry.get('raised_on') or ''}；解决时间：{entry.get('resolved_on') or ''}"
+                      for entry in json.loads(it.issues_risks_json or "[]")),
         ])
     return out
 
@@ -824,6 +854,7 @@ def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
 @router.get("/plans/{plan_id}/export.xlsx")
 def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
                 reference_start: Optional[str] = None, reference_end: Optional[str] = None,
+                dependency_mode: Literal["arrows", "lines", "hidden"] = "arrows",
                 db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
     """整份 WBS 导出成 Excel：第 1 页是表、第 2 页是调试框图、第 3 页是 A 图。
@@ -854,7 +885,7 @@ def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
 
     headers = ["编号", "工作包", "类型", "负责人", "PL组", "计划开始", "计划完成",
                "人天", "完成度%", "状态", "交付物", "完成标准（DoD）", "前置",
-               "假设·范围外·风险", "待补录"]
+               "假设·范围外·风险", "待补录", "当前进展", "问题和风险"]
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "WBS"
@@ -863,6 +894,8 @@ def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
         ws.append(line)
     last = 1 + len(rows)
     ws.column_dimensions["B"].width = 42
+    ws.column_dimensions["P"].width = 60
+    ws.column_dimensions["Q"].width = 70
     beautify(ws, last_row=last, center_cols={1, 3, 8, 9, 10})
 
     # ── beautify 之后再上层级字号：它把数据区的字统一刷成 11 号，
@@ -879,6 +912,12 @@ def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
         # 这一列复制出去、或者拿来筛选排序时，名字前面永远挂着几个空格
         c.alignment = Alignment(vertical="center", wrap_text=True, indent=r["depth"] - 1)
         ws.row_dimensions[row_no].height = max(18.0, fs["pt"] * 1.7)
+        from xlsx_utils import _cell_lines
+        detail_lines = max(_cell_lines(ws.cell(row_no, col).value or "", width)
+                           for col, width in ((16, 60), (17, 70)))
+        if detail_lines > 1:
+            ws.row_dimensions[row_no].height = max(ws.row_dimensions[row_no].height,
+                                                      min(409, detail_lines * 15 + 4))
         if not r["is_leaf"]:
             # 分组行整行上中灰，和它底下的叶子分开。只给**父行**上：
             # 父行的状态那格本来就是空的，不会盖掉叶子的状态点灯
@@ -904,7 +943,7 @@ def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
                              f"人天与完成度本来就是从最底层的叶子汇总上来的。")
 
     _blocks_sheet(wb, db, plan, all_rows, folded, max_depth, reference_start, reference_end)
-    _timeline_sheet(wb, db, plan, all_rows, max_depth)
+    _timeline_sheet(wb, db, plan, all_rows, max_depth, dependency_mode)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -968,7 +1007,7 @@ def _blocks_sheet(wb, db: Session, plan: models.WbsPlan, rows: List[dict],
 
 
 def _timeline_sheet(wb, db: Session, plan: models.WbsPlan, all_rows: List[dict],
-                    max_depth: Optional[int]) -> None:
+                    max_depth: Optional[int], dependency_mode: str = "arrows") -> None:
     """第 3 页：A 图（时间轴嵌套框图）。版面与页面共用 `wbs_timeline`，这里只负责画。
 
     **不画标题**（现场要求："有这样的图后坐标的标题就不需要了"）——日期轴自己就说明了
@@ -976,7 +1015,7 @@ def _timeline_sheet(wb, db: Session, plan: models.WbsPlan, all_rows: List[dict],
     """
     ws = wb.create_sheet("A图（时间轴）")
     ws.column_dimensions["A"].width = 120
-    spec = _timeline_view(db, plan, all_rows, max_depth)
+    spec = _timeline_view(db, plan, all_rows, max_depth, dependency_mode)
     ws.cell(1, 1, f"{plan.name} · A 图（时间轴嵌套框图）")
     ws.cell(2, 1, f"共 {spec['row_count']} 行 / {spec['box_count']} 个框。"
                   + " ".join(spec["note_lines"]))

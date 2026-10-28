@@ -100,8 +100,8 @@
         </el-table-column>
         <el-table-column label="负责人" width="118">
           <template #default="{ row }">
-            <el-select v-model="row.owner_user_id" size="small" filterable clearable
-                       :persistent="false" class="cell" placeholder="未指定"
+            <el-select v-model="row.owner_user_id" size="small" filterable clearable aria-label="任务责任人"
+                       :persistent="false" class="cell" placeholder="输入姓名查找"
                        @change="patch(row, { owner_user_id: row.owner_user_id ?? null })">
               <el-option v-for="u in users" :key="u.id" :label="u.full_name || u.username" :value="u.id" />
             </el-select>
@@ -140,7 +140,7 @@
         <el-table-column label="完成度" width="118">
           <template #default="{ row }">
             <template v-if="row.is_leaf">
-              <el-input v-model="row.progress_pct" size="small" class="cell num"
+              <el-input v-model="row.progress_pct" size="small" class="cell num" aria-label="任务完成度"
                         @change="patch(row, { progress_pct: clampPct(row.progress_pct) })" />
               <el-progress :percentage="clampPct(row.progress_pct)" :show-text="false" :stroke-width="4" />
             </template>
@@ -191,7 +191,7 @@
       <el-dialog v-model="timelineOn" title="A 图（时间轴嵌套框图）" width="94%" top="4vh"
                  destroy-on-close>
         <WbsTimeline v-if="timelineOn" :plan-id="route.params.id"
-                     :max-depth="exportDepth || null" />
+                     :max-depth="exportDepth || null" v-model:dependency-mode="dependencyMode" />
         <template #footer>
           <span class="dlg-foot">导出的 Excel 第 3 页就是这张图；上面那个「导出到第几层」
             同时管表、调试框图和这张 A 图——各裁各的话同一个「到第 2 层」在表里是 8 行、
@@ -199,16 +199,18 @@
         </template>
       </el-dialog>
 
-      <el-drawer v-model="drawer" :title="drawerRow?.name || '工作包详情'" size="440px">
+      <el-drawer v-model="drawer" :title="drawerRow?.name || '工作包详情'" size="min(760px, 94vw)" destroy-on-close>
         <div class="dcode">WBS {{ drawerRow?.code }} · 第 {{ drawerRow?.depth }} 层 ·
           {{ drawerRow?.is_leaf ? '叶子（可填人天/完成度/状态）' : '父行（人天、完成度、日期均为汇总）' }}</div>
         <el-form label-position="top">
-          <el-form-item label="交付物"><el-input v-model="dform.deliverable" type="textarea" :rows="2" /></el-form-item>
-          <el-form-item label="完成标准（DoD）"><el-input v-model="dform.dod" type="textarea" :rows="2" /></el-form-item>
+          <el-form-item label="当前进展">
+            <RichTextEditor v-model="dform.current_progress" min-height="160px" placeholder="填写当前进展，支持格式、列表和颜色…" style="width: 100%" />
+          </el-form-item>
           <!-- 前置**存 id 不存编号**：编号（1.2.3）是按位置现算的，存编号的话上移
                一行之后它就指到另一件活上去了，而两行单独看都合法 -->
           <el-form-item label="前置任务（在这份 WBS 里选）">
             <el-select v-model="dform.predecessor_ids" multiple filterable clearable
+                       aria-label="前置任务"
                        :persistent="false" style="width: 100%"
                        placeholder="选一个或多个先做的任务">
               <el-option v-for="o in predOptions" :key="o.id" :label="o.label" :value="o.id" />
@@ -228,9 +230,36 @@
               <el-button link type="primary" size="small" @click="dropLegacy">清掉这行老值</el-button>。
             </div>
           </el-form-item>
-          <el-form-item label="假设 · 范围外 · 风险"><el-input v-model="dform.remark" type="textarea" :rows="3" /></el-form-item>
+          <el-form-item label="问题和风险">
+            <div class="risk-list">
+              <div v-for="(entry, index) in dform.issues_risks" :key="index" class="risk-entry">
+                <div class="risk-head">
+                  <el-select v-model="entry.kind" size="small" style="width: 90px" aria-label="问题或风险">
+                    <el-option label="问题" value="问题" /><el-option label="风险" value="风险" />
+                  </el-select>
+                  <el-button link type="danger" @click="dform.issues_risks.splice(index, 1)">删除条目</el-button>
+                </div>
+                <el-input v-model="entry.description" type="textarea" :rows="2" placeholder="问题或风险描述" />
+                <div class="risk-fields">
+                  <el-autocomplete v-model="entry.owner" :fetch-suggestions="suggestOwners" placeholder="责任人" clearable />
+                  <el-date-picker v-model="entry.raised_on" type="date" value-format="YYYY-MM-DD" placeholder="提出时间" />
+                  <el-date-picker v-model="entry.resolved_on" type="date" value-format="YYYY-MM-DD" placeholder="解决时间" />
+                </div>
+                <el-input v-model="entry.progress" type="textarea" :rows="2" placeholder="处理进展" />
+              </div>
+              <el-empty v-if="!dform.issues_risks.length" description="暂无问题和风险" :image-size="48" />
+              <el-button size="small" :icon="Plus" @click="addRisk">添加问题或风险</el-button>
+            </div>
+          </el-form-item>
         </el-form>
-        <el-button type="primary" @click="saveDrawer">保存</el-button>
+        <el-collapse v-if="drawerRow?.deliverable || drawerRow?.dod || drawerRow?.remark" class="legacy-detail">
+          <el-collapse-item title="原有交付信息（保留）">
+            <p v-if="drawerRow.deliverable">交付物：{{ drawerRow.deliverable }}</p>
+            <p v-if="drawerRow.dod">完成标准：{{ drawerRow.dod }}</p>
+            <p v-if="drawerRow.remark">原备注：{{ drawerRow.remark }}</p>
+          </el-collapse-item>
+        </el-collapse>
+        <el-button type="primary" :loading="drawerSaving" @click="saveDrawer">保存</el-button>
         <el-button @click="drawer = false">关闭</el-button>
       </el-drawer>
     </template>
@@ -247,6 +276,7 @@ import { auth } from '../store/auth'
 import { reloadWbs } from '../store/wbs'
 import WbsDiagram from '../components/WbsDiagram.vue'
 import WbsTimeline from '../components/WbsTimeline.vue'
+import RichTextEditor from '../components/RichTextEditor.vue'
 // 各级任务的字号阶梯与后端 enums.WBS_LEVEL_FONTS **两端各一份、必须同步**：
 // 分叉的表现是页面上分组比子任务大一号、导出的 Excel 里一样大
 import { levelStyle } from '../utils/wbsLevel'
@@ -289,6 +319,8 @@ const drawer = ref(false)
 const drawerRow = ref(null)
 const showDiagram = ref(false)
 const timelineOn = ref(false)
+const dependencyMode = ref('arrows')
+const drawerSaving = ref(false)
 // 顺着前置跳过去的那一行：高亮留着不自动消，弹窗一关还看得见自己跳到了哪儿
 const hlId = ref(null)
 const diagramRef = ref(null)
@@ -297,7 +329,16 @@ const exporting = ref(false)
 // 导出的人根本不知道自己少拿了东西
 const exportDepth = ref(0)
 const diagramReferenceRange = ref(null)
-const dform = reactive({ deliverable: '', dod: '', predecessor_ids: [], remark: '' })
+const dform = reactive({ current_progress: '', predecessor_ids: [], issues_risks: [] })
+function suggestOwners(query, callback) {
+  callback(users.value.filter(u => `${u.full_name || ''} ${u.username}`.toLowerCase().includes(query.toLowerCase()))
+    .map(u => ({ value: u.full_name || u.username })))
+}
+function addRisk() {
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  dform.issues_risks.push({ kind: '问题', description: '', owner: '', progress: '', raised_on: today, resolved_on: null })
+}
 
 const ymd = (v) => (v ? String(v).slice(0, 10) : '—')
 const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v))
@@ -320,7 +361,8 @@ async function exportXlsx() {
     const reference = diagramReferenceRange.value?.length === 2
       ? { reference_start: diagramReferenceRange.value[0], reference_end: diagramReferenceRange.value[1] }
       : {}
-    const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null, reference)
+    const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null,
+      { ...reference, dependency_mode: dependencyMode.value })
     const suffix = exportDepth.value ? `-第${exportDepth.value}层` : ''
     downloadBlob(data, `${plan.value.name || 'wbs'}${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`)
     ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图，第 3 页是 A 图）')
@@ -367,7 +409,7 @@ async function load() {
   loading.value = true
   try {
     const [d, u, g] = await Promise.all([
-      wbsApi.detail(route.params.id), userApi.list(), resourceGroupApi.list(),
+      wbsApi.detail(route.params.id), userApi.options({ include_inactive: true }), resourceGroupApi.list(),
     ])
     apply(d.data)
     users.value = u.data
@@ -437,16 +479,23 @@ function shift(row, dir) {
 function openDrawer(row) {
   drawerRow.value = row
   Object.assign(dform, {
-    deliverable: row.deliverable || '', dod: row.dod || '',
+    current_progress: row.current_progress || '',
+    issues_risks: (row.issues_risks || []).map(entry => ({ ...entry })),
     // 回填的是**服务端给的那几个 id**（含指向已删除行的那些）：照着现算的编号
     // 反填的话，行一挪编号就变了，等于每次打开都换一批关联
     predecessor_ids: (row.predecessors || []).map((p) => p.id),
-    remark: row.remark || '',
   })
   drawer.value = true
 }
 async function saveDrawer() {
-  if (await patch(drawerRow.value, { ...dform })) drawer.value = false
+  if (dform.issues_risks.some(entry => entry.raised_on && entry.resolved_on && entry.resolved_on < entry.raised_on)) {
+    ElMessage.warning('解决时间不能早于提出时间')
+    return
+  }
+  drawerSaving.value = true
+  try {
+    if (await patch(drawerRow.value, { ...dform })) drawer.value = false
+  } finally { drawerSaving.value = false }
 }
 
 // 前置可选项＝这份 WBS 里除自己以外的全部行（含分组：一整段做完才能开下一段
@@ -511,6 +560,9 @@ async function removePlan() {
 }
 
 watch(() => route.params.id, () => {
+  drawer.value = false
+  timelineOn.value = false
+  dependencyMode.value = 'arrows'
   diagramReferenceRange.value = null
   exportDepth.value = 0
   load()
@@ -569,4 +621,11 @@ onMounted(load)
 .notes li { color: #606266; margin-bottom: 7px; font-size: 12.5px; line-height: 1.7; }
 .notes code { background: #f5f7fa; border-radius: 2px; padding: 0 4px; font-size: 11.5px; }
 .dcode { color: #909399; font-size: 12px; margin-bottom: 10px; }
+.risk-list { width: 100%; }
+.risk-entry { padding: 12px; margin-bottom: 12px; border: 1px solid #ebeef5; border-radius: 4px; }
+.risk-head { display: flex; justify-content: space-between; margin-bottom: 8px; }
+.risk-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 8px 0; }
+.risk-fields :deep(.el-date-editor), .risk-fields :deep(.el-autocomplete) { width: 100%; }
+.legacy-detail { margin-bottom: 16px; white-space: pre-wrap; }
+@media (max-width: 600px) { .risk-fields { grid-template-columns: 1fr; } }
 </style>

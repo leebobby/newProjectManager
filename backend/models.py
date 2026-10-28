@@ -1633,6 +1633,8 @@ class WbsItem(Base):
                        nullable=True, index=True, comment="上级行；NULL＝最外层分组")
     name = Column(String(300), nullable=False, default="", comment="工作包")
     deliverable = Column(Text, default="", comment="交付物")
+    current_progress = Column(Text, nullable=False, default="", comment="当前进展（富文本）")
+    issues_risks_json = Column(Text, nullable=False, default="[]", comment="问题和风险条目")
     dod = Column(Text, default="", comment="完成标准（DoD）")
     predecessor = Column(String(200), default="", comment="前置 WBS 编号，逗号分隔（不参与计算）")
     # 前置关联**存 id 不存编号**：编号（1.2.3）是按 parent_id + sort_order 现算的，

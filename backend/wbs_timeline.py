@@ -171,7 +171,8 @@ def _month_starts(d0: date, d1: date) -> List[date]:
 
 
 def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] = None,
-                   max_depth: Optional[int] = None, folded: int = 0) -> dict:
+                   max_depth: Optional[int] = None, folded: int = 0,
+                   dependency_mode: str = "arrows") -> dict:
     """把拍平的 WBS（按页面顺序、带 code/depth/start/end/overdue_days）排成 A 图版面。
 
     `rows` 是**纯字典**、不吃 ORM 对象（同 `wbs_diagram.build_diagram`）：这个模块
@@ -413,7 +414,10 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
         "top": round(top, 1), "bottom": round(bottom, 1),
         "width": width, "height": height,
         "date_start": d0.isoformat(), "date_end": d1.isoformat(), "dated": dated,
-        "rows": out_rows, "boxes": boxes, "bands": bands, "arrows": arrows,
+        "rows": out_rows, "boxes": boxes, "bands": bands,
+        "arrows": [] if dependency_mode == "hidden" else arrows,
+        "dependency_mode": dependency_mode,
+        "arrowheads": dependency_mode == "arrows",
         "ticks": ticks, "grid": grid, "lines": lines, "today": todaym,
         "legend": legend, "legend_y": round(legend_y, 1), "legend_px": LEGEND_PX,
         "note_lines": note_lines, "note_y": round(note_y, 1),
@@ -544,7 +548,7 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
     for arrow in spec.get("arrows", []):
         pts = [(S(x), S(y)) for x, y in arrow["points"]]
         d.line(pts, fill=arrow["color"], width=max(1, S(1.5)))
-        if len(pts) >= 2:
+        if len(pts) >= 2 and spec.get("arrowheads", True):
             import math
             (_x0, _y0), (x1, y1) = pts[-2], pts[-1]
             angle = math.atan2(y1 - _y0, x1 - _x0)

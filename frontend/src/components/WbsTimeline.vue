@@ -3,11 +3,17 @@
     <div class="wt-bar">
       <span class="wt-hint">
         横轴是<b>真日期</b>；任务编号、名称和进度直接写在框内，框里套的是下一层。
-        有前置关系的任务用箭头连接。<b class="wt-late">红框</b>＝已过计划完成日还没做完。
+        依赖关系可选择箭头、仅连线或隐藏。<b class="wt-late">红框</b>＝已过计划完成日还没做完。
       </span>
       <span class="wt-grow" />
-      <el-button size="small" :loading="exporting" @click="onExport('png')">导出 PNG</el-button>
-      <el-button size="small" :loading="exporting" @click="onExport('svg')">导出 SVG</el-button>
+      <el-select :model-value="dependencyMode" aria-label="依赖关系显示" size="small" style="width: 150px"
+                 @update:model-value="emit('update:dependencyMode', $event)">
+        <el-option label="显示依赖箭头" value="arrows" />
+        <el-option label="仅显示依赖连线" value="lines" />
+        <el-option label="隐藏依赖关系" value="hidden" />
+      </el-select>
+      <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('png')">导出 PNG</el-button>
+      <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('svg')">导出 SVG</el-button>
     </div>
 
     <!-- 版面（每一行、每个框的 x/y/w/h）由服务端 wbs_timeline 算，这里只负责画。
@@ -55,9 +61,9 @@
         </g>
 
         <!-- 依赖线压在父级底色上；折线路由避开框内文字，只在终点接触任务框。 -->
-        <polyline v-for="(a, i) in spec.arrows" :key="'a' + i"
+        <polyline v-for="(a, i) in spec.arrows" :key="'a' + i" class="wt-dependency"
                   :points="a.points.map(p => p.join(',')).join(' ')" fill="none"
-                  :stroke="a.color" stroke-width="1.5" marker-end="url(#wt-arrow)" />
+                  :stroke="a.color" stroke-width="1.5" :marker-end="spec.arrowheads ? 'url(#wt-arrow)' : undefined" />
 
         <!-- 今天：整张图唯一一处红 -->
         <line :x1="spec.today.x" :y1="spec.today.y1" :x2="spec.today.x" :y2="spec.today.y2"
@@ -99,7 +105,9 @@ import { serializeSvg, stamp, svgBlob, svgToPngBlob } from '../utils/svgExport'
 const props = defineProps({
   planId: { type: [String, Number], required: true },
   maxDepth: { type: [String, Number], default: null },
+  dependencyMode: { type: String, default: 'arrows' },
 })
+const emit = defineEmits(['update:dependencyMode'])
 
 const spec = ref(null)
 const loading = ref(false)
@@ -117,19 +125,21 @@ const warnText = computed(() => {
   return p.join(' ')
 })
 
+let loadVersion = 0
 async function load() {
+  const version = ++loadVersion
   if (!props.planId) return
   loading.value = true
   try {
-    const { data } = await wbsApi.timeline(props.planId, props.maxDepth)
-    spec.value = data
+    const { data } = await wbsApi.timeline(props.planId, props.maxDepth, props.dependencyMode)
+    if (version === loadVersion) spec.value = data
   } catch (e) {
-    ElMessage.error(apiError(e, '加载 A 图失败'))
+    if (version === loadVersion) { spec.value = null; ElMessage.error(apiError(e, '加载 A 图失败')) }
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
-watch(() => [props.planId, props.maxDepth], load, { immediate: true })
+watch(() => [props.planId, props.maxDepth, props.dependencyMode], load, { immediate: true })
 defineExpose({ reload: load })
 
 async function onExport(kind) {

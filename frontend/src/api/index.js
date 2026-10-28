@@ -139,8 +139,8 @@ export const wbsApi = {
   // 两张刻意不合并：合成一张的话，两个问题里必然有一个答不出来。
   diagram: (id, max_depth = null, reference = {}) =>
     http.get(`/wbs/plans/${id}/diagram`, { params: { ...reference, ...(max_depth ? { max_depth } : {}) } }),
-  timeline: (id, max_depth = null) =>
-    http.get(`/wbs/plans/${id}/timeline`, { params: max_depth ? { max_depth } : {} }),
+  timeline: (id, max_depth = null, dependency_mode = 'arrows') =>
+    http.get(`/wbs/plans/${id}/timeline`, { params: { dependency_mode, ...(max_depth ? { max_depth } : {}) } }),
   // max_depth＝导出到第几层（空＝全部）。汇总数字不受它影响，折叠了几行写在表尾。
   exportXlsx: (id, max_depth = null, reference = {}) =>
     http.get(`/wbs/plans/${id}/export.xlsx`,

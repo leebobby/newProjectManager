@@ -126,7 +126,7 @@ async function load() {
   loading.value = true
   try {
     const [p, s, m, u] = await Promise.all([
-      wbsApi.listPlans(), specialApi.list(false), customerStatusApi.list(), userApi.list(),
+      wbsApi.listPlans(), specialApi.list(false), customerStatusApi.list(), userApi.options({ include_inactive: true }),
     ])
     plans.value = p.data
     specials.value = s.data
