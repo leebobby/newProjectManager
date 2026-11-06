@@ -3,28 +3,36 @@
     <div class="wt-bar">
       <span class="wt-hint">
         横轴是<b>真日期</b>；任务编号、名称和进度直接写在框内，框里套的是下一层。
-        依赖关系可选择箭头、仅连线或隐藏。<b class="wt-late">红框</b>＝已过计划完成日还没做完。
+        当前层级的全部任务均展示，可横向、纵向滚动查看。<b class="wt-late">红框</b>＝已过计划完成日还没做完。
       </span>
       <span class="wt-grow" />
+      <el-select :model-value="maxDepth || 0" aria-label="A 图展示层级" size="small" style="width: 150px"
+                 :persistent="false" @update:model-value="emit('update:maxDepth', $event)">
+        <el-option v-for="option in depthOptions" :key="option.value" :value="option.value"
+                   :label="option.value ? `展示到第 ${option.value} 层` : '展示全部层级'" />
+      </el-select>
       <el-select :model-value="dependencyMode" aria-label="依赖关系显示" size="small" style="width: 150px"
                  @update:model-value="emit('update:dependencyMode', $event)">
         <el-option label="显示依赖箭头" value="arrows" />
         <el-option label="仅显示依赖连线" value="lines" />
         <el-option label="隐藏依赖关系" value="hidden" />
       </el-select>
+      <el-button size="small" :disabled="!drawable" @click="fitWidth">适应宽度</el-button>
+      <el-button size="small" :disabled="!drawable" @click="zoom = 1">原始大小</el-button>
       <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('png')">导出 PNG</el-button>
       <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('svg')">导出 SVG</el-button>
     </div>
+    <div v-if="spec" class="wt-count">当前展示 {{ spec.row_count }} 项任务 · 缩放 {{ Math.round(zoom * 100) }}%</div>
 
     <!-- 版面（每一行、每个框的 x/y/w/h）由服务端 wbs_timeline 算，这里只负责画。
          前端再排一次的话，同一份 WBS 在页面上和导出的 PNG 里框的位置不一样，
          而两边单独看都正常（见 CLAUDE.md「WBS · 导出与调试框图」）。 -->
-    <div v-if="drawable" class="wt-scroll">
+    <div v-if="drawable" ref="viewportRef" class="wt-scroll" tabindex="0" role="region" aria-label="A 图完整内容">
       <!-- 画笔一律写成**元素属性**，不写在 <style scoped> 里：scoped CSS 靠 data-v
            属性挂在页面 DOM 上，XMLSerializer 序列化出去的那份带不走它，表现是
            「页面上好好的，导出来全变成黑的默认色」 -->
       <svg ref="svgRef" :viewBox="`0 0 ${spec.width} ${spec.height}`"
-           :width="spec.width" :height="spec.height" class="wt-svg">
+           :width="spec.width * zoom" :height="spec.height * zoom" class="wt-svg">
         <defs>
           <marker id="wt-arrow" viewBox="0 0 10 10" refX="9" refY="5"
                   markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -43,7 +51,7 @@
               :x="t.label_x" :y="spec.top - 20" font-size="11" fill="#808080">{{ t.label }}</text>
 
         <!-- 框按行的顺序画：父框先画、子框压在上面，这就是「框里套框」看得见的原因 -->
-        <g v-for="(b, i) in spec.boxes" :key="'b' + i">
+        <g v-for="(b, i) in spec.boxes" :key="'b' + i" class="wt-task-box" :data-code="b.code">
           <rect :x="b.x" :y="b.y" :width="b.w" :height="b.h" :rx="b.rx"
                 :fill="b.fill" :stroke="b.stroke" :stroke-width="b.stroke_w">
             <title>{{ b.tip }}</title>
@@ -106,13 +114,21 @@ const props = defineProps({
   planId: { type: [String, Number], required: true },
   maxDepth: { type: [String, Number], default: null },
   dependencyMode: { type: String, default: 'arrows' },
+  depthOptions: { type: Array, default: () => [{ value: 0 }] },
 })
-const emit = defineEmits(['update:dependencyMode'])
+const emit = defineEmits(['update:dependencyMode', 'update:maxDepth'])
 
 const spec = ref(null)
 const loading = ref(false)
 const exporting = ref(false)
 const svgRef = ref(null)
+const viewportRef = ref(null)
+const zoom = ref(1)
+function fitWidth() {
+  if (viewportRef.value && spec.value?.width) {
+    zoom.value = Math.min(1, (viewportRef.value.clientWidth - 2) / spec.value.width)
+  }
+}
 
 const drawable = computed(() => (spec.value?.row_count || 0) > 0)
 const warnText = computed(() => {
@@ -121,7 +137,7 @@ const warnText = computed(() => {
   const p = []
   if (s.undated) p.push(`有 ${s.undated} 行没填计划完成日，已放在时间轴起点并在框内标明。`)
   if (s.folded) p.push(`只画到第 ${s.max_depth} 层，另有 ${s.folded} 行折在上级框里（名字后面的 +N）；它们的工期仍然算在上级框的汇总里。`)
-  if (s.skipped) p.push(`另有 ${s.skipped} 行没画进图里（整份 WBS 太大），按整段阶段截的。上面的表格是全量的。`)
+  if (s.skipped) p.push(`有 ${s.skipped} 行的上级结构不完整，无法放入阶段，请检查任务层级。`)
   return p.join(' ')
 })
 
@@ -167,12 +183,13 @@ async function onExport(kind) {
 <style scoped>
 .wt-wrap { background: #fff; }
 .wt-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
-.wt-hint { color: #909399; font-size: 12px; line-height: 1.6; max-width: 62%; }
+.wt-hint { color: #909399; font-size: 12px; line-height: 1.6; flex: 1 1 300px; }
 .wt-late { color: #F56C6C; }
 .wt-grow { flex: 1 1 auto; }
 /* 图比屏幕宽是常态，让它自己横向滚，别让整页跟着横向滚 */
-.wt-scroll { overflow-x: auto; border: 1px solid #ebeef5; border-radius: 6px; }
-.wt-svg { display: block; }
+.wt-scroll { overflow: auto; max-height: 64vh; border: 1px solid #ebeef5; border-radius: 6px; }
+.wt-svg { display: block; max-width: none; flex-shrink: 0; }
+.wt-count { color: #909399; font-size: 12px; margin-bottom: 6px; }
 .wt-note { margin-top: 8px; background: #fdf6ec; border-left: 3px solid #E6A23C;
   border-radius: 3px; padding: 6px 10px; color: #8a6d3b; font-size: 12px; line-height: 1.7; }
 </style>

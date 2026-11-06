@@ -9,7 +9,7 @@
 //    的模板保证，这儿只负责序列化。
 // 2. **补一个白底**：导出的图多半要贴进 PPT 或邮件，透明底在深色版式上就是看不清
 //    的一团。
-// 3. PNG 按 2 倍画，贴进 PPT 放大不糊。
+// 3. PNG 默认按 2 倍画；长图按位图尺寸和像素预算降低倍率，完整保留内容。
 
 const NS = 'http://www.w3.org/2000/svg'
 
@@ -18,6 +18,9 @@ export function serializeSvg(el, width, height) {
   if (!el) return null
   const clone = el.cloneNode(true)
   clone.setAttribute('xmlns', NS)
+  // 预览可以缩放，导出始终使用完整画布尺寸。
+  clone.setAttribute('width', String(width))
+  clone.setAttribute('height', String(height))
   clone.removeAttribute('class')
   const bg = document.createElementNS(NS, 'rect')
   bg.setAttribute('x', '0')
@@ -38,8 +41,10 @@ export function svgBlob(xml) {
   return new Blob([xml], { type: 'image/svg+xml;charset=utf-8' })
 }
 
-/** SVG 文本 → PNG Blob（走 canvas，2 倍图）。 */
+/** SVG 文本 → PNG Blob（走 canvas，默认 2 倍，长图自动调整）。 */
 export async function svgToPngBlob(xml, width, height, scale = 2) {
+  // 长图降低位图倍率，保留全部内容，避免 canvas 超过浏览器尺寸或像素上限。
+  scale = Math.min(scale, 16384 / Math.max(width, height), Math.sqrt(24000000 / (width * height)))
   const url = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)))
   const img = new Image()
   await new Promise((resolve, reject) => {
@@ -48,8 +53,8 @@ export async function svgToPngBlob(xml, width, height, scale = 2) {
     img.src = url
   })
   const canvas = document.createElement('canvas')
-  canvas.width = width * scale
-  canvas.height = height * scale
+  canvas.width = Math.max(1, Math.floor(width * scale))
+  canvas.height = Math.max(1, Math.floor(height * scale))
   const ctx = canvas.getContext('2d')
   ctx.fillStyle = '#ffffff'
   ctx.fillRect(0, 0, canvas.width, canvas.height)

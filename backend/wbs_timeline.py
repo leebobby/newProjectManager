@@ -30,15 +30,14 @@ A 图把同一棵树摊到一根日期轴上，代价是阶段之间会留出大
 的页脚三件套）。
 """
 from datetime import date, datetime, timedelta
+from math import ceil, sqrt
 from typing import Dict, List, Optional, Tuple
 
 import brand
 import enums
-# 「按整段阶段截」与宽度估算两张图共用一份实现，放在 wbs_diagram 那边
-# （它层级更低、不依赖本模块）。各写一份的表现是同一份 WBS 在两张图上
-# 截断的位置不一样，而两张单独看都正常。
-from wbs_diagram import (BAR_FILL, BAR_TRACK, LATE_STROKE, STROKE, cap_stages,
-                         clip_text, split_stages, text_w)
+# A 图完整展示所选层级，阶段拆分与文字宽度仍复用框图实现。
+from wbs_diagram import (BAR_FILL, BAR_TRACK, LATE_STROKE, STROKE,
+                         split_stages, text_w)
 
 PAD = 22
 NAME_W = 0                # A 图不再保留左侧信息列，内容直接写入任务框
@@ -62,7 +61,6 @@ BOX_TEXT_PAD = 6.0
 BAR_H = 2.5               # 叶子框底部那条完成度细条
 DAY_PX = 11.0             # 一天多宽（会被 PLOT_MIN/MAX 夹住）
 PLOT_MIN, PLOT_MAX = 660.0, 1180.0
-MAX_ROWS = 150            # 画不下的如实报（`skipped`），且**按整段阶段**截
 LEGEND_PX = 11.0
 TODAY_PILL_W = 78.0
 TODAY_PILL_H = 17.0
@@ -170,9 +168,47 @@ def _month_starts(d0: date, d1: date) -> List[date]:
     return out
 
 
+def _horizontal_bounds(rows: List[dict], x_for_date, first_date: date) -> Dict[str, dict]:
+    """按完整任务树算横向边界，反向扩展父框，保证多层子框均在父框内。"""
+    bounds = {}
+    parents = {}
+    stack = []
+    for row in rows:
+        code, depth = str(row.get("code") or ""), max(1, int(row.get("depth") or 1))
+        while stack and stack[-1][1] >= depth:
+            stack.pop()
+        if stack:
+            parents[code] = stack[-1][0]
+        stack.append((code, depth))
+        start, end = _as_date(row.get("start")), _as_date(row.get("end"))
+        if not (start and end):
+            start = end = first_date
+        size = float(enums.wbs_level_font(depth)["px"])
+        label = f"{code} {row.get('name') or '（未命名）'}".strip()
+        meta, _ = _meta_text(row)
+        inset = 0.0 if row.get("is_leaf") else BOX_INSET
+        left = x_for_date(start) - inset
+        right = max(left + MIN_BOX_W, left + CONTENT_MIN_W,
+                    left + max(text_w(label, size), text_w(meta, META_PX)) + BOX_TEXT_PAD * 2 + 1,
+                    x_for_date(end + timedelta(days=1)) + inset)
+        bounds[code] = {"left": left, "right": right, "meta": meta, "descendants": 0}
+    for code in reversed(bounds):
+        child = bounds[code]
+        if child["descendants"]:
+            # 为可能折叠的 +N 留足空间，切换层级时不必改变父框宽度或省略信息。
+            child["right"] = max(child["right"], child["left"] + BOX_TEXT_PAD * 2 + 1
+                                 + text_w(f"{child['meta']}  +{child['descendants']}", META_PX))
+        if code in parents:
+            parent = bounds[parents[code]]
+            parent["descendants"] += 1 + child["descendants"]
+            parent["left"] = min(parent["left"], child["left"] - BOX_INSET)
+            parent["right"] = max(parent["right"], child["right"] + BOX_INSET)
+    return bounds
+
+
 def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] = None,
                    max_depth: Optional[int] = None, folded: int = 0,
-                   dependency_mode: str = "arrows") -> dict:
+                   dependency_mode: str = "arrows", reference_rows: Optional[List[dict]] = None) -> dict:
     """把拍平的 WBS（按页面顺序、带 code/depth/start/end/overdue_days）排成 A 图版面。
 
     `rows` 是**纯字典**、不吃 ORM 对象（同 `wbs_diagram.build_diagram`）：这个模块
@@ -182,9 +218,8 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
     """
     today = today or date.today()
     stages, skipped = split_stages(rows)
-    stages, dropped = cap_stages(stages, MAX_ROWS)
-    skipped += dropped
     kept: List[dict] = [r for st in stages for r in st]
+    reference = reference_rows if reference_rows is not None else kept
 
     # ── 行：一行一个节点，行高跟着本层字号走 ────────────────────────────
     depths = [max(1, int(r.get("depth") or 1)) for r in kept]
@@ -200,27 +235,35 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
 
     # 父框的下沿 = 它**最后一个子孙**那一行的下沿。行是按树的顺序排的，
     # 所以"子孙"＝后面连续一串 depth 更大的行，不必再查一次 parent_id
-    def last_row(i: int) -> int:
-        j = i
-        k = i + 1
-        while k < len(kept) and depths[k] > depths[i]:
-            j = k
-            k += 1
-        return j
+    subtree_ends = [len(kept) - 1] * len(kept)
+    stack = []
+    for i, depth in enumerate(depths):
+        while stack and depths[stack[-1]] >= depth:
+            subtree_ends[stack.pop()] = i - 1
+        stack.append(i)
 
     # ── 时间轴：起止取图上所有行的计划日期，再把「今天」也裹进来 ──────────
-    ds = [d for d in (_as_date(r.get("start")) for r in kept) if d]
-    de = [d for d in (_as_date(r.get("end")) for r in kept) if d]
+    ds = [d for d in (_as_date(r.get("start")) for r in reference) if d]
+    de = [d for d in (_as_date(r.get("end")) for r in reference) if d]
     dated = bool(ds or de)
     d0 = (min(ds + de + [today]) if dated else today) - timedelta(days=5)
     d1 = (max(ds + de + [today]) if dated else today) + timedelta(days=5)
     span = max(1, (d1 - d0).days)
     plot_w = max(PLOT_MIN, min(PLOT_MAX, span * DAY_PX))
     plot_x = PAD + NAME_W + GUT
-    width = int(plot_x + plot_w + PAD)
 
     def X(d: date) -> float:
         return plot_x + (d - d0).days / span * plot_w
+
+    bounds = _horizontal_bounds(reference, X, d0)
+    leftmost = min([b["left"] for b in bounds.values()] + [X(today) - TODAY_PILL_W / 2])
+    offset = max(0.0, PAD - leftmost)
+    plot_x += offset
+    for bound in bounds.values():
+        bound["left"] += offset
+        bound["right"] += offset
+    width = ceil(max([plot_x + plot_w, X(today) + TODAY_PILL_W / 2]
+                     + [b["right"] for b in bounds.values()]) + PAD)
 
     # 不再绘制左栏，阶段斑马也随之取消。
     # 一行一条会把嵌套关系切碎；铺到图区则会和中框同色，中框就看不见了
@@ -258,23 +301,19 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
             if r.get("is_leaf") and st_word not in enums.WBS_UNCOUNTED_STATUSES:
                 undated += 1
             # 没日期也必须有承载内容的框；统一放在时间轴起点，并在框内标明原因。
-            s0 = s1 = d0
         leaf = bool(r.get("is_leaf"))
-        j = last_row(i)
+        j = subtree_ends[i]
         # 下沿按「底下还有几层」往外探：叶子探 0，父框每多罩一层多探一档。
         # 上下用同一个留白的话，最后一个子框的下沿正好和父框的下沿重合，
         # 看上去就是子框戳出了父框（第一版就是这么坏的）
         levels = depths[j] - depths[i]
         by0 = row_top[i] + BOX_PAD_TOP + (0.0 if leaf else 1.5)
         by1 = row_top[j] + row_h[j] - max(1.0, BOX_PAD_BOT - BOX_NEST_PAD * levels)
-        inset = 0.0 if leaf else BOX_INSET
-        bx = X(s0) - inset
+        bx = bounds[code]["left"]
         # 结束日**算整天**：条走到 s1 那天的末尾，不然"9-10 到 9-10"是一根零宽的线
         label = f"{code} {r.get('name') or '（未命名）'}".strip()
         meta_label = meta + (f"  +{int(r.get('folded') or 0)}" if r.get("folded") else "")
-        content_w = max(text_w(label, size), text_w(meta_label, META_PX)) + BOX_TEXT_PAD * 2
-        bw = max(MIN_BOX_W, CONTENT_MIN_W, content_w,
-                 X(s1 + timedelta(days=1)) - X(s0) + inset * 2)
+        bw = bounds[code]["right"] - bx
         fill, stroke, sw = _box_style(r, depth)
         pct = max(0, min(100, int(r.get("pct") or 0)))
         # 完成度细条只给**还没做完、且算进统计**的叶子画：100% 的框已经是整块绿的，
@@ -289,11 +328,11 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
             "overdue": bool(int(r.get("overdue_days") or 0)),
             "overdue_days": int(r.get("overdue_days") or 0),
             "tip": _tip(r),
-            "label": clip_text(label, size, bw - BOX_TEXT_PAD * 2),
+            "label": label,
             "label_x": round(bx + BOX_TEXT_PAD, 1),
             "label_y": round(by0 + size + 2, 1),
             "label_px": size, "label_bold": bool(f["bold"]), "label_color": "#262626",
-            "meta": clip_text(meta_label, META_PX, bw - BOX_TEXT_PAD * 2),
+            "meta": meta_label,
             "meta_x": round(bx + BOX_TEXT_PAD, 1),
             "meta_y": round(by0 + size + META_PX + 4, 1),
             "meta_px": META_PX, "meta_color": meta_color,
@@ -303,13 +342,6 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
                      else BAR_FILL, "track": BAR_TRACK,
                      "track_w": round(bw - 3, 1)} if show_bar else None),
         })
-
-    # 内容最小宽度可能让子框越过按日期算出的父框右沿；父框仍须完整包住子框。
-    for outer in boxes:
-        prefix = outer["code"] + "."
-        descendant_right = max((b["x"] + b["w"] for b in boxes
-                                if b["code"].startswith(prefix)), default=outer["x"] + outer["w"])
-        outer["w"] = round(max(outer["w"], descendant_right - outer["x"] + BOX_INSET), 1)
 
     # 依赖关系只在两端都实际画出框时连线。箭头终点停在后置框左边缘，避免穿字。
     by_code = {b["code"]: b for b in boxes}
@@ -336,8 +368,8 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
                                       [elbow, round(y2, 1)], [round(x2, 1), round(y2, 1)]],
                            "color": "#606266"})
 
-    if boxes:
-        width = max(width, int(max(b["x"] + b["w"] for b in boxes) + PAD))
+    if arrows:
+        width = max(width, ceil(max(p[0] for a in arrows for p in a["points"]) + PAD))
 
     # ── 刻度与分隔线 ────────────────────────────────────────────────────
     ticks: List[dict] = []
@@ -395,6 +427,8 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
     for it in legend:
         it["x"] = round(lx, 1)
         lx += LEGEND_PX + 6 + text_w(it["label"], LEGEND_PX) + 16
+    width = max(width, ceil(lx + PAD),
+                ceil(max((t["label_x"] + text_w(t["label"], 11) for t in ticks), default=0) + PAD))
     legend_y = bottom + 14
 
     overdue_n = sum(1 for r in kept if r.get("is_leaf") and int(r.get("overdue_days") or 0))
@@ -470,8 +504,7 @@ def timeline_note(subtitle: str = "", today: Optional[date] = None, overdue: int
         parts.append(f"只画到第 {max_depth or 0} 层，另有 {folded} 行折在上级框里"
                      f"（名字后面的 +N）；它们的工期仍然算在上级框的汇总里。")
     if skipped:
-        parts.append(f"另有 {skipped} 行没画进图里（整份 WBS 太大，全画出来每一行细得看不见），"
-                     f"按整段阶段截的。表是全量的。")
+        parts.append(f"另有 {skipped} 行的上级结构不完整，无法放入阶段，请检查任务层级。")
     return " ".join(parts)
 
 
@@ -493,6 +526,9 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
     if _load_pil_font(12) is None:
         return None
 
+    # 完整长图只降低位图倍率，不截任务。SVG 与版面坐标仍保留完整尺寸。
+    scale = min(scale, 16384 / max(spec["width"], spec["height"]),
+                sqrt(24000000 / (spec["width"] * spec["height"])))
     W = max(1, int(spec["width"] * scale))
     H = max(1, int(spec["height"] * scale))
     img = Image.new("RGB", (W, H), "#FFFFFF")
@@ -504,7 +540,7 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
     def font(px: float, bold: bool = False):
         # PIL 吃的是磅值，页面吃像素——0.78 这个换算与 wbs_diagram 同一份，
         # 不一样的话导出的图会比页面上的大半号
-        return _load_pil_font(max(7, S(px * 0.78)), bold=bold)
+        return _load_pil_font(max(1 if scale < 1 else 7, S(px * 0.78)), bold=bold)
 
     for b in spec.get("bands", []):
         d.rectangle([S(b["x"]), S(b["y"]), S(b["x"] + b["w"]), S(b["y"] + b["h"])],

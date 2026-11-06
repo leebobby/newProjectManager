@@ -191,7 +191,9 @@
       <el-dialog v-model="timelineOn" title="A 图（时间轴嵌套框图）" width="94%" top="4vh"
                  destroy-on-close>
         <WbsTimeline v-if="timelineOn" :plan-id="route.params.id"
-                     :max-depth="exportDepth || null" v-model:dependency-mode="dependencyMode" />
+                     :max-depth="exportDepth || null" :depth-options="depthOptions"
+                     @update:max-depth="exportDepth = $event"
+                     v-model:dependency-mode="dependencyMode" />
         <template #footer>
           <span class="dlg-foot">导出的 Excel 第 3 页就是这张图；上面那个「导出到第几层」
             同时管表、调试框图和这张 A 图——各裁各的话同一个「到第 2 层」在表里是 8 行、
