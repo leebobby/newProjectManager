@@ -725,14 +725,15 @@ def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
     """
     kept, folded = _clip_depth(all_rows, max_depth)
     folds = _fold_counts(all_rows, max_depth)
-    rows = _diagram_rows(kept)
-    for r in rows:
-        r["folded"] = folds.get(r["code"], 0)
+    chart_rows = _diagram_rows(all_rows)
+    kept_codes = {r["code"] for r in kept}
+    rows = [dict(r, folded=folds.get(r["code"], 0)) for r in chart_rows if r["code"] in kept_codes]
     ref = _ref_name(db, plan)
     sub = " · ".join(x for x in (plan.name,
                                  enums.WBS_KIND_LABELS.get(plan.kind, plan.kind), ref) if x)
     return wbs_timeline.build_timeline(rows, subtitle=sub, max_depth=max_depth,
-                                       folded=folded, dependency_mode=dependency_mode)
+                                       folded=folded, dependency_mode=dependency_mode,
+                                       reference_rows=chart_rows)
 
 
 def _build_view(db: Session, plan: models.WbsPlan, rows: List[dict],

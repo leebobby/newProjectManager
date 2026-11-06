@@ -4,7 +4,7 @@
 1. 嵌套是真的——父框纵向罩住它所有子孙行，子框画在父框**里面**；
 2. 没填计划日期的行**照样占一行**（只是图区留白），且条数如实报出来；
 3. 延期只数叶子（父子都数会把 4 条报成 8 条），图上是红框、天数在左栏；
-4. 按整段阶段截断、折了几条挂在上级名字后面。
+4. 所选层级的所有任务都展示，折叠数挂在上级名字后面。
 
 **模块顶层不 import 应用模块**（见 CLAUDE.md）：conftest 的 client 夹具靠 os.chdir
 把 sqlite 指到临时目录，收集阶段的顶层 import 会赶在 chdir 之前连上仓库里的 app.db。
@@ -251,3 +251,117 @@ def test_long_names_are_clipped_with_an_ellipsis(client):
     out = wbs_diagram.clip_text("一二三四五六七八九十", 12, 40)
     assert out.endswith("…") and len(out) < 11
     assert wbs_diagram.clip_text("短", 12, 40) == "短"
+
+
+@pytest.fixture
+def large_tree(client, admin_headers, special_id):
+    from datetime import datetime
+    import models
+    from database import SessionLocal
+
+    response = client.post('/api/wbs/plans', headers=admin_headers,
+                           json={'name': '完整大计划', 'kind': 'special', 'special_id': special_id})
+    pid = response.json()['id']
+    with SessionLocal() as db:
+        for stage in range(3):
+            root = models.WbsItem(plan_id=pid, name=f'阶段{stage}', sort_order=stage)
+            db.add(root)
+            db.flush()
+            group = models.WbsItem(plan_id=pid, parent_id=root.id, name=f'分组{stage}')
+            db.add(group)
+            db.flush()
+            db.add_all([models.WbsItem(plan_id=pid, parent_id=group.id, name=f'阶段{stage}的任务{index}',
+                                      sort_order=index, man_days=1,
+                                      planned_start=datetime(2026, 11, 1), planned_end=datetime(2026, 11, 20))
+                        for index in range(60)])
+        db.commit()
+    return pid
+
+
+@pytest.mark.parametrize('depth,expected,folded', [(None, 186, 0), (1, 3, 183), (2, 6, 180), (3, 186, 0)])
+def test_all_tasks_at_selected_depth_are_included(client, admin_headers, large_tree, depth, expected, folded):
+    spec = _spec(client, admin_headers, large_tree, **({'max_depth': depth} if depth else {}))
+    detail = client.get(f'/api/wbs/plans/{large_tree}', headers=admin_headers).json()
+    expected_codes = {item['code'] for item in detail['items'] if not depth or item['depth'] <= depth}
+    assert spec['row_count'] == spec['box_count'] == expected
+    assert {box['code'] for box in spec['boxes']} == expected_codes
+    assert spec['skipped'] == 0 and spec['folded'] == folded
+    assert max(b['y'] + b['h'] for b in spec['boxes']) < spec['height']
+
+
+def test_excel_uses_complete_a_chart(client, admin_headers, large_tree, monkeypatch):
+    import wbs_timeline
+    captured = []
+    monkeypatch.setattr(wbs_timeline, 'render_png', lambda spec: captured.append(spec))
+    for depth, expected in ((None, 186), (2, 6)):
+        response = client.get(f'/api/wbs/plans/{large_tree}/export.xlsx', headers=admin_headers,
+                              params={'max_depth': depth} if depth else {})
+        assert response.status_code == 200, response.text
+        assert captured[-1]['row_count'] == captured[-1]['box_count'] == expected
+        assert captured[-1]['skipped'] == 0
+
+
+def test_deep_undated_boxes_long_text_and_arrows_fit_inside_canvas():
+    import wbs_timeline
+    import wbs_diagram
+
+    rows = [{'code': '.'.join(['1'] * depth), 'depth': depth, 'name': '深层任务' * 12,
+             'is_leaf': depth == 12, 'predecessors': []} for depth in range(1, 13)]
+    rows.append({'code': '2', 'depth': 1, 'is_leaf': True, 'name': '最后一个完整任务' * 25,
+                 'predecessors': [rows[-1]['code']]})
+    spec = wbs_timeline.build_timeline(rows, today=date(2026, 11, 6))
+    for outer, inner in zip(spec['boxes'][:11], spec['boxes'][1:12]):
+        assert outer['x'] <= inner['x']
+        assert inner['x'] + inner['w'] <= outer['x'] + outer['w'] + 0.1
+    for box in spec['boxes']:
+        assert box['x'] >= spec['pad'] - 0.1
+        assert box['x'] + box['w'] < spec['width']
+        assert box['label_x'] + wbs_diagram.text_w(box['label'], box['label_px']) <= spec['width']
+    for arrow in spec['arrows']:
+        assert all(0 <= x <= spec['width'] and 0 <= y <= spec['height'] for x, y in arrow['points'])
+    assert spec['today']['pill_x'] >= 0
+    assert spec['today']['pill_x'] + spec['today']['pill_w'] < spec['width']
+
+
+def test_layer_selection_preserves_full_range_and_hidden_overdue_state(client, admin_headers, tree):
+    full = _spec(client, admin_headers, tree)
+    clipped = _spec(client, admin_headers, tree, max_depth=1)
+    assert (full['date_start'], full['date_end']) == (clipped['date_start'], clipped['date_end'])
+    for code in ('1', '2'):
+        assert _box(full, code)['x'] == _box(clipped, code)['x']
+        assert _box(full, code)['w'] == _box(clipped, code)['w']
+        assert _box(full, code)['stroke'] == _box(clipped, code)['stroke']
+
+
+def test_long_png_scales_whole_canvas_instead_of_cropping():
+    import io
+    from PIL import Image
+    import wbs_timeline
+
+    rows = [{'code': str(index + 1), 'depth': 1, 'name': f'完整任务{index}', 'is_leaf': True}
+            for index in range(420)]
+    spec = wbs_timeline.build_timeline(rows)
+    png = wbs_timeline.render_png(spec)
+    if png is None:
+        pytest.skip('需要中文字体')
+    with Image.open(io.BytesIO(png)) as bitmap:
+        assert max(bitmap.size) <= 16384
+        assert abs(bitmap.width / bitmap.height - spec['width'] / spec['height']) < 0.001
+        assert spec['box_count'] == 420
+
+
+@pytest.mark.parametrize('depth', range(1, 6))
+def test_mixed_language_names_are_not_shortened_by_rounding(depth):
+    import wbs_timeline
+    import wbs_diagram
+
+    for length in range(1, 301):
+        name = '测试Abc' * (length // 5) + '测' * (length % 5)
+        rows = [{'code': '.'.join(['1'] * n), 'depth': n, 'name': '上级', 'is_leaf': False}
+                for n in range(1, depth)]
+        code = '.'.join(['1'] * depth)
+        rows.append({'code': code, 'depth': depth, 'is_leaf': True, 'name': name,
+                     'start': '2026-11-03', 'end': '2026-11-03'})
+        box = wbs_timeline.build_timeline(rows, today=date(2026, 11, 6))['boxes'][-1]
+        assert box['label'] == code + ' ' + name
+        assert wbs_diagram.text_w(box['label'], box['label_px']) <= box['w'] - 12 + 0.1
