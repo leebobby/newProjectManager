@@ -158,6 +158,15 @@
           </template>
         </el-table-column>
 
+        <el-table-column label="合入版本" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-select :model-value="row.merge_major_version_id" size="small" clearable filterable :persistent="false"
+                       placeholder="选择大版本" aria-label="客户问题合入版本"
+                       @change="(value) => save(row, { merge_major_version_id: value ?? null })">
+              <el-option v-for="version in majorVersions" :key="version.id" :label="version.label" :value="version.id" />
+            </el-select>
+          </template>
+        </el-table-column>
         <el-table-column v-if="isAdmin" label="操作" width="60" align="center" fixed="right">
           <template #default="{ row }">
             <el-button link type="danger" :icon="Delete" @click="onDelete(row)" />
@@ -249,6 +258,11 @@
         <el-form-item label="问题进展">
           <el-input v-model="createForm.progress_note" type="textarea" :rows="2" placeholder="选填" />
         </el-form-item>
+        <el-form-item label="合入版本">
+          <el-select v-model="createForm.merge_major_version_id" clearable filterable placeholder="选择大版本" style="width:100%">
+            <el-option v-for="version in majorVersions" :key="version.id" :label="version.label" :value="version.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
@@ -263,7 +277,7 @@ import { computed, defineComponent, h, nextTick, onActivated, onMounted, reactiv
 import { RouterLink, useRoute } from 'vue-router'
 import { ElDatePicker, ElIcon, ElInput, ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Document, Download, Edit, Plus, Refresh, Search, Upload } from '@element-plus/icons-vue'
-import { customerApi, customerIssueApi, downloadBlob, resourceGroupApi, userApi } from '../api'
+import { apiError, customerApi, customerIssueApi, downloadBlob, majorVersionApi, resourceGroupApi, userApi } from '../api'
 import { auth } from '../store/auth'
 import {
   customerIssues, ensureIssues, reloadIssues, refreshIssues, removeIssue, upsertIssue,
@@ -415,6 +429,7 @@ const DateCell = defineComponent({
 const users = ref([])
 const customers = ref([])
 const groups = ref([])
+const majorVersions = ref([])
 const exporting = ref(false)
 const importing = ref(false)
 // 默认只看未闭环：这张表是用来推问题的，已闭环的是历史，勾上才显示。
@@ -444,6 +459,7 @@ const machineCache = new Map()
 
 function defaultCreateForm() {
   return {
+    merge_major_version_id: null,
     customer_id: null,
     machine_status_id: null,
     kind: 'issue',
@@ -767,14 +783,17 @@ function applyQueryFilters() {
 
 onMounted(async () => {
   applyQueryFilters()
-  const [u, c, g] = await Promise.allSettled([
+  const [u, c, g, v] = await Promise.allSettled([
     userApi.options({ only_can_login: true }),
     customerApi.list(),
     resourceGroupApi.list({ kind: 'pl' }),
+    majorVersionApi.all(),
   ])
   if (u.status === 'fulfilled') users.value = u.value.data
   if (c.status === 'fulfilled') customers.value = c.value.data
   if (g.status === 'fulfilled') groups.value = g.value.data
+  if (v.status === 'fulfilled') majorVersions.value = v.value.data
+  else ElMessage.error(apiError(v.reason, '加载合入大版本选项失败'))
   // 已有缓存 → 秒显 + 后台静默刷新；否则首次加载
   if (customerIssues.loaded) refreshIssues()
   else await ensureIssues()
@@ -784,6 +803,7 @@ onMounted(async () => {
 let activatedOnce = false
 onActivated(() => {
   if (!activatedOnce) { activatedOnce = true; return }  // 首次激活由 onMounted 负责
+  majorVersionApi.all().then(({ data }) => { majorVersions.value = data }).catch(() => {})
   refreshIssues()
 })
 </script>

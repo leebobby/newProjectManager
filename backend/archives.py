@@ -46,7 +46,7 @@ _CONTENT_COLS = (
     "panorama_image_name", "milestones_json", "formation_json", "extra_grids_json",
     "section_order_json", "section_config_json", "overview_light",
 )
-_ITEM_COLS = ("id", "seq", "content", "progress", "owner", "planned_close_date",
+_ITEM_COLS = ("id", "seq", "content", "progress", "owner", "planned_close_date", "workload",
               "status", "sort_order")
 
 
@@ -121,12 +121,16 @@ def build_customer(db: Session, customer_id: int) -> Optional[dict]:
     out = []
     for r in rows:
         m = r.machine_status
+        major = r.merge_major_version
         out.append(dict(
             _row(r, ("id", "kind", "description", "issue_ref", "progress_note",
                      "urgency", "status", "category", "raised_at", "due_date", "closed_at")),
             machine=(m.machine_id if m else "") or "",
             owner=names.get(r.owner_user_id) or (r.owner_name or ""),
             group=groups.get(r.group_id) or (r.owner_group or ""),
+            merge_major_version_id=r.merge_major_version_id,
+            merge_major_version=((f'{major.project.name} · {major.version_no}' if major.project else major.version_no)
+                                 if major else ''),
         ))
     # 展示名可空，回退到 code（同页面的口径：未填 display_name 就显示 code）
     return {"customer_id": c.id, "name": (c.display_name or c.code or ""), "issues": out}
@@ -365,11 +369,11 @@ def _render_customer_html(payload: dict) -> str:
         return ""
     return _h("问题与关键事务") + _table(
         ["机台", "类型", "问题描述", "问题进展", "责任人", "责任领域",
-         "紧急程度", "提出", "计划解决", "实际闭环", "状态"],
+         "紧急程度", "提出", "计划解决", "实际闭环", "状态", "合入版本"],
         [[r.get("machine"), _KIND_LABEL.get(r.get("kind"), r.get("kind")),
           r.get("description"), r.get("progress_note"), r.get("owner"), r.get("group"),
           r.get("urgency"), r.get("raised_at"), r.get("due_date"), r.get("closed_at"),
-          r.get("status")] for r in rows])
+          r.get("status"), r.get('merge_major_version', '')] for r in rows])
 
 
 def _render_hardware_html(payload: dict) -> str:

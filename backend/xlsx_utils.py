@@ -623,7 +623,14 @@ def build_special_xlsx(special) -> io.BytesIO:
             st = "已闭环" if (it.status or "open") == "closed" else "进行中"
             rows.append([idx, _strip_html(it.content), _strip_html(it.progress),
                          it.owner or "", it.planned_close_date or "", st])
-        table(six, ["序号", content_header, "当前进展", "责任人", "计划闭环", "状态"],
+        headers = ["序号", content_header, "当前进展", "责任人", "计划闭环", "状态"]
+        if content_header == '事务内容':
+            headers.append('工作量（人天）')
+            for row, item in zip(rows, rows_src):
+                value = getattr(item, 'workload', None)
+                row.append('' if value in (None, '') else str(value))
+        spans = six if len(headers) == 6 else _spans_from_ratios([0.5, 2.2, 2, 1, 1, 0.8, 1])
+        table(spans, headers,
               rows, status_col=5, center_cols={0, 3, 4})
         return True
 

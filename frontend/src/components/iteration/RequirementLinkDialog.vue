@@ -9,6 +9,7 @@
     <div class="link-head">
       <span class="link-self">
         <span v-if="row?.req_no" class="link-no">{{ row.req_no }}</span>
+        <span v-if="row?.ar_no" class="link-no">AR：{{ row.ar_no }}</span>
         {{ row?.title || '（无标题）' }}
       </span>
     </div>
@@ -24,6 +25,7 @@
       </el-table-column>
       <el-table-column label="需求标题" min-width="200">
         <template #default="{ row: r }">
+          <div v-if="other(r).ar_no" class="link-sub">AR：{{ other(r).ar_no }}</div>
           <div>{{ other(r).title || '（无标题）' }}</div>
           <div class="link-sub">
             <!-- 跨迭代不是错（本轮没做完下个月接着排），但要看得见：
@@ -68,7 +70,7 @@
         v-model="keyword"
         size="small"
         clearable
-        placeholder="按需求编号或标题找"
+        placeholder="按 SR、AR 编号或标题找"
         @keyup.enter="search"
         @clear="search"
       />
@@ -82,6 +84,7 @@
       </el-table-column>
       <el-table-column label="需求标题" min-width="220">
         <template #default="{ row: c }">
+          <div v-if="c.ar_no" class="link-sub">AR：{{ c.ar_no }}</div>
           {{ c.title || '（无标题）' }}
           <el-tag v-if="c.iteration_id !== iterationId" size="small" type="warning">
             {{ c.iteration_label }}

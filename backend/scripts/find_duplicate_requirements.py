@@ -71,10 +71,12 @@ def main() -> int:
 
     import models
     from routers._req_dedup import dedup_key
+    from requirement_identity import ar_key
 
     db = _session(db_path)
     iter_label = {i.id: f"{i.year}-{i.month:02d}"
                   for i in db.query(models.AnnualIteration).all()}
+    iter_label[0] = '全部迭代'
 
     tables = [("领域需求", models.IterationRequirement),
               ("产品需求", models.IterationProductRequirement)]
@@ -83,9 +85,11 @@ def main() -> int:
     for label, model in tables:
         groups = defaultdict(list)
         for row in db.query(model).order_by(model.id).all():
-            k = dedup_key(row.req_no, row.title)
+            domain = model is models.IterationRequirement
+            key = ar_key(row.ar_no) if domain else None
+            k = (('ar', key) if key else None) if domain else dedup_key(row.req_no, row.title)
             if k is not None:
-                groups[(row.iteration_id, k)].append(row)
+                groups[(0 if domain else row.iteration_id, k)].append(row)
         dups = {k: v for k, v in groups.items() if len(v) > 1}
         if not dups:
             print(f"{label}：没有重复。 ✔")

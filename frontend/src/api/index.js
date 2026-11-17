@@ -464,6 +464,7 @@ export const issueTrackApi = {
 }
 
 export const majorVersionApi = {
+  all: () => http.get('/major-versions/all'),
   list: (project_id) => http.get('/major-versions', { params: project_id != null ? { project_id } : {} }),
   create: (data) => http.post('/major-versions', data),
   update: (id, data) => http.put(`/major-versions/${id}`, data),

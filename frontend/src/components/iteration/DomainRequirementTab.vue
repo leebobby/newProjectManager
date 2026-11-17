@@ -94,7 +94,7 @@
            否则翻页或刷新之后勾选会整片丢掉，而人以为还选着 -->
       <el-table-column type="selection" width="44" align="center" :selectable="() => true" />
       <el-table-column prop="seq" label="序号" width="70" align="center" />
-      <el-table-column label="需求编号" width="160">
+      <el-table-column label="需求编号（SR）" width="160">
         <template #default="{ row }">
           <el-input
             v-if="isEditing(row, 'req_no')"
@@ -111,6 +111,13 @@
             </el-link>
             <span v-else>{{ row.req_no || '—' }}</span>
           </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="需求编号（AR）" width="160">
+        <template #default="{ row }">
+          <el-input v-if="isEditing(row, 'ar_no')" v-model="row.ar_no" size="small" autofocus
+                    @blur="commit(row, 'ar_no')" @keyup.enter="commit(row, 'ar_no')" @keyup.esc="cancel(row, 'ar_no')" />
+          <div v-else class="editable-cell" @dblclick="startEdit(row, 'ar_no')">{{ row.ar_no || '—' }}</div>
         </template>
       </el-table-column>
       <el-table-column label="需求标题" min-width="240">
@@ -375,8 +382,11 @@
         <el-form-item label="序号">
           <el-input-number v-model="form.seq" :min="0" />
         </el-form-item>
-        <el-form-item label="需求编号">
+        <el-form-item label="需求编号（SR）">
           <el-input v-model="form.req_no" />
+        </el-form-item>
+        <el-form-item label="需求编号（AR）">
+          <el-input v-model="form.ar_no" maxlength="64" placeholder="选填，AR 编号不可重复" />
         </el-form-item>
         <el-form-item label="需求超链接">
           <el-input v-model="form.req_url" placeholder="https://..." />
@@ -722,6 +732,7 @@ function defaultForm() {
     project_id: null,
     seq: 0,
     req_no: '',
+    ar_no: '',
     req_url: '',
     title: '',
     owner: '',
@@ -907,7 +918,7 @@ async function onSubmit() {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确认删除需求「${row.req_no || row.title}」吗？`, '提示', { type: 'warning' })
+  await ElMessageBox.confirm(`确认删除需求「${row.ar_no || row.req_no || row.title}」吗？`, '提示', { type: 'warning' })
   await iterationRequirementApi.remove(row.id)
   ElMessage.success('已删除')
   load()

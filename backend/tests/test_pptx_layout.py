@@ -199,7 +199,10 @@ def test_status_is_a_cell_fill_not_just_coloured_text():
     pres = Presentation(PU.build_iteration_pptx(it, [_dreq(1)]))
     table = _tables(pres)[0][1].table
     fills = {}
-    for col in range(7, 13):
+    progress_names = {'需求串讲', '反串讲', 'STC设计', '编码', 'BBIT', '转测澄清'}
+    progress_columns = [col for col in range(len(table.columns)) if table.cell(1, col).text in progress_names]
+    assert len(progress_columns) == 6
+    for col in progress_columns:
         cell = table.cell(2, col)
         fills[cell.text] = str(cell.fill.fore_color.rgb)
 

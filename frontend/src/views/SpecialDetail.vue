@@ -218,6 +218,9 @@
             </template>
           </el-table-column>
           <el-table-column prop="owner" label="责任人" width="110" />
+          <el-table-column label="工作量（人天）" width="130" align="right">
+            <template #default="{ row }">{{ row.workload ?? '—' }}</template>
+          </el-table-column>
           <el-table-column prop="planned_close_date" label="计划闭环时间" width="130" />
           <el-table-column label="当前状态" width="110" align="center">
             <template #default="{ row }">

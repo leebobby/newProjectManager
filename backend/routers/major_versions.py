@@ -6,6 +6,7 @@
 
 哪一层给谁用（改口径前先看这张表，改错了各页面对不上）：
 - 客户面（现场版本、定制化需求的预计合入版本）→ **版本**
+- 客户面问题的「合入版本」→ **大版本**（merge_major_version_id）
 - 迭代管理（领域/产品需求的计划交付版本）、问题单 → **迭代版本**
 - 版本达成率（metrics）→ **版本**
 
@@ -92,6 +93,15 @@ def _sync_major_id(db: Session, iv: models.IterationVersion) -> None:
 
 
 # ─── 大版本 ──────────────────────────────────────────────────────────────────
+@router.get("/major-versions/all")
+def list_all_major_versions(db: Session = Depends(get_db)):
+    """客户问题合入版本：所有项目与未挂项目的大版本。"""
+    rows = db.query(models.MajorVersion).options(joinedload(models.MajorVersion.project)).order_by(models.MajorVersion.id).all()
+    return [{"id": row.id, "version_no": row.version_no,
+             "label": f"{row.project.name} · {row.version_no}" if row.project else row.version_no}
+            for row in rows]
+
+
 @router.get("/major-versions", response_model=List[schemas.MajorVersionDetailOut])
 def list_major_versions(project_id: Optional[int] = None, db: Session = Depends(get_db)):
     q = db.query(models.MajorVersion).options(
