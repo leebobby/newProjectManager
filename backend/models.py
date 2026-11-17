@@ -2,9 +2,10 @@ from datetime import datetime
 
 from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String,
                         Text, UniqueConstraint)
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 
 from database import Base
+from requirement_identity import ar_key
 
 
 class Customer(Base):
@@ -115,6 +116,8 @@ class CustomerIssue(Base):
                   comment="issue 软件类问题 / task 现场关键事务")
     description = Column(Text, default="", comment="问题描述 / 任务内容")
     issue_ref = Column(String(128), default="", comment="关联问题单编号（可为空）")
+    merge_major_version_id = Column(Integer, ForeignKey("major_versions.id", ondelete="SET NULL"), nullable=True, index=True)
+    merge_major_version = relationship("MajorVersion", foreign_keys=[merge_major_version_id])
     urgency = Column(String(16), default="一般", comment="重要紧急 / 紧急 / 一般")
     owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
                            nullable=True, index=True, comment="责任人（系统用户）")
@@ -482,7 +485,15 @@ class IterationRequirement(Base):
                         nullable=True, index=True,
                         comment="所属项目 FK（roadmap_projects）。迭代本身跨项目，项目挂在需求行上")
     seq = Column(Integer, default=0, comment="序号（排序用）")
-    req_no = Column(String(64), default="", comment="需求编号")
+    req_no = Column(String(64), default="", comment="需求编号 SR，允许重复")
+    ar_no = Column(String(64), nullable=True, comment="需求编号 AR")
+    ar_key = Column(String(64), nullable=True, unique=True, index=True, comment="AR 去空白并忽略大小写的唯一键")
+
+    @validates("ar_no")
+    def normalize_ar(self, key, value):
+        value = str(value or "").strip() or None
+        self.ar_key = ar_key(value)
+        return value
     req_url = Column(String(512), default="", comment="需求超链接")
     title = Column(String(256), default="", comment="需求标题")
     owner = Column(String(64), default="", comment="交付责任人（展示快照）")
@@ -974,6 +985,7 @@ class SpecialTask(Base):
     seq = Column(Integer, default=0)
     content = Column(Text, default="", comment="事务内容")
     progress = Column(Text, default="", comment="当前进展")
+    workload = Column(Float, nullable=True, comment="工作量（人天），选填")
     owner = Column(String(64), default="", comment="责任人（展示快照）")
     owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"),
                            nullable=True, index=True, comment="责任人 FK")

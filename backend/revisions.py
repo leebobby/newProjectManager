@@ -74,7 +74,7 @@ TRACKED: Dict[str, dict] = {
     "special_task": {
         "label": "专项事务",
         "model": models.SpecialTask,
-        "fields": ("content", "progress", "owner", "planned_close_date", "status"),
+        "fields": ("content", "progress", "owner", "planned_close_date", "status", "workload"),
         "scope": lambda o: f"special:{o.special_id}",
         "title": lambda o: _head(o.content),
     },
@@ -111,7 +111,7 @@ TRACKED: Dict[str, dict] = {
         "label": "客户面问题条目",
         "model": models.CustomerIssue,
         "fields": ("description", "progress_note", "urgency", "status",
-                   "due_date", "closed_at", "issue_ref", "owner_name"),
+                   "due_date", "closed_at", "issue_ref", "owner_name", "merge_major_version_id"),
         "scope": lambda o: f"customer:{o.customer_id or 0}",
         "title": lambda o: _head(o.description),
     },
@@ -146,6 +146,8 @@ _LABELS = {
     ("customer_issue", "urgency"): "紧急程度",
     ("customer_issue", "status"): "状态",
     ("customer_issue", "owner_name"): "责任人",
+    ("customer_issue", "merge_major_version_id"): "合入大版本",
+    ("special_task", "workload"): "工作量（人天）",
     ("hardware_issue", "machine_cells_json"): "各机台清零状态",
 }
 

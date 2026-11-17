@@ -1,0 +1,90 @@
+import { expect, test } from '@playwright/test'
+
+test('客户问题选择合入大版本、专项事务选填工作量、领域需求填写 SR 和唯一 AR', async ({ page }) => {
+  test.setTimeout(120000)
+  page.setDefaultTimeout(10000)
+  const login = await page.request.post('/api/auth/login', { data: { username: 'admin', password: 'admin123' } })
+  const headers = { Authorization: `Bearer ${(await login.json()).access_token}` }
+  const post = async (path, data) => {
+    const response = await page.request.post('/api' + path, { headers, data })
+    expect(response.ok(), await response.text()).toBeTruthy()
+    return response.json()
+  }
+  const key = String(Date.now())
+  const created = []
+  try {
+    const major = await post('/major-versions', { version_no: 'MAJOR-' + key, title: '合入大版本' })
+    created.push(['/major-versions', major.id])
+    const machines = await (await page.request.get('/api/customer-status', { headers })).json()
+    const issue = await post('/customer-issues', { machine_status_id: machines[0].id, description: '合入验证-' + key })
+    created.push(['/customer-issues', issue.id])
+    const special = await post('/specials', { name: '工作量验证-' + key })
+    created.push(['/specials', special.id])
+    const iterations = await (await page.request.get('/api/annual-iterations?year=2067', { headers })).json()
+    const iteration = iterations[0]
+    const sr = 'SR-' + key
+    const ar = 'AR-' + key
+    for (const suffix of ['A', 'B']) {
+      const requirement = await post('/iteration-requirements', { iteration_id: iteration.id, req_no: sr, ar_no: ar + suffix, title: '需求-' + suffix })
+      created.push(['/iteration-requirements', requirement.id])
+    }
+    await page.goto('/login')
+    await page.getByPlaceholder('用户名').fill('admin')
+    await page.getByPlaceholder('密码').fill('admin123')
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(page.locator('.el-main')).toBeVisible()
+    await page.goto('/customer-issues')
+    const issueRow = page.getByRole('row').filter({ hasText: '合入验证-' + key })
+    const selector = issueRow.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '客户问题合入版本' }) })
+    await selector.click()
+    await page.getByRole('option', { name: major.version_no, exact: true }).click()
+    await expect(issueRow).toContainText(major.version_no)
+    const savedIssue = await (await page.request.get('/api/customer-issues', { headers })).json()
+    expect(savedIssue.find(row => row.id === issue.id).merge_major_version_id).toBe(major.id)
+
+    await page.goto(`/specials/${special.id}`)
+    await page.getByRole('button', { name: '进入编辑', exact: true }).click()
+    await page.getByRole('button', { name: '新增事务', exact: true }).click()
+    let dialog = page.getByRole('dialog', { name: '新增事务', exact: true })
+    await dialog.locator('[contenteditable=true]').first().fill('事务-' + key)
+    await dialog.getByRole('spinbutton').fill('1.75')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(dialog).not.toBeVisible()
+    const taskRow = page.getByRole('row').filter({ hasText: '事务-' + key })
+    await expect(taskRow).toContainText('1.75')
+    await taskRow.getByRole('button', { name: '编辑', exact: true }).click()
+    dialog = page.getByRole('dialog', { name: '编辑事务', exact: true })
+    await expect(dialog.getByRole('spinbutton')).toHaveValue('1.75')
+    await dialog.getByRole('spinbutton').fill('')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(dialog).not.toBeVisible()
+    const detail = await (await page.request.get(`/api/specials/${special.id}`, { headers })).json()
+    expect(detail.tasks[0].workload).toBeNull()
+
+    await page.goto(`/iterations/${iteration.id}`)
+    await page.getByRole('tab', { name: '领域需求', exact: true }).click()
+    await expect(page.getByRole('columnheader', { name: '需求编号（SR）', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '需求编号（AR）', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '新增需求', exact: true }).click()
+    dialog = page.getByRole('dialog', { name: '新增需求', exact: true })
+    const input = label => dialog.locator('.el-form-item').filter({ has: page.getByText(label, { exact: true }) }).getByRole('textbox')
+    await input('需求编号（SR）').fill(sr)
+    await input('需求编号（AR）').fill(ar + 'A')
+    await input('需求标题').fill('需求-C')
+    const duplicateResponse = page.waitForResponse(response => response.url().endsWith('/api/iteration-requirements') && response.request().method() === 'POST')
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    expect((await duplicateResponse).status()).toBe(409)
+    await expect(dialog).toBeVisible()
+    await input('需求编号（AR）').fill(ar + 'C')
+    const savedResponse = page.waitForResponse(response => response.url().endsWith('/api/iteration-requirements') && response.request().method() === 'POST' && response.status() === 200)
+    await dialog.getByRole('button', { name: '保存', exact: true }).click()
+    const third = await (await savedResponse).json()
+    created.push(['/iteration-requirements', third.id])
+    await expect(dialog).not.toBeVisible()
+    const requirements = await (await page.request.get(`/api/iteration-requirements?iteration_id=${iteration.id}`, { headers })).json()
+    expect(requirements.filter(row => row.req_no === sr)).toHaveLength(3)
+    expect(new Set(requirements.filter(row => row.req_no === sr).map(row => row.ar_no)).size).toBe(3)
+  } finally {
+    for (const [path, id] of created.reverse()) await page.request.delete(`/api${path}/${id}`, { headers })
+  }
+})

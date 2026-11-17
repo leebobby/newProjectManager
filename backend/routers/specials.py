@@ -767,6 +767,8 @@ def _create_item(
     Model = _item_model(kind)
     data = payload.model_dump(exclude_unset=True)
     _sanitize_rich_fields(data)
+    if kind != 'task':
+        data.pop('workload', None)
     if not data.get("seq"):
         cnt = db.query(Model).filter(Model.special_id == sid).count()
         data["seq"] = cnt + 1
@@ -803,6 +805,8 @@ def _update_item(
     _require_not_locked_by_other(db, item.special_id, user)
     data = payload.model_dump(exclude_unset=True)
     _sanitize_rich_fields(data)
+    if kind != 'task':
+        data.pop('workload', None)
     fill_user_fk(db, data, "owner", "owner_user_id")
     before = revisions.snapshot(item)
     for k, v in data.items():
@@ -1195,6 +1199,8 @@ def _section_text(special: models.Special, sec) -> List[str]:
                 if t.progress:
                     out.append(f"       进展：{_strip_html(t.progress)}")
                 meta = []
+                if getattr(t, 'workload', None) not in (None, ''):
+                    meta.append(f"工作量：{t.workload:g} 人天")
                 if t.owner:
                     meta.append(f"责任人：{t.owner}")
                 if t.planned_close_date:
@@ -1205,6 +1211,8 @@ def _section_text(special: models.Special, sec) -> List[str]:
             out.append(f"  ◇ 本期已闭环（{len(closed)} 项）")
             for i, t in enumerate(closed, 1):
                 out.append(f"    {i}. {_strip_html(t.content)}")
+                if getattr(t, 'workload', None) not in (None, ''):
+                    out.append(f"       工作量：{t.workload:g} 人天")
         return out
 
     if sec.key == "formation":
@@ -1478,7 +1486,7 @@ def _section_html(special: models.Special, sec, images: list) -> str:
         closed = [t for t in (special.tasks or []) if (t.status or "open") == "closed"]
         if not (open_tasks or closed):
             return ""
-        hdr = ["事务内容", "当前进展", "责任人", "计划闭环时间", "状态"]
+        hdr = ["事务内容", "当前进展", "责任人", "计划闭环时间", "状态", "工作量（人天）"]
         out = []
         for group, tone, note in ((open_tasks, "#E6A23C", "进行中"),
                                   (closed, "#67C23A", "本期已闭环")):
@@ -1486,7 +1494,8 @@ def _section_html(special: models.Special, sec, images: list) -> str:
                 continue
             rows = [[_rich_to_html(t.content), _rich_to_html(t.progress),
                      _e(t.owner or ""), _e(t.planned_close_date or ""),
-                     "Open" if note == "进行中" else "Closed"] for t in group]
+                     "Open" if note == "进行中" else "Closed",
+                     '' if getattr(t, 'workload', None) in (None, '') else _e(str(t.workload))] for t in group]
             out.append(f'<div style="font-weight:600;margin:6px 0;color:{tone};">'
                        f'◇ {note}（{len(group)} 项）</div>'
                        + _build_table_rich(hdr, rows))

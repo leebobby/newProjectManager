@@ -105,17 +105,15 @@ def test_move_to_next_month(client, admin_headers, iters):
     assert moved[a["id"]]["seq"] == len(moved)
 
 
-def test_move_rejects_duplicate_in_target(client, admin_headers, iters):
-    """目标迭代里已经手工补录过同一条时，不能再挪一条过去。"""
+def test_move_allows_repeated_sr_in_target(client, admin_headers, iters):
+    """SR 重复不阻挡跨迭代移动。"""
     _domain(client, admin_headers, iters["next"], title="批量-已存在", req_no="BK-030")
     a = _domain(client, admin_headers, iters["cur"], title="批量-已存在", req_no="BK-030")
     out = _bulk(client, admin_headers, {
         "items": [{"id": a["id"], "version": a["version"]}], "shift_months": 1,
     })
-    assert out["updated"] == 0
-    assert "2026-05" in out["conflicts"][0]["reason"]
-    # 原地不动
-    assert a["id"] in {r["id"] for r in _list(client, admin_headers, iters["cur"])}
+    assert out["updated"] == 1 and out['conflicts'] == []
+    assert a["id"] in {r["id"] for r in _list(client, admin_headers, iters["next"])}
 
 
 def test_december_moves_into_next_year(client, admin_headers, iters):

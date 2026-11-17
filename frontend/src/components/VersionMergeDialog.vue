@@ -48,6 +48,7 @@
             </template>
           </el-table-column>
           <el-table-column prop="title" label="需求标题" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="ar_no" label="需求编号（AR）" width="150" show-overflow-tooltip />
           <el-table-column prop="owner" label="责任人" width="100" show-overflow-tooltip />
           <el-table-column prop="owner_group" label="PL组" width="120" show-overflow-tooltip />
           <el-table-column prop="priority" label="优先级" width="80" align="center" />

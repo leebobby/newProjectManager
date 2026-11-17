@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import enums
 # 审计时间戳（created_at / updated_at / uploaded_at）用 LocalDT：库里存 UTC，
@@ -124,6 +124,7 @@ class CustomerIssueBase(BaseModel):
     kind: Optional[str] = "issue"
     description: Optional[str] = ""
     issue_ref: Optional[str] = ""
+    merge_major_version_id: Optional[int] = None
     urgency: Optional[str] = "一般"
     owner_user_id: Optional[int] = None
     owner_name: Optional[str] = ""
@@ -158,6 +159,7 @@ class CustomerIssueCreate(CustomerIssueBase):
 
 
 class CustomerIssueUpdate(BaseModel):
+    merge_major_version_id: Optional[int] = None
     version: int
     description: Optional[str] = None
     issue_ref: Optional[str] = None
@@ -186,6 +188,7 @@ class CustomerIssueUpdate(BaseModel):
 
 
 class CustomerIssueOut(CustomerIssueBase):
+    merge_major_version: str = ""
     id: int
     machine_status_id: int
     customer_id: Optional[int] = None
@@ -546,6 +549,7 @@ class AnnualIterationOut(AnnualIterationBase):
 
 # ===== IterationRequirement =====
 class IterationRequirementBase(BaseModel):
+    ar_no: Optional[str] = Field(default=None, max_length=64)
     project_id: Optional[int] = None
     seq: Optional[int] = 0
     req_no: Optional[str] = ""
@@ -590,6 +594,7 @@ class IterationRequirementCreate(IterationRequirementBase):
 
 
 class IterationRequirementUpdate(BaseModel):
+    ar_no: Optional[str] = Field(default=None, max_length=64)
     version: int
     project_id: Optional[int] = None
     seq: Optional[int] = None
@@ -778,6 +783,7 @@ class ReqLinkSide(BaseModel):
     两侧共用一个形状（列名一样、含义一样），产品需求侧的 owner / owner_group 恒为空
     ——那两列只有领域需求有。各写一份的话，同一批字段会在两个 Tab 里长出两套列名。
     """
+    ar_no: Optional[str] = None
     id: int
     seq: Optional[int] = None
     req_no: str = ""
@@ -1419,6 +1425,7 @@ class SpecialContentOut(BaseModel):
 
 
 class SpecialItemBase(BaseModel):
+    workload: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     seq: Optional[int] = 0
     content: Optional[str] = ""
     progress: Optional[str] = ""

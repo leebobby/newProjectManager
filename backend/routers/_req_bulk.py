@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 import models
 from routers._req_dedup import duplicate_message, find_duplicate
+from routers._domain_identity import find_ar_duplicate, ar_duplicate_message
 
 
 def _ensure_iteration(db: Session, year: int, month: int) -> models.AnnualIteration:
@@ -90,11 +91,14 @@ def bulk_update(db: Session, model, items: List, *,
                 conflicts.append({"id": row.id, "seq": row.seq, "title": (row.title or "").strip(),
                                   "reason": "目标迭代就是当前迭代"})
                 continue
-            dup = find_duplicate(db, model, target.id, row.req_no, row.title)
+            dup = (find_ar_duplicate(db, row.ar_no, exclude_id=row.id)
+                   if model is models.IterationRequirement
+                   else find_duplicate(db, model, target.id, row.req_no, row.title))
             if dup is not None:
                 conflicts.append({
                     "id": row.id, "seq": row.seq, "title": (row.title or "").strip(),
-                    "reason": duplicate_message(dup, f"{y}-{m:02d} 里已经有这条需求"),
+                    "reason": (ar_duplicate_message(dup) if model is models.IterationRequirement
+                               else duplicate_message(dup, f"{y}-{m:02d} 里已经有这条需求")),
                 })
                 continue
             row.iteration_id = target.id

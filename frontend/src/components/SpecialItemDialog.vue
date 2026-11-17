@@ -18,6 +18,9 @@
       <el-form-item label="计划闭环时间">
         <el-input v-model="form.planned_close_date" placeholder="YYYY-MM-DD 或自由文本" />
       </el-form-item>
+      <el-form-item v-if="kind === 'task'" label="工作量（人天）">
+        <el-input-number v-model="form.workload" :min="0" :precision="2" :step="0.5" placeholder="选填" :controls="false" aria-label="专项事务工作量" />
+      </el-form-item>
       <el-form-item label="当前状态">
         <el-radio-group v-model="form.status">
           <el-radio value="open">Open</el-radio>
@@ -54,7 +57,7 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'saved'])
 
 function blank() {
-  return { content: '', progress: '', owner: '', planned_close_date: '', status: 'open' }
+  return { content: '', progress: '', owner: '', planned_close_date: '', status: 'open', workload: null }
 }
 
 const form = reactive(blank())
@@ -69,6 +72,7 @@ watch(
       content: src.content || '',
       progress: src.progress || '',
       owner: src.owner || '',
+      workload: src.workload ?? null,
       planned_close_date: src.planned_close_date || '',
       status: src.status || 'open',
     })
@@ -79,12 +83,15 @@ watch(
 async function onSave() {
   saving.value = true
   try {
+    const data = { ...form }
+    if (props.kind === 'task') data.workload = form.workload ?? null
+    else delete data.workload
     if (props.item) {
       const api = props.kind === 'task' ? specialApi.updateTask : specialApi.updateRisk
-      await api(props.item.id, { ...form })
+      await api(props.item.id, data)
     } else {
       const api = props.kind === 'task' ? specialApi.createTask : specialApi.createRisk
-      await api(props.specialId, { ...form })
+      await api(props.specialId, data)
     }
     emit('update:modelValue', false)
     emit('saved')

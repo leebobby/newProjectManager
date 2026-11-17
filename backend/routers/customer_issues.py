@@ -40,6 +40,7 @@ _IMPORT_COLUMNS = [
     ("问题进展", "progress_note", False),
     ("状态", "status", False),
     ("分类专项", "category", False),
+    ("合入版本", "_merge_major_version", False),
 ]
 _DATE_FIELDS = {"raised_at", "due_date"}
 
@@ -68,6 +69,10 @@ def _serialize(row: models.CustomerIssue, machine=None, user_names: Dict[int, st
         "kind": row.kind,
         "description": row.description or "",
         "issue_ref": row.issue_ref or "",
+        "merge_major_version_id": row.merge_major_version_id,
+        "merge_major_version": ((f'{row.merge_major_version.project.name} · {row.merge_major_version.version_no}'
+                                 if row.merge_major_version.project else row.merge_major_version.version_no)
+                                if row.merge_major_version else ""),
         "urgency": row.urgency or "",
         "owner_user_id": row.owner_user_id,
         "owner_name": row.owner_name or "",
@@ -96,6 +101,12 @@ def _user_name_map(db: Session, rows: List[models.CustomerIssue]) -> Dict[int, s
         return {}
     users = db.query(models.User).filter(models.User.id.in_(ids)).all()
     return {u.id: (u.full_name or u.username) for u in users}
+
+
+def _validate_merge_version(db: Session, data: dict):
+    value = data.get('merge_major_version_id')
+    if value is not None and db.get(models.MajorVersion, value) is None:
+        raise HTTPException(400, '合入版本必须选择版本管理中的大版本')
 
 
 def _sort_key(d: Dict[str, Any]):
@@ -129,6 +140,7 @@ def list_items(
     query = db.query(models.CustomerIssue).options(
         joinedload(models.CustomerIssue.machine_status),
         joinedload(models.CustomerIssue.group),
+        joinedload(models.CustomerIssue.merge_major_version).joinedload(models.MajorVersion.project),
     )
     if machine_status_id is not None:
         query = query.filter(models.CustomerIssue.machine_status_id == machine_status_id)
@@ -190,6 +202,7 @@ def create_item(
         raise HTTPException(status_code=404, detail="机台不存在")
 
     data = payload.model_dump()
+    _validate_merge_version(db, data)
     # customer_id 不由前端传：始终跟随机台，避免汇总页按战场分组时对不上
     data["customer_id"] = machine.customer_id
     # 责任领域：前端给了 group_id 就尊重；只给了文本则反查 PL 组
@@ -238,6 +251,7 @@ def update_item(
     before = revisions.snapshot(item)
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
+    _validate_merge_version(db, changes)
     # 责任领域：若前端只改了文本快照，反查 PL 组 FK
     fill_group_fk(db, changes, "owner_group", "group_id")
     prev_owner = item.owner_user_id
@@ -319,6 +333,7 @@ def export_xlsx(
     query = db.query(models.CustomerIssue).options(
         joinedload(models.CustomerIssue.machine_status),
         joinedload(models.CustomerIssue.group),
+        joinedload(models.CustomerIssue.merge_major_version).joinedload(models.MajorVersion.project),
     )
     if not include_closed:
         query = query.filter(models.CustomerIssue.status != "CLOSED")
@@ -335,6 +350,7 @@ def export_xlsx(
         ("group_name", "责任领域", 14), ("progress_note", "问题进展", 40),
         ("status", "状态", 10), ("category", "分类专项", 14),
         ("closed_at", "闭环时间", 13),
+        ("merge_major_version", "合入版本", 24),
     ]
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -499,6 +515,16 @@ async def import_from_excel(
             continue
 
         fill_user_fk(db, data, "owner_name", "owner_user_id")
+        merge_version = str(data.pop('_merge_major_version', '') or '').strip()
+        if merge_version:
+            versions = db.query(models.MajorVersion).filter(models.MajorVersion.version_no == merge_version).all()
+            if not versions:
+                versions = [version for version in db.query(models.MajorVersion).options(joinedload(models.MajorVersion.project)).all()
+                            if version.project and f'{version.project.name} · {version.version_no}' == merge_version]
+            if len(versions) != 1:
+                errors.append(f'第 {r_idx} 行：合入大版本不存在或名称不唯一，已跳过')
+                continue
+            data['merge_major_version_id'] = versions[0].id
         fill_group_fk(db, data, "owner_group", "group_id")
         data["kind"] = "issue"
         data["machine_status_id"] = machine.id

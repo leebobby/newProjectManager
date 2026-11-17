@@ -4,10 +4,8 @@
 补录时又手敲一条就多一行。重复的需求在度量里是实打实的分母——完成度被摊薄、
 按项目/领域的条数偏大，而每一行单独看都合法，没人会当 bug 报上来。
 
-口径（`routers/_req_dedup.py`，领域需求与产品需求共用一份实现）：
-- 范围是**一个迭代**，跨迭代不拦（同一条需求下个月接着排是正常的）；
-- 有需求编号按编号判，没编号按标题判；
-- 比较前把空白去掉再转小写（Excel 粘出来的编号常带首尾空格）。
+领域需求：SR / 标题允许重复，非空 AR 跨迭代唯一，比较忽略空白和大小写。
+产品需求：保持原有单迭代编号 / 标题判重与跨迭代提示规则。
 """
 import datetime
 import io
@@ -35,33 +33,33 @@ PRODUCT = "/api/iteration-product-requirements"
 
 # ── 手工新增 ────────────────────────────────────────────────────────────────
 
-def test_same_req_no_in_one_iteration_is_rejected(client, admin_headers, iters):
+def test_same_ar_in_one_iteration_is_rejected(client, admin_headers, iters):
     it, _ = iters
-    ok = _post(client, admin_headers, DOMAIN, it, req_no="REQ-1001", title="登录超时")
+    ok = _post(client, admin_headers, DOMAIN, it, ar_no="REQ-1001", title="登录超时")
     assert ok.status_code == 200, ok.text
 
-    dup = _post(client, admin_headers, DOMAIN, it, req_no="REQ-1001", title="标题写得不一样")
+    dup = _post(client, admin_headers, DOMAIN, it, ar_no="REQ-1001", title="标题写得不一样")
     assert dup.status_code == 409
     detail = dup.json()["detail"]
     assert "REQ-1001" in detail and "登录超时" in detail, "提示要指到具体是哪一行"
 
 
-def test_req_no_compare_ignores_spaces_and_case(client, admin_headers, iters):
+def test_ar_compare_ignores_spaces_and_case(client, admin_headers, iters):
     """Excel 里粘出来的编号常带首尾空格或全角空格，肉眼看不出差别。"""
     it, _ = iters
     assert _post(client, admin_headers, DOMAIN, it,
-                 req_no="REQ-2001", title="甲").status_code == 200
+                 ar_no="REQ-2001", title="甲").status_code == 200
     for variant in (" REQ-2001 ", "REQ-2001　", "req-2001"):
-        r = _post(client, admin_headers, DOMAIN, it, req_no=variant, title="乙")
+        r = _post(client, admin_headers, DOMAIN, it, ar_no=variant, title="乙")
         assert r.status_code == 409, f"{variant!r} 应判为重复"
 
 
-def test_no_req_no_falls_back_to_title(client, admin_headers, iters):
-    """编号是选填的，只按编号判等于"不填编号就能重复录"。"""
+def test_empty_ar_does_not_reject_repeated_sr_or_title(client, admin_headers, iters):
+    """SR 可重复；未填 AR 的旧数据与新条目均可保存。"""
     it, _ = iters
     assert _post(client, admin_headers, DOMAIN, it, title="报表导出很慢").status_code == 200
     assert _post(client, admin_headers, DOMAIN, it,
-                 title=" 报表导出很慢 ").status_code == 409
+                 title=" 报表导出很慢 ").status_code == 200
 
 
 def test_same_req_no_in_another_iteration_is_fine(client, admin_headers, iters):
@@ -73,7 +71,7 @@ def test_same_req_no_in_another_iteration_is_fine(client, admin_headers, iters):
                  req_no="REQ-3001", title="跨迭代").status_code == 200
 
 
-def test_product_requirements_share_the_same_rule(client, admin_headers, iters):
+def test_product_requirements_keep_the_original_rule(client, admin_headers, iters):
     """两张表共用一份实现——两处各写一份的表现是一个 Tab 拦住了、另一个没拦。"""
     it, _ = iters
     assert _post(client, admin_headers, PRODUCT, it,
@@ -84,21 +82,21 @@ def test_product_requirements_share_the_same_rule(client, admin_headers, iters):
 
 # ── 编辑也能造出重复 ────────────────────────────────────────────────────────
 
-def test_editing_a_req_no_into_another_row_is_rejected(client, admin_headers, iters):
+def test_editing_ar_into_another_row_is_rejected(client, admin_headers, iters):
     it, _ = iters
-    a = _post(client, admin_headers, DOMAIN, it, req_no="REQ-4001", title="甲").json()
-    b = _post(client, admin_headers, DOMAIN, it, req_no="REQ-4002", title="乙").json()
+    a = _post(client, admin_headers, DOMAIN, it, ar_no="REQ-4001", title="甲").json()
+    b = _post(client, admin_headers, DOMAIN, it, ar_no="REQ-4002", title="乙").json()
 
     r = client.put(f"{DOMAIN}/{b['id']}", headers=admin_headers,
-                   json={"req_no": "REQ-4001", "version": b["version"]})
+                   json={"ar_no": "REQ-4001", "version": b["version"]})
     assert r.status_code == 409
     assert "REQ-4001" in r.json()["detail"]
 
     # 改别的字段不受影响，而且一行不算与自己重复
     r = client.put(f"{DOMAIN}/{b['id']}", headers=admin_headers,
-                   json={"req_no": "REQ-4002", "title": "乙改名", "version": b["version"]})
+                   json={"ar_no": "REQ-4002", "title": "乙改名", "version": b["version"]})
     assert r.status_code == 200, r.text
-    assert a["req_no"] == "REQ-4001"
+    assert a["ar_no"] == "REQ-4001"
 
 
 # ── Excel 导入 ──────────────────────────────────────────────────────────────
@@ -130,8 +128,8 @@ def _upload(client, headers, path, iteration_id, rows):
 
 def test_importing_the_same_file_twice_does_not_double_everything(client, admin_headers, iters):
     it, _ = iters
-    rows = [{"需求编号": "IMP-1", "需求标题": "导入甲"},
-            {"需求编号": "IMP-2", "需求标题": "导入乙"}]
+    rows = [{"需求编号AR": "IMP-1", "需求标题": "导入甲"},
+            {"需求编号AR": "IMP-2", "需求标题": "导入乙"}]
 
     first = _upload(client, admin_headers, DOMAIN, it, rows).json()
     assert first["created"] == 2 and first["skipped"] == 0
@@ -146,8 +144,8 @@ def test_importing_the_same_file_twice_does_not_double_everything(client, admin_
 
 def test_duplicates_inside_one_file_are_skipped_too(client, admin_headers, iters):
     it, _ = iters
-    rows = [{"需求编号": "IMP-9", "需求标题": "文件内甲"},
-            {"需求编号": " imp-9 ", "需求标题": "文件内甲的另一种写法"}]
+    rows = [{"需求编号AR": "IMP-9", "需求标题": "文件内甲"},
+            {"需求编号AR": " imp-9 ", "需求标题": "文件内甲的另一种写法"}]
     d = _upload(client, admin_headers, DOMAIN, it, rows).json()
     assert d["created"] == 1 and d["skipped"] == 1
     assert "第 2 行" in d["errors"][0], "要指出跟本文件的哪一行撞了"
@@ -156,17 +154,17 @@ def test_duplicates_inside_one_file_are_skipped_too(client, admin_headers, iters
 def test_import_still_creates_the_new_rows(client, admin_headers, iters):
     """重复的跳过，不重复的照进——别把整份表格判成失败。"""
     it, _ = iters
-    _upload(client, admin_headers, DOMAIN, it, [{"需求编号": "IMP-20", "需求标题": "已存在"}])
+    _upload(client, admin_headers, DOMAIN, it, [{"需求编号AR": "IMP-20", "需求标题": "已存在"}])
     d = _upload(client, admin_headers, DOMAIN, it, [
-        {"需求编号": "IMP-20", "需求标题": "已存在"},
-        {"需求编号": "IMP-21", "需求标题": "新的"},
+        {"需求编号AR": "IMP-20", "需求标题": "已存在"},
+        {"需求编号AR": "IMP-21", "需求标题": "新的"},
     ]).json()
     assert d["created"] == 1 and d["skipped"] == 1
 
 
 # ── 跨迭代：不拦，但要报出来 ────────────────────────────────────────────────
 
-def test_cross_iteration_duplicate_is_reported_not_blocked(client, admin_headers, iters):
+def test_repeated_sr_across_iterations_does_not_warn(client, admin_headers, iters):
     """本轮没做完、下个月接着排是正常的，所以不拦；但也可能是重复录了，所以要报。"""
     it_a, it_b = iters
     _post(client, admin_headers, DOMAIN, it_a, req_no="X-1", title="跨迭代提示")
@@ -175,15 +173,10 @@ def test_cross_iteration_duplicate_is_reported_not_blocked(client, admin_headers
 
     d = client.get(f"{DOMAIN}/duplicates", headers=admin_headers,
                    params={"iteration_id": it_b}).json()
-    g = next(g for g in d["groups"] if any(r["req_no"] == "X-1" for r in g["rows"]))
-    assert g["kind"] == "no"
-    assert len(g["rows"]) == 1, "本迭代里只有一条"
-    assert [o["iteration_id"] for o in g["others"]] == [it_a]
-    assert g["others"][0]["iteration_label"], "要写清楚是哪个迭代，光给 id 没人查得动"
-    assert d["cross_iteration"] >= 1
+    assert d['groups'] == [] and d['cross_iteration'] == 0, '允许重复的 SR 不应再提示重复'
 
 
-def test_duplicates_scan_also_surfaces_legacy_same_iteration_rows(client, admin_headers, iters):
+def test_legacy_repeated_sr_is_preserved_without_warning(client, admin_headers, iters):
     """判重是后加的，存量数据里的重复不会自己消失——扫描要能把它们捞出来。"""
     import models
     from database import SessionLocal
@@ -199,10 +192,10 @@ def test_duplicates_scan_also_surfaces_legacy_same_iteration_rows(client, admin_
 
     d = client.get(f"{DOMAIN}/duplicates", headers=admin_headers,
                    params={"iteration_id": it}).json()
-    g = next(g for g in d["groups"] if any(r["req_no"] == "LEGACY-1" for r in g["rows"]))
-    assert len(g["rows"]) == 2, "同一迭代里的两条都要列出来"
-    assert a["id"] in [r["id"] for r in g["rows"]]
-    assert d["same_iteration"] >= 1
+    assert d['groups'] == [] and d['same_iteration'] == 0
+    saved = client.get(DOMAIN, headers=admin_headers, params={'iteration_id': it}).json()
+    assert sum(row['req_no'] == 'LEGACY-1' for row in saved) == 2
+    assert any(row['id'] == a['id'] for row in saved)
 
 
 def test_clean_iteration_reports_nothing(client, admin_headers, iters):
@@ -214,14 +207,13 @@ def test_clean_iteration_reports_nothing(client, admin_headers, iters):
         assert len(g["rows"]) > 1 or g["others"], "列出来的每一组都得真有重复"
 
 
-def test_import_flags_cross_iteration_rows_but_still_imports_them(client, admin_headers, iters):
+def test_sr_import_across_iterations_is_allowed_without_warning(client, admin_headers, iters):
     it_a, it_b = iters
     _post(client, admin_headers, DOMAIN, it_a, req_no="XIMP-1", title="上个月就有")
     d = _upload(client, admin_headers, DOMAIN, it_b,
-                [{"需求编号": "XIMP-1", "需求标题": "上个月就有"}]).json()
+                [{"需求编号(SR)": "XIMP-1", "需求标题": "上个月就有"}]).json()
     assert d["created"] == 1 and d["skipped"] == 0, "跨迭代照进"
-    assert d["cross_iteration"] == 1
-    assert any("请确认是否重复" in e for e in d["errors"]), "进了也要说一声"
+    assert d["cross_iteration"] == 0 and d['errors'] == [], 'SR 复用是正常填报'
 
 
 def test_product_tab_has_its_own_scan(client, admin_headers, iters):

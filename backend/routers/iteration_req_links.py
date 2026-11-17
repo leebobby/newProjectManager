@@ -83,6 +83,7 @@ def _side(row, fields: List[str], ctx: _Ctx) -> schemas.ReqLinkSide:
         id=row.id,
         seq=row.seq,
         req_no=(row.req_no or "").strip(),
+        ar_no=getattr(row, 'ar_no', None),
         req_url=(row.req_url or "").strip(),
         title=(row.title or "").strip(),
         iteration_id=row.iteration_id,
@@ -195,7 +196,10 @@ def list_candidates(
     if text:
         like = f"%{text}%"
         from sqlalchemy import or_
-        query = query.filter(or_(model.req_no.ilike(like), model.title.ilike(like)))
+        terms = [model.req_no.ilike(like), model.title.ilike(like)]
+        if side == 'domain':
+            terms.append(model.ar_no.ilike(like))
+        query = query.filter(or_(*terms))
     rows = (query.order_by(model.iteration_id.desc(), model.seq.asc(), model.id.asc())
             .limit(_CANDIDATE_LIMIT).all())
     ctx = _Ctx(db)

@@ -803,18 +803,19 @@ def _iteration_title(iteration) -> str:
 def _add_domain_slide(pres, iteration, requirements: Iterable):
     """领域需求：基础列 + 「交付进展跟踪」6 子列 + 备注，超过一页自动续页。"""
     leaf_headers = [
-        "序号", "需求编号", "需求标题", "责任人", "PL组", "优先级", "计划版本",
+        "序号", "需求编号(SR)", "需求编号AR", "需求标题", "责任人", "PL组", "优先级", "计划版本",
         "需求串讲", "反串讲", "STC设计", "编码", "BBIT", "转测澄清",
         "备注",
     ]
-    parent_headers: List[Optional[tuple]] = [None] * 7 + [("progress", "交付进展跟踪")] * 6 + [None]
-    col_ratios = [0.45, 1.0, 2.0, 0.75, 0.7, 0.55, 0.85] + [0.82] * 6 + [1.4]
+    parent_headers: List[Optional[tuple]] = [None] * 8 + [("progress", "交付进展跟踪")] * 6 + [None]
+    col_ratios = [0.45, 1.0, 1.0, 2.0, 0.75, 0.7, 0.55, 0.85] + [0.82] * 6 + [1.4]
 
     data: List[List[str]] = []
     for r in requirements:
         data.append([
             str(r.seq or 0),
             r.req_no or "",
+            getattr(r, 'ar_no', None) or "",
             r.title or "",
             r.owner or "",
             getattr(r, "owner_group", "") or "",

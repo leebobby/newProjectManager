@@ -157,7 +157,8 @@ def test_special_report_lights_only_the_status_cell():
     lit = [c for c in range(1, xlsx_utils._NCOL + 1)
            if _rgb(ws.cell(row, c).fill.fgColor) in brand.STATUS_FILLS.values()]
     assert len(lit) == 1, "只有状态格该点灯"
-    assert lit[0] == xlsx_utils._spans_from_ratios(xlsx_utils._SIX_RATIOS)[-1][0], \
-        "点灯的应该是最后一列（状态）"
+    header_row = max(r for r in range(1, row) if any(ws.cell(r, c).value == '状态' for c in range(1, xlsx_utils._NCOL + 1)))
+    status_col = next(c for c in range(1, xlsx_utils._NCOL + 1) if ws.cell(header_row, c).value == '状态')
+    assert lit[0] == status_col, "点灯应只落在状态列，新增工作量列不应被染色"
     assert str(ws.cell(row, lit[0]).value) == "进行中"
     assert _rgb(ws.cell(row, lit[0]).fill.fgColor) == "FFD966"
