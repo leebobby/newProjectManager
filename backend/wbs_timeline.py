@@ -59,8 +59,8 @@ MIN_BOX_W = 9.0           # 一天的活也要看得见
 CONTENT_MIN_W = 138.0     # 足够放下编号、任务名和一项进度信息
 BOX_TEXT_PAD = 6.0
 BAR_H = 2.5               # 叶子框底部那条完成度细条
-DAY_PX = 11.0             # 一天多宽（会被 PLOT_MIN/MAX 夹住）
-PLOT_MIN, PLOT_MAX = 660.0, 1180.0
+PLOT_MIN, PLOT_MAX = 660.0, 16000.0
+MONTH_PX = 160.0           # 舒适阅读按月份展开；超长画布仍受导出尺寸预算保护
 LEGEND_PX = 11.0
 TODAY_PILL_W = 78.0
 TODAY_PILL_H = 17.0
@@ -208,7 +208,48 @@ def _horizontal_bounds(rows: List[dict], x_for_date, first_date: date) -> Dict[s
 
 def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] = None,
                    max_depth: Optional[int] = None, folded: int = 0,
-                   dependency_mode: str = "arrows", reference_rows: Optional[List[dict]] = None) -> dict:
+                   dependency_mode: str = "arrows", reference_rows: Optional[List[dict]] = None,
+                   viewport_width: Optional[int] = None, fit_width: bool = False) -> dict:
+    """同一份布局供页面和导出使用；适应宽度只改变日期尺度，不缩小文字。"""
+    def layout(plot_width=None):
+        return _build_timeline(rows, subtitle=subtitle, today=today, max_depth=max_depth,
+                               folded=folded, dependency_mode=dependency_mode,
+                               reference_rows=reference_rows, plot_width=plot_width)
+
+    def measure(plot_width=None):
+        # 缩放只由完整任务树决定，裁剪展示层级后不能让同一父框横向漂移。
+        if reference_rows is not None and len(reference_rows) > len(rows):
+            return _build_timeline(reference_rows, subtitle=subtitle, today=today,
+                                   dependency_mode=dependency_mode, reference_rows=reference_rows,
+                                   plot_width=plot_width)
+        return layout(plot_width)
+
+    natural = layout()
+    if not viewport_width:
+        return natural
+    target = max(0, viewport_width - 2)
+    if not fit_width and measure()["width"] >= target:
+        return natural
+    # 文本、嵌套外框和依赖绕行都算入总宽度；长名称放不下时保留滚动。
+    lower, upper = PLOT_MIN, min(PLOT_MAX, max(PLOT_MIN, viewport_width))
+    best = measure(lower)
+    if best["width"] > target:
+        return layout(lower) if fit_width else natural
+    chosen_width = lower
+    for _ in range(14):
+        middle = (lower + upper) / 2
+        candidate = measure(middle)
+        if candidate["width"] <= target:
+            chosen_width = lower = middle
+        else:
+            upper = middle
+    return layout(chosen_width)
+
+
+def _build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] = None,
+                   max_depth: Optional[int] = None, folded: int = 0,
+                   dependency_mode: str = "arrows", reference_rows: Optional[List[dict]] = None,
+                   plot_width: Optional[float] = None) -> dict:
     """把拍平的 WBS（按页面顺序、带 code/depth/start/end/overdue_days）排成 A 图版面。
 
     `rows` 是**纯字典**、不吃 ORM 对象（同 `wbs_diagram.build_diagram`）：这个模块
@@ -242,27 +283,28 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
             subtree_ends[stack.pop()] = i - 1
         stack.append(i)
 
-    # ── 时间轴：起止取图上所有行的计划日期，再把「今天」也裹进来 ──────────
+    # ── 时间轴：来自完整计划，历史计划不为了显示「今天」额外扩展几年 ──────
     ds = [d for d in (_as_date(r.get("start")) for r in reference) if d]
     de = [d for d in (_as_date(r.get("end")) for r in reference) if d]
     dated = bool(ds or de)
-    d0 = (min(ds + de + [today]) if dated else today) - timedelta(days=5)
-    d1 = (max(ds + de + [today]) if dated else today) + timedelta(days=5)
+    d0 = (min(ds + de) if dated else today) - timedelta(days=5)
+    d1 = (max(ds + de) if dated else today) + timedelta(days=5)
+    today_visible = d0 <= today <= d1
     span = max(1, (d1 - d0).days)
-    plot_w = max(PLOT_MIN, min(PLOT_MAX, span * DAY_PX))
+    plot_w = min(PLOT_MAX, max(PLOT_MIN, float(plot_width) if plot_width else span / 30.44 * MONTH_PX))
     plot_x = PAD + NAME_W + GUT
 
     def X(d: date) -> float:
         return plot_x + (d - d0).days / span * plot_w
 
     bounds = _horizontal_bounds(reference, X, d0)
-    leftmost = min([b["left"] for b in bounds.values()] + [X(today) - TODAY_PILL_W / 2])
+    leftmost = min([b["left"] for b in bounds.values()] + [X(today) - TODAY_PILL_W / 2 if today_visible else PAD])
     offset = max(0.0, PAD - leftmost)
     plot_x += offset
     for bound in bounds.values():
         bound["left"] += offset
         bound["right"] += offset
-    width = ceil(max([plot_x + plot_w, X(today) + TODAY_PILL_W / 2]
+    width = ceil(max([plot_x + plot_w, X(today) + TODAY_PILL_W / 2 if today_visible else 0]
                      + [b["right"] for b in bounds.values()]) + PAD)
 
     # 不再绘制左栏，阶段斑马也随之取消。
@@ -400,6 +442,7 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
 
     tx_today = X(today)
     todaym = {
+        "visible": today_visible,
         "x": round(tx_today, 1), "y1": round(PAD + 13, 1), "y2": round(bottom, 1),
         "label": f"今天 {today.month}-{today.day:02d}", "color": TODAY_COLOR,
         "pill_x": round(tx_today - TODAY_PILL_W / 2, 1), "pill_y": round(PAD - 4, 1),
@@ -434,7 +477,7 @@ def build_timeline(rows: List[dict], subtitle: str = "", today: Optional[date] =
     overdue_n = sum(1 for r in kept if r.get("is_leaf") and int(r.get("overdue_days") or 0))
     note = timeline_note(subtitle=subtitle, today=today, overdue=overdue_n,
                          undated=undated, folded=folded, skipped=skipped,
-                         max_depth=max_depth, dated=dated)
+                         max_depth=max_depth, dated=dated, today_visible=today_visible)
     # 底注**不截断**（行数上限给够）：截掉的恰恰是「另有 N 行没填计划完成日」
     # 这种必须说清楚的话，而一个"…"结尾的说明看着还挺正常
     note_lines = _wrap_note(note, width - 2 * PAD)
@@ -482,7 +525,8 @@ def _wrap_note(text: str, max_w: float) -> List[str]:
 
 def timeline_note(subtitle: str = "", today: Optional[date] = None, overdue: int = 0,
                   undated: int = 0, folded: int = 0, skipped: int = 0,
-                  max_depth: Optional[int] = None, dated: bool = True) -> str:
+                  max_depth: Optional[int] = None, dated: bool = True,
+                  today_visible: bool = True) -> str:
     """图底那段说明。页面与 PNG 共用这一份，各写一份的表现是同一张图在页面上说
     「另有 3 行」、导出的图里说「另有 5 行」。
 
@@ -492,7 +536,8 @@ def timeline_note(subtitle: str = "", today: Optional[date] = None, overdue: int
     today = today or date.today()
     head = f"{subtitle} · 截至 {today.isoformat()}" if subtitle else f"截至 {today.isoformat()}"
     parts = [head + "。横轴是真日期；大框纵向罩住它底下所有子行、横向铺它汇总出来的"
-                    "计划起止，框里套的就是下一层。红竖线是今天。"]
+                    "计划起止，框里套的就是下一层。"]
+    parts.append("红竖线是今天。" if today_visible else "今天在计划范围之外，未拉长横轴。")
     if overdue:
         parts.append(f"红框＝已过计划完成日、状态还不是「已完成」，共 {overdue} 个工作包"
                      f"（只数叶子；上级框跟着红，不另计）。延期天数写在对应框内。")
@@ -594,15 +639,16 @@ def render_png(spec: dict, scale: float = 2.0) -> Optional[bytes]:
             d.polygon([(x1, y1), wings[0], wings[1]], fill=arrow["color"])
 
     t = spec["today"]
-    d.line([(S(t["x"]), S(t["y1"])), (S(t["x"]), S(t["y2"]))], fill=t["color"],
-           width=max(1, S(1.5)))
-    d.rounded_rectangle([S(t["pill_x"]), S(t["pill_y"]),
-                         S(t["pill_x"] + t["pill_w"]), S(t["pill_y"] + t["pill_h"])],
-                        radius=S(t["pill_h"] / 2), fill=t["color"])
-    f_pill = font(t["pill_px"], bold=True)
-    if f_pill is not None:
-        w = int(text_w(t["label"], t["pill_px"]) * scale)
-        d.text((S(t["x"]) - w // 2, S(t["pill_y"] + 3)), t["label"], font=f_pill, fill="#FFFFFF")
+    if t.get("visible", True):
+        d.line([(S(t["x"]), S(t["y1"])), (S(t["x"]), S(t["y2"]))], fill=t["color"],
+               width=max(1, S(1.5)))
+        d.rounded_rectangle([S(t["pill_x"]), S(t["pill_y"]),
+                             S(t["pill_x"] + t["pill_w"]), S(t["pill_y"] + t["pill_h"])],
+                            radius=S(t["pill_h"] / 2), fill=t["color"])
+        f_pill = font(t["pill_px"], bold=True)
+        if f_pill is not None:
+            w = int(text_w(t["label"], t["pill_px"]) * scale)
+            d.text((S(t["x"]) - w // 2, S(t["pill_y"] + 3)), t["label"], font=f_pill, fill="#FFFFFF")
 
     f_leg = font(spec["legend_px"])
     if f_leg is not None:

@@ -1,5 +1,5 @@
 <template>
-  <div class="vt-wrap">
+  <div ref="wrapRef" class="vt-wrap">
     <div class="vt-bar">
       <span class="vt-bar-label">时间范围</span>
       <el-select v-model="rangeMonths" size="small" style="width: 150px">
@@ -76,7 +76,7 @@
             :x1="layout.todayX" :y1="layout.top - 6" :x2="layout.todayX" :y2="layout.axisY"
             :stroke="C.today" stroke-width="1" stroke-dasharray="3 3"
           />
-          <text :x="layout.todayX" :y="layout.top - 10" text-anchor="middle" :fill="C.today" font-size="10">今天</text>
+          <text :x="layout.todayX" :y="layout.top - 32" text-anchor="middle" :fill="C.today" font-size="10">今天</text>
         </g>
 
         <!-- 每个大版本：主线 or 支线 -->
@@ -112,10 +112,11 @@
                线本身已经比最后一个节点多伸了 TAIL_DAYS 天，最后那个版本就不会正好
                压在端点上、看着像被截断 -->
           <polygon
+            class="vt-lane-arrow"
             :points="`${mv.endX},${mv.y - (mv.isMain ? 6 : 5)} ${mv.endX},${mv.y + (mv.isMain ? 6 : 5)} ${mv.endX + (mv.isMain ? 12 : 10)},${mv.y}`"
             :fill="mv.color"
           >
-            <title>{{ mv.version_no }} {{ mv.released ? '已发布 ' + mv.releaseLabel : '计划至 ' + mv.endLabel }}（线尾多画 {{ TAIL_DAYS }} 天，不代表计划到这天）</title>
+            <title>{{ mv.version_no }} · 截至 {{ mv.endLabel }}（线尾多画 {{ TAIL_DAYS }} 天，不代表计划到这天）</title>
           </polygon>
 
           <!-- 版本节点：标签上下交错 + 重叠自动隐藏（仍可悬停） -->
@@ -137,21 +138,21 @@
                 :stroke="C.leader" stroke-width="1"
               />
               <text
-                :x="n.x" :y="n.above ? mv.y - layout.labelUp : mv.y + layout.labelDown"
+                :x="n.x" :y="mv.y + n.labelOffset"
                 text-anchor="middle" :fill="n.released ? C.nodeLabel : PLANNED"
                 :font-size="layout.labelFS"
               >{{ n.version_no }}</text>
             </template>
           </g>
 
-          <!-- 大版本标签 -->
-          <g>
+          <!-- 主干与分支名称均紧贴各自的箭头右侧，右端预留完整标签宽度。 -->
+          <g class="vt-major-label" :data-line="mv.isMain ? 'master' : 'branch'">
             <rect
-              :x="mv.labelX" :y="mv.y - 11" :width="mv.labelW" height="18" rx="9"
+              :x="mv.labelX" :y="mv.y - 9" :width="mv.labelW" height="18" rx="9"
               :fill="mv.isMain ? mv.color : '#fff'" :stroke="mv.color"
             />
             <text
-              :x="mv.labelX + mv.labelW / 2" :y="mv.y + 2" text-anchor="middle"
+              :x="mv.labelX + mv.labelW / 2" :y="mv.y + 4" text-anchor="middle"
               font-size="11" font-weight="600" :fill="mv.isMain ? '#fff' : mv.color"
             >{{ mv.isMain ? '主干 ' : '' }}{{ mv.version_no }}</text>
             <title>{{ mv.version_no }} {{ mv.title }}</title>
@@ -183,7 +184,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import { fmtDate } from '../utils/format'
@@ -193,7 +194,17 @@ const props = defineProps({
   majors: { type: Array, default: () => [] },
 })
 
-const W = 960
+const W = ref(960)
+const wrapRef = ref(null)
+let observer
+onMounted(() => {
+  observer = new ResizeObserver(([entry]) => {
+    if (!entry.contentRect.width) return
+    W.value = Math.max(540, Math.floor(entry.contentRect.width))
+  })
+  observer.observe(wrapRef.value)
+})
+onBeforeUnmount(() => observer?.disconnect())
 // 琥珀 #E6A23C 从泳道配色里**摘掉了**，专门留给「计划中未发布」的节点。
 // 不摘的话，落在琥珀色泳道上的已发布节点会和未发布节点同色，而那一条泳道
 // 单独看完全正常——最难被当成 bug 报的那类
@@ -250,7 +261,7 @@ function explicitWindow(dataMax) {
     const anchor = Math.max(dataMax, Date.now())
     const c = new Date(anchor)
     c.setMonth(c.getMonth() - rangeMonths.value)
-    return { lo: c.getTime(), hi: Infinity }
+    return { lo: c.getTime(), hi: anchor }
   }
   return null
 }
@@ -266,8 +277,9 @@ const hint = computed(() => {
 
 const layout = computed(() => {
   const padL = 40
-  const padR = 28
-  const top = 34
+  const padR = Math.max(144, 36 + props.majors.reduce((width, major) =>
+    Math.max(width, (String(major.version_no || '').length + 3) * 8 + 14), 0))
+  const top = 50
   const lv = level.value
 
   // 1) 解析每个大版本的起止 + 节点日期
@@ -304,7 +316,8 @@ const layout = computed(() => {
     const relTs = rels.map((rv) => ts(rv.actual_release_date)).filter((t) => t != null)
     const startT = ts(m.range_start) ?? (anchors.length ? Math.min(...anchors) : null)
     const relT = relTs.length ? Math.max(...relTs) : null   // 最近一次实际发布
-    const baseEnd = ts(m.range_end) ?? (anchors.length ? Math.max(...anchors) : startT)
+    // 有版本节点时，各泳道在自身最后一个日期节点处收尾；空泳道才回退声明范围。
+    const baseEnd = anchors.length ? Math.max(...anchors) : (ts(m.range_end) ?? startT)
     const nodes = lv === 'major' ? [] : (lv === 'release' ? relNodes : iterNodes)
     nodes.sort((a, b) => a.t - b.t)
     return { m, nodes, missing, startT, baseEnd, endT: baseEnd == null ? null : baseEnd + TAIL_DAYS * 864e5, relT }
@@ -334,8 +347,8 @@ const layout = computed(() => {
   let clipMin
   let clipMax
   if (win) {
-    clipMin = Math.max(dataMin, win.lo)
-    clipMax = Math.min(dataMax, win.hi)
+    clipMin = win.lo
+    clipMax = win.hi
   } else {
     // 有节点的泳道按节点定位；一个节点都没有的泳道拿自己的起止顶上，
     // 否则它会因为"没内容"整条从图上消失
@@ -357,11 +370,8 @@ const layout = computed(() => {
   let minT = clipMin
   let maxT = clipMax
   if (minT === maxT) { minT -= 15 * 864e5; maxT += 15 * 864e5 }
-  const span = maxT - minT
-  minT -= span * 0.04
-  maxT += span * 0.04
   const clamp = (t) => Math.min(Math.max(t, clipMin), clipMax)
-  const xOf = (t) => padL + ((clamp(t) - minT) / (maxT - minT)) * (W - padL - padR)
+  const xOf = (t) => padL + ((clamp(t) - minT) / (maxT - minT)) * (W.value - padL - padR)
 
   // 4) 排序：主干在最上，其余按起始时间倒序
   //    主干由后端的 line 字段说了算，不再靠「起始最晚」猜——猜错的表现是
@@ -381,10 +391,10 @@ const layout = computed(() => {
     (n, r) => n + r.nodes.filter((x) => x.t >= clipMin && x.t <= clipMax).length, 0,
   )
   const sparse = visibleNodes <= SPARSE_NODE_MAX
-  const laneGap = sparse ? 88 : 64
+  const laneGap = 96
   const nodeR = (lv === 'iteration' ? 3 : 4) + (sparse ? 2 : 0)
-  const labelFS = sparse ? 11 : 9
-  const labelUp = nodeR + 5
+  const labelFS = 11
+  const labelUp = nodeR + 10
   const labelDown = nodeR + labelFS + 9
   const leadFrom = nodeR
   const leadTo = nodeR + 7
@@ -401,27 +411,26 @@ const layout = computed(() => {
     const clipped = r.startT < clipMin
     const labelText = (isMain ? '主干 ' : '') + (r.m.version_no || '')
     const labelW = Math.max(34, labelText.length * 8 + 14)
-    let labelX = startX - labelW - 8
-    if (labelX < 2) labelX = startX + 8
+    const labelX = endX + (isMain ? 12 : 10) + 4
 
     // 节点标签上下交错（even=上 / odd=下），同一行内重叠则隐藏标签
-    let aboveR = -1e9
-    let belowR = -1e9
+    const tracks = [[-1e9, -1e9], [-1e9, -1e9]]
     const nodes = r.nodes
       .filter((n) => n.t >= clipMin && n.t <= clipMax)
       .map((n, k) => {
         const x = xOf(n.t)
         const halfW = (String(n.version_no || '').length * labelFS * 0.56) / 2
-        const above = k % 2 === 0
-        let showLabel = true
-        if (above) {
-          if (x - halfW < aboveR + 4) showLabel = false
-          else aboveR = x + halfW
-        } else {
-          if (x - halfW < belowR + 4) showLabel = false
-          else belowR = x + halfW
+        let side = k % 2
+        let slot = tracks[side].findIndex(right => x - halfW >= right + 6)
+        if (slot < 0) {
+          side = 1 - side
+          slot = tracks[side].findIndex(right => x - halfW >= right + 6)
         }
-        return { ...n, x, dateLabel: fmtDate(n.t), above, showLabel }
+        const showLabel = slot >= 0
+        if (showLabel) tracks[side][slot] = x + halfW
+        const above = side === 0
+        const labelOffset = above ? -labelUp - Math.max(slot, 0) * 15 : labelDown + Math.max(slot, 0) * 15
+        return { ...n, x, dateLabel: fmtDate(n.t), above, showLabel, labelOffset }
       })
 
     const out = {
@@ -442,7 +451,8 @@ const layout = computed(() => {
 
   // 6) 月份网格。窗口宽的时候每月一格会糊成一片，按格数自动隔 1 / 3 / 6 个月标一次
   const monthsTotal = Math.max(1, Math.round((maxT - minT) / (30.4 * 864e5)))
-  const stride = monthsTotal > 36 ? 6 : (monthsTotal > 18 ? 3 : 1)
+  const capacity = Math.max(1, Math.floor((W.value - padL - padR) / 66))
+  const stride = [1, 2, 3, 6, 12].find(step => monthsTotal / step <= capacity) || 12
   const months = []
   const d = new Date(minT); d.setDate(1); d.setHours(0, 0, 0, 0)
   let idx = 0
@@ -450,7 +460,8 @@ const layout = computed(() => {
     const t = d.getTime()
     if (t >= minT && idx % stride === 0) {
       const m = d.getMonth() + 1
-      months.push({ x: xOf(t), label: m === 1 ? `${d.getFullYear()}/1` : `${m}月` })
+      const year = d.getFullYear()
+      months.push({ x: xOf(t), year, label: months.at(-1)?.year !== year ? `${year}/${m}` : `${m}月` })
     }
     idx += 1
     d.setMonth(d.getMonth() + 1)
@@ -486,13 +497,13 @@ function serialize() {
   if (!src) return null
   const clone = src.cloneNode(true)
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
-  clone.setAttribute('width', String(W))
+  clone.setAttribute('width', String(W.value))
   clone.setAttribute('height', String(layout.value.height))
   clone.removeAttribute('style')
   // 白底：导出的图多半要贴进 PPT 或邮件，透明底在深色版式上就成了看不清的一团
   const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
   bg.setAttribute('x', '0'); bg.setAttribute('y', '0')
-  bg.setAttribute('width', String(W)); bg.setAttribute('height', String(layout.value.height))
+  bg.setAttribute('width', String(W.value)); bg.setAttribute('height', String(layout.value.height))
   bg.setAttribute('fill', '#ffffff')
   clone.insertBefore(bg, clone.firstChild)
   return new XMLSerializer().serializeToString(clone)
@@ -506,6 +517,8 @@ async function onExport(kind) {
   if (layout.value.empty) { ElMessage.warning('图上还没有可导出的版本'); return }
   exporting.value = true
   try {
+    const width = W.value
+    const h = layout.value.height
     const xml = serialize()
     if (!xml) throw new Error('图还没画出来')
     if (kind === 'svg') {
@@ -515,7 +528,6 @@ async function onExport(kind) {
     }
     // PNG：2 倍图，贴进 PPT 放大不糊
     const scale = 2
-    const h = layout.value.height
     const url = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)))
     const img = new Image()
     await new Promise((resolve, reject) => {
@@ -524,7 +536,7 @@ async function onExport(kind) {
       img.src = url
     })
     const canvas = document.createElement('canvas')
-    canvas.width = W * scale
+    canvas.width = width * scale
     canvas.height = h * scale
     const ctx = canvas.getContext('2d')
     ctx.fillStyle = '#ffffff'
@@ -556,7 +568,8 @@ async function onExport(kind) {
 .vt-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
 .vt-bar-label { font-size: 13px; color: #606266; }
 .vt-bar-hint { color: #c0c4cc; font-size: 12px; margin-left: 4px; }
-.vt-svg { width: 100%; min-width: 720px; display: block; overflow: visible; }
+.vt-svg { width: 100%; min-width: 540px; display: block; overflow: visible; }
+.vt-wrap { overflow-x: auto; box-sizing: border-box; }
 .vt-empty { color: #909399; font-size: 13px; padding: 18px 8px; }
 .vt-skipped { color: #c0c4cc; font-size: 12px; padding: 2px 4px 4px; }
 </style>

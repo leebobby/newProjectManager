@@ -34,7 +34,7 @@ from datetime import date, datetime
 import json
 from typing import Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -716,7 +716,8 @@ def _fold_counts(all_rows: List[dict], max_depth: Optional[int]) -> Dict[str, in
 
 
 def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
-                   max_depth: Optional[int], dependency_mode: str = "arrows") -> dict:
+                   max_depth: Optional[int], dependency_mode: str = "arrows",
+                   viewport_width: Optional[int] = None, fit_width: bool = False) -> dict:
     """A 图（时间轴嵌套框图）的版面。深度裁剪同样在这儿统一做一次。
 
     与调试框图**吃同一批行、同一份延期判定**（`_diagram_rows`），只是排法不同：
@@ -733,7 +734,8 @@ def _timeline_view(db: Session, plan: models.WbsPlan, all_rows: List[dict],
                                  enums.WBS_KIND_LABELS.get(plan.kind, plan.kind), ref) if x)
     return wbs_timeline.build_timeline(rows, subtitle=sub, max_depth=max_depth,
                                        folded=folded, dependency_mode=dependency_mode,
-                                       reference_rows=chart_rows)
+                                       reference_rows=chart_rows, viewport_width=viewport_width,
+                                       fit_width=fit_width)
 
 
 def _build_view(db: Session, plan: models.WbsPlan, rows: List[dict],
@@ -782,6 +784,8 @@ def plan_diagram(plan_id: int, max_depth: Optional[int] = None,
 @router.get("/plans/{plan_id}/timeline")
 def plan_timeline(plan_id: int, max_depth: Optional[int] = None,
                   dependency_mode: Literal["arrows", "lines", "hidden"] = "arrows",
+                  viewport_width: Optional[int] = Query(None, ge=320, le=16000),
+                  fit_width: bool = False,
                   db: Session = Depends(get_db),
                   _: models.User = Depends(get_current_user)):
     """**A 图**的版面（不是图片）：一根真日期横轴 + 大框套中框套小框。
@@ -797,7 +801,7 @@ def plan_timeline(plan_id: int, max_depth: Optional[int] = None,
     plan = _get_plan(db, plan_id)
     rows = _flatten(db.query(models.WbsItem)
                     .filter(models.WbsItem.plan_id == plan_id).all())
-    return _timeline_view(db, plan, rows, max_depth, dependency_mode)
+    return _timeline_view(db, plan, rows, max_depth, dependency_mode, viewport_width, fit_width)
 
 
 def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
@@ -856,6 +860,8 @@ def _xlsx_rows(rows: List[dict], refs: Dict[int, dict]) -> List[list]:
 def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
                 reference_start: Optional[str] = None, reference_end: Optional[str] = None,
                 dependency_mode: Literal["arrows", "lines", "hidden"] = "arrows",
+                viewport_width: Optional[int] = Query(None, ge=320, le=16000),
+                fit_width: bool = False,
                 db: Session = Depends(get_db),
                 user: models.User = Depends(get_current_user)):
     """整份 WBS 导出成 Excel：第 1 页是表、第 2 页是调试框图、第 3 页是 A 图。
@@ -944,7 +950,7 @@ def export_xlsx(plan_id: int, max_depth: Optional[int] = None,
                              f"人天与完成度本来就是从最底层的叶子汇总上来的。")
 
     _blocks_sheet(wb, db, plan, all_rows, folded, max_depth, reference_start, reference_end)
-    _timeline_sheet(wb, db, plan, all_rows, max_depth, dependency_mode)
+    _timeline_sheet(wb, db, plan, all_rows, max_depth, dependency_mode, viewport_width, fit_width)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1008,7 +1014,8 @@ def _blocks_sheet(wb, db: Session, plan: models.WbsPlan, rows: List[dict],
 
 
 def _timeline_sheet(wb, db: Session, plan: models.WbsPlan, all_rows: List[dict],
-                    max_depth: Optional[int], dependency_mode: str = "arrows") -> None:
+                    max_depth: Optional[int], dependency_mode: str = "arrows",
+                    viewport_width: Optional[int] = None, fit_width: bool = False) -> None:
     """第 3 页：A 图（时间轴嵌套框图）。版面与页面共用 `wbs_timeline`，这里只负责画。
 
     **不画标题**（现场要求："有这样的图后坐标的标题就不需要了"）——日期轴自己就说明了
@@ -1016,7 +1023,7 @@ def _timeline_sheet(wb, db: Session, plan: models.WbsPlan, all_rows: List[dict],
     """
     ws = wb.create_sheet("A图（时间轴）")
     ws.column_dimensions["A"].width = 120
-    spec = _timeline_view(db, plan, all_rows, max_depth, dependency_mode)
+    spec = _timeline_view(db, plan, all_rows, max_depth, dependency_mode, viewport_width, fit_width)
     ws.cell(1, 1, f"{plan.name} · A 图（时间轴嵌套框图）")
     ws.cell(2, 1, f"共 {spec['row_count']} 行 / {spec['box_count']} 个框。"
                   + " ".join(spec["note_lines"]))
