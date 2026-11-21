@@ -333,6 +333,16 @@ def test_layer_selection_preserves_full_range_and_hidden_overdue_state(client, a
         assert _box(full, code)['stroke'] == _box(clipped, code)['stroke']
 
 
+def test_fit_uses_full_tree_when_switching_depth(client, admin_headers, tree):
+    options = {'viewport_width': 1440, 'fit_width': True}
+    full = _spec(client, admin_headers, tree, **options)
+    clipped = _spec(client, admin_headers, tree, max_depth=1, **options)
+    assert full['plot_w'] == clipped['plot_w']
+    for code in ('1', '2'):
+        assert _box(full, code)['x'] == _box(clipped, code)['x']
+        assert _box(full, code)['w'] == _box(clipped, code)['w']
+
+
 def test_long_png_scales_whole_canvas_instead_of_cropping():
     import io
     from PIL import Image
@@ -348,6 +358,77 @@ def test_long_png_scales_whole_canvas_instead_of_cropping():
         assert max(bitmap.size) <= 16384
         assert abs(bitmap.width / bitmap.height - spec['width'] / spec['height']) < 0.001
         assert spec['box_count'] == 420
+
+
+def test_historical_plan_does_not_extend_to_today():
+    import wbs_timeline
+    rows = [{'code': '1', 'depth': 1, 'name': '已交付', 'is_leaf': True,
+             'start': '2025-01-03', 'end': '2025-01-27', 'status': '已完成'}]
+    spec = wbs_timeline.build_timeline(rows, today=date(2026, 11, 21))
+    assert spec['date_start'] == '2024-12-29'
+    assert spec['date_end'] == '2025-02-01'
+    assert spec['today']['visible'] is False
+    assert '今天在计划范围之外' in ''.join(spec['note_lines'])
+
+
+def test_long_span_expands_and_fit_keeps_fonts_and_dates():
+    import wbs_timeline
+    rows = [{'code': str(i + 1), 'depth': 1, 'name': '阶段验证', 'is_leaf': True,
+             'start': start, 'end': end}
+            for i, (start, end) in enumerate([('2026-01-01', '2026-01-20'), ('2027-06-01', '2027-06-20')])]
+    natural = wbs_timeline.build_timeline(rows, today=date(2026, 11, 21))
+    fit = wbs_timeline.build_timeline(rows, today=date(2026, 11, 21), viewport_width=1440, fit_width=True)
+    assert natural['plot_w'] > 2400
+    assert 1435 <= fit['width'] <= 1438
+    assert (natural['date_start'], natural['date_end']) == (fit['date_start'], fit['date_end'])
+    assert [box['label_px'] for box in natural['boxes']] == [box['label_px'] for box in fit['boxes']]
+    assert natural['box_count'] == fit['box_count'] == 2
+    # 计划较短时同样铺满宽屏，不把原始小画布留在左侧。
+    wide = wbs_timeline.build_timeline(rows[:1], today=date(2026, 1, 15), viewport_width=1920)
+    assert 1915 <= wide['width'] <= 1918
+
+
+def test_fit_keeps_long_names_complete_when_they_require_scrolling():
+    import wbs_timeline
+    name = '完整的长任务名称' * 35
+    rows = [{'code': '1', 'depth': 1, 'name': name, 'is_leaf': True,
+             'start': '2026-01-01', 'end': '2026-01-04'}]
+    spec = wbs_timeline.build_timeline(rows, viewport_width=1024, fit_width=True)
+    assert spec['width'] > 1024
+    assert spec['boxes'][0]['label'] == '1 ' + name
+    assert spec['boxes'][0]['label_px'] == 17.5
+
+
+def test_excel_uses_the_same_viewport_and_mode_as_preview(client, admin_headers, tree, monkeypatch):
+    import wbs_timeline
+    query = {'max_depth': 2, 'viewport_width': 1440, 'fit_width': True, 'dependency_mode': 'lines'}
+    preview = _spec(client, admin_headers, tree, **query)
+    captured = []
+    monkeypatch.setattr(wbs_timeline, 'render_png', lambda spec: captured.append(spec))
+    response = client.get(f'/api/wbs/plans/{tree}/export.xlsx', headers=admin_headers, params=query)
+    assert response.status_code == 200
+    assert captured[-1] == preview
+    for value in (0, 16001, 'nan'):
+        rejected = client.get(f'/api/wbs/plans/{tree}/timeline', headers=admin_headers,
+                              params={'viewport_width': value})
+        assert rejected.status_code == 422
+
+
+def test_png_honors_today_visibility():
+    import io
+    from PIL import Image
+    import wbs_timeline
+    rows = [{'code': '1', 'depth': 1, 'name': '验证', 'is_leaf': True,
+             'start': '2026-11-01', 'end': '2026-11-20', 'status': '已完成'}]
+    spec = wbs_timeline.build_timeline(rows, today=date(2026, 11, 10))
+    spec['today']['visible'] = False
+    png = wbs_timeline.render_png(spec)
+    if png is None:
+        pytest.skip('需要中文字体')
+    red = tuple(bytes.fromhex(wbs_timeline.TODAY_COLOR.lstrip('#')))
+    with Image.open(io.BytesIO(png)) as bitmap:
+        colors = bitmap.convert('RGB').getcolors(bitmap.width * bitmap.height)
+        assert all(color != red for _, color in colors)
 
 
 @pytest.mark.parametrize('depth', range(1, 6))

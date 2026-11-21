@@ -1,5 +1,5 @@
 <template>
-  <div class="wt-wrap" v-loading="loading">
+  <div ref="wrapRef" class="wt-wrap" v-loading="loading">
     <div class="wt-bar">
       <span class="wt-hint">
         横轴是<b>真日期</b>；任务编号、名称和进度直接写在框内，框里套的是下一层。
@@ -17,17 +17,30 @@
         <el-option label="仅显示依赖连线" value="lines" />
         <el-option label="隐藏依赖关系" value="hidden" />
       </el-select>
-      <el-button size="small" :disabled="!drawable" @click="fitWidth">适应宽度</el-button>
-      <el-button size="small" :disabled="!drawable" @click="zoom = 1">原始大小</el-button>
+      <el-button size="small" :type="viewMode === 'fit' ? 'primary' : ''" :plain="viewMode === 'fit'" :disabled="!drawable" @click="fitWidth">适应宽度</el-button>
+      <el-button size="small" :type="viewMode === 'comfortable' ? 'primary' : ''" :plain="viewMode === 'comfortable'" :disabled="!drawable" @click="viewMode = 'comfortable'; zoom = 1">舒适展开</el-button>
+      <el-select v-model="zoom" aria-label="A 图缩放" size="small" style="width: 95px">
+        <el-option v-for="value in [0.75, 1, 1.25, 1.5]" :key="value" :value="value" :label="`${value * 100}%`" />
+      </el-select>
       <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('png')">导出 PNG</el-button>
       <el-button size="small" :loading="exporting" :disabled="loading" @click="onExport('svg')">导出 SVG</el-button>
     </div>
-    <div v-if="spec" class="wt-count">当前展示 {{ spec.row_count }} 项任务 · 缩放 {{ Math.round(zoom * 100) }}%</div>
+    <div v-if="spec" class="wt-count">当前展示 {{ spec.row_count }} 项任务 · {{ viewMode === 'comfortable' ? '舒适展开，可横向滚动' : '适应窗口，字号保持原大小' }} · 缩放 {{ Math.round(zoom * 100) }}%<span v-if="spec.today.visible === false"> · 今天在计划范围之外</span></div>
 
     <!-- 版面（每一行、每个框的 x/y/w/h）由服务端 wbs_timeline 算，这里只负责画。
          前端再排一次的话，同一份 WBS 在页面上和导出的 PNG 里框的位置不一样，
          而两边单独看都正常（见 CLAUDE.md「WBS · 导出与调试框图」）。 -->
     <div v-if="drawable" ref="viewportRef" class="wt-scroll" tabindex="0" role="region" aria-label="A 图完整内容">
+      <svg class="wt-sticky-axis" :viewBox="`0 0 ${spec.width} ${spec.top}`"
+           :width="spec.width * zoom" :height="spec.top * zoom" :style="{ marginBottom: -spec.top * zoom + 'px' }">
+        <rect x="0" y="0" :width="spec.width" :height="spec.top" fill="#fff" />
+        <line v-for="(l, i) in spec.lines" :key="i" :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2" :stroke="l.color" :stroke-width="l.w" />
+        <text v-for="(t, i) in spec.ticks" :key="i" :x="t.label_x" :y="spec.top - 20" font-size="11" fill="#808080">{{ t.label }}</text>
+        <g v-if="spec.today.visible !== false">
+          <rect :x="spec.today.pill_x" :y="spec.today.pill_y" :width="spec.today.pill_w" :height="spec.today.pill_h" :rx="spec.today.pill_h / 2" :fill="spec.today.color" />
+          <text :x="spec.today.x" :y="spec.today.text_y" :font-size="spec.today.pill_px" font-weight="700" text-anchor="middle" fill="#fff">{{ spec.today.label }}</text>
+        </g>
+      </svg>
       <!-- 画笔一律写成**元素属性**，不写在 <style scoped> 里：scoped CSS 靠 data-v
            属性挂在页面 DOM 上，XMLSerializer 序列化出去的那份带不走它，表现是
            「页面上好好的，导出来全变成黑的默认色」 -->
@@ -74,12 +87,14 @@
                   :stroke="a.color" stroke-width="1.5" :marker-end="spec.arrowheads ? 'url(#wt-arrow)' : undefined" />
 
         <!-- 今天：整张图唯一一处红 -->
-        <line :x1="spec.today.x" :y1="spec.today.y1" :x2="spec.today.x" :y2="spec.today.y2"
-              :stroke="spec.today.color" stroke-width="1.5" />
-        <rect :x="spec.today.pill_x" :y="spec.today.pill_y" :width="spec.today.pill_w"
-              :height="spec.today.pill_h" :rx="spec.today.pill_h / 2" :fill="spec.today.color" />
-        <text :x="spec.today.x" :y="spec.today.text_y" :font-size="spec.today.pill_px"
-              font-weight="700" text-anchor="middle" fill="#FFFFFF">{{ spec.today.label }}</text>
+        <g v-if="spec.today.visible !== false">
+          <line :x1="spec.today.x" :y1="spec.today.y1" :x2="spec.today.x" :y2="spec.today.y2"
+                :stroke="spec.today.color" stroke-width="1.5" />
+          <rect :x="spec.today.pill_x" :y="spec.today.pill_y" :width="spec.today.pill_w"
+                :height="spec.today.pill_h" :rx="spec.today.pill_h / 2" :fill="spec.today.color" />
+          <text :x="spec.today.x" :y="spec.today.text_y" :font-size="spec.today.pill_px"
+                font-weight="700" text-anchor="middle" fill="#FFFFFF">{{ spec.today.label }}</text>
+        </g>
 
         <!-- 图例与底注画进图里：导出的那张图经常被单独截进别的材料，
              落单的一张没有说明就找不回出处（这张图刻意不画标题，出处写在底注第一行） -->
@@ -105,7 +120,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiError, downloadBlob, wbsApi } from '../api'
 import { serializeSvg, stamp, svgBlob, svgToPngBlob } from '../utils/svgExport'
@@ -116,7 +131,7 @@ const props = defineProps({
   dependencyMode: { type: String, default: 'arrows' },
   depthOptions: { type: Array, default: () => [{ value: 0 }] },
 })
-const emit = defineEmits(['update:dependencyMode', 'update:maxDepth'])
+const emit = defineEmits(['update:dependencyMode', 'update:maxDepth', 'view-change'])
 
 const spec = ref(null)
 const loading = ref(false)
@@ -124,10 +139,34 @@ const exporting = ref(false)
 const svgRef = ref(null)
 const viewportRef = ref(null)
 const zoom = ref(1)
+const viewMode = ref('comfortable')
+const wrapRef = ref(null)
+const availableWidth = ref(null)
+let observer
+let resizeTimer
+onMounted(() => {
+  observer = new ResizeObserver(([entry]) => {
+    const width = Math.min(16000, Math.max(320, Math.floor(viewportRef.value?.clientWidth || entry.contentRect.width)))
+    if (!entry.contentRect.width || width === availableWidth.value) return
+    clearTimeout(resizeTimer)
+    if (availableWidth.value === null) availableWidth.value = width
+    else resizeTimer = setTimeout(() => { availableWidth.value = width }, 120)
+  })
+  observer.observe(wrapRef.value)
+  if (viewportRef.value) observer.observe(viewportRef.value)
+})
+watch(viewportRef, (element, previous) => {
+  if (previous) observer?.unobserve(previous)
+  if (element) observer?.observe(element)
+})
+onBeforeUnmount(() => { observer?.disconnect(); clearTimeout(resizeTimer); loadVersion++ })
+const viewOptions = computed(() => ({
+  ...(availableWidth.value ? { viewport_width: availableWidth.value } : {}),
+  fit_width: viewMode.value === 'fit',
+}))
 function fitWidth() {
-  if (viewportRef.value && spec.value?.width) {
-    zoom.value = Math.min(1, (viewportRef.value.clientWidth - 2) / spec.value.width)
-  }
+  viewMode.value = 'fit'
+  zoom.value = 1
 }
 
 const drawable = computed(() => (spec.value?.row_count || 0) > 0)
@@ -145,9 +184,10 @@ let loadVersion = 0
 async function load() {
   const version = ++loadVersion
   if (!props.planId) return
+  emit('view-change', { ...viewOptions.value })
   loading.value = true
   try {
-    const { data } = await wbsApi.timeline(props.planId, props.maxDepth, props.dependencyMode)
+    const { data } = await wbsApi.timeline(props.planId, props.maxDepth, props.dependencyMode, viewOptions.value)
     if (version === loadVersion) spec.value = data
   } catch (e) {
     if (version === loadVersion) { spec.value = null; ElMessage.error(apiError(e, '加载 A 图失败')) }
@@ -155,7 +195,7 @@ async function load() {
     if (version === loadVersion) loading.value = false
   }
 }
-watch(() => [props.planId, props.maxDepth, props.dependencyMode], load, { immediate: true })
+watch(() => [props.planId, props.maxDepth, props.dependencyMode, availableWidth.value, viewMode.value], load, { immediate: true })
 defineExpose({ reload: load })
 
 async function onExport(kind) {
@@ -189,6 +229,7 @@ async function onExport(kind) {
 /* 图比屏幕宽是常态，让它自己横向滚，别让整页跟着横向滚 */
 .wt-scroll { overflow: auto; max-height: 64vh; border: 1px solid #ebeef5; border-radius: 6px; }
 .wt-svg { display: block; max-width: none; flex-shrink: 0; }
+.wt-sticky-axis { display: block; position: sticky; top: 0; z-index: 2; max-width: none; }
 .wt-count { color: #909399; font-size: 12px; margin-bottom: 6px; }
 .wt-note { margin-top: 8px; background: #fdf6ec; border-left: 3px solid #E6A23C;
   border-radius: 3px; padding: 6px 10px; color: #8a6d3b; font-size: 12px; line-height: 1.7; }

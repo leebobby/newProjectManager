@@ -193,7 +193,7 @@
         <WbsTimeline v-if="timelineOn" :plan-id="route.params.id"
                      :max-depth="exportDepth || null" :depth-options="depthOptions"
                      @update:max-depth="exportDepth = $event"
-                     v-model:dependency-mode="dependencyMode" />
+                     v-model:dependency-mode="dependencyMode" @view-change="timelineView = $event" />
         <template #footer>
           <span class="dlg-foot">导出的 Excel 第 3 页就是这张图；上面那个「导出到第几层」
             同时管表、调试框图和这张 A 图——各裁各的话同一个「到第 2 层」在表里是 8 行、
@@ -331,6 +331,7 @@ const exporting = ref(false)
 // 导出的人根本不知道自己少拿了东西
 const exportDepth = ref(0)
 const diagramReferenceRange = ref(null)
+const timelineView = ref({})
 const dform = reactive({ current_progress: '', predecessor_ids: [], issues_risks: [] })
 function suggestOwners(query, callback) {
   callback(users.value.filter(u => `${u.full_name || ''} ${u.username}`.toLowerCase().includes(query.toLowerCase()))
@@ -364,7 +365,7 @@ async function exportXlsx() {
       ? { reference_start: diagramReferenceRange.value[0], reference_end: diagramReferenceRange.value[1] }
       : {}
     const { data } = await wbsApi.exportXlsx(plan.value.id, exportDepth.value || null,
-      { ...reference, dependency_mode: dependencyMode.value })
+      { ...reference, ...timelineView.value, dependency_mode: dependencyMode.value })
     const suffix = exportDepth.value ? `-第${exportDepth.value}层` : ''
     downloadBlob(data, `${plan.value.name || 'wbs'}${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`)
     ElMessage.success('已导出（第 1 页是表，第 2 页是调试框图，第 3 页是 A 图）')
@@ -566,6 +567,7 @@ watch(() => route.params.id, () => {
   timelineOn.value = false
   dependencyMode.value = 'arrows'
   diagramReferenceRange.value = null
+  timelineView.value = {}
   exportDepth.value = 0
   load()
 })

@@ -50,9 +50,15 @@ test('A 图完整展示超过 150 项任务，层级与缩放不裁掉页面或�
     await viewport.evaluate(el => el.scrollTo(el.scrollWidth, el.scrollHeight))
     await expect(tasks.last()).toBeInViewport()
     await chart.getByRole('button', { name: '适应宽度', exact: true }).click()
-    await expect.poll(() => viewport.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1)
+    await expect(chart.locator('.wt-count')).toContainText('缩放 100%')
+    await expect(chart.locator('.el-loading-mask')).toHaveCount(0)
+    const query = await viewport.evaluate(el => ({ viewport_width: el.clientWidth, fit_width: true }))
+    const fitResponse = await page.request.get(`/api/wbs/plans/${plan.id}/timeline`, { headers, params: query })
+    const fitSpec = await fitResponse.json()
     const previewWidth = +(await chart.locator('.wt-svg').getAttribute('width'))
-    expect(previewWidth).toBeLessThan(spec.width)
+    expect(previewWidth).toBe(fitSpec.width)
+    // 长名称本身超过窗口时保留滚动，不把文字和整张图一起缩小。
+    expect(await viewport.evaluate(el => el.scrollWidth > el.clientWidth)).toBeTruthy()
     for (const kind of ['SVG', 'PNG']) {
       const downloading = page.waitForEvent('download')
       await chart.getByRole('button', { name: `导出 ${kind}`, exact: true }).click()
@@ -68,11 +74,11 @@ test('A 图完整展示超过 150 项任务，层级与缩放不裁掉页面或�
           return { width: +svg.getAttribute('width'), height: +svg.getAttribute('height'),
             count: svg.querySelectorAll('.wt-task-box').length }
         }, bytes.toString())
-        expect(exported).toEqual({ width: spec.width, height: spec.height, count: 162 })
+        expect(exported).toEqual({ width: fitSpec.width, height: fitSpec.height, count: 162 })
       } else {
-        const scale = Math.min(2, 16384 / Math.max(spec.width, spec.height), Math.sqrt(24000000 / (spec.width * spec.height)))
-        expect(bytes.readUInt32BE(16)).toBe(Math.floor(spec.width * scale))
-        expect(bytes.readUInt32BE(20)).toBe(Math.floor(spec.height * scale))
+        const scale = Math.min(2, 16384 / Math.max(fitSpec.width, fitSpec.height), Math.sqrt(24000000 / (fitSpec.width * fitSpec.height)))
+        expect(bytes.readUInt32BE(16)).toBe(Math.floor(fitSpec.width * scale))
+        expect(bytes.readUInt32BE(20)).toBe(Math.floor(fitSpec.height * scale))
       }
     }
     const depth = chart.locator('.el-select').filter({ has: page.getByRole('combobox', { name: 'A 图展示层级' }) })
@@ -83,7 +89,7 @@ test('A 图完整展示超过 150 项任务，层级与缩放不裁掉页面或�
     await depth.click()
     await page.getByRole('option', { name: '展示全部层级', exact: true }).click()
     await expect(tasks).toHaveCount(162)
-    await chart.getByRole('button', { name: '原始大小', exact: true }).click()
+    await chart.getByRole('button', { name: '舒适展开', exact: true }).click()
     await expect(chart.locator('.wt-svg')).toHaveAttribute('width', String(spec.width))
     await chart.screenshot({ path: testInfo.outputPath('complete-preview.png') })
   } finally {
