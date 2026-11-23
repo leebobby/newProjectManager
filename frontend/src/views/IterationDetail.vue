@@ -13,10 +13,12 @@
     </el-page-header>
 
     <el-card shadow="never" class="card">
-      <!-- 只滤不报的表现是"这个版本怎么选不到了"，而没人说得清少的是哪些 -->
-      <div v-if="releasedHidden" class="version-note">
-        「计划交付版本」下拉已隐去 <b>{{ releasedHidden }}</b> 个已发布的构建（构建自己填了
-        实际发布日期、或它所属的版本已发布）。需要挂到其中某个上时，直接把版本号敲进去即可。
+      <div class="version-controls">
+        <el-checkbox v-model="showReleased" aria-label="显示已发布版本">显示已发布版本</el-checkbox>
+        <el-button size="small" link :icon="Refresh" :loading="versionLoading" @click="loadVersionGroups">刷新版本</el-button>
+        <span v-if="releasedHidden" class="version-note">
+          已隐藏 {{ releasedHidden }} 个已发布构建，勾选后可选择历史版本。
+        </span>
       </div>
       <el-tabs v-model="activeTab" class="req-tabs">
         <el-tab-pane label="产品需求" name="product">
@@ -47,11 +49,11 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
-import { annualIterationApi, downloadBlob, majorVersionApi, roadmapApi } from '../api'
+import { Download, Refresh } from '@element-plus/icons-vue'
+import { apiError, annualIterationApi, downloadBlob, majorVersionApi, roadmapApi } from '../api'
 import { auth } from '../store/auth'
 import DomainRequirementTab from '../components/iteration/DomainRequirementTab.vue'
 import ProductRequirementTab from '../components/iteration/ProductRequirementTab.vue'
@@ -62,10 +64,22 @@ const isAdmin = auth.isAdmin
 
 const iterationId = Number(route.params.id)
 const iteration = ref(null)
-const versionGroups = ref([])
-// 因「已发布」而没进下拉的构建数。只滤不报的表现是"这个版本怎么选不到了"，
-// 而没人说得清少的是哪些
-const releasedHidden = ref(0)
+const versionCatalog = ref([])
+const showReleased = ref(false)
+const versionLoading = ref(false)
+const releasedHidden = computed(() => showReleased.value ? 0 : versionCatalog.value.filter(v => v.released).length)
+// 产品/领域、新增/行内编辑/批量修改共用这份选项；开关仅影响候选项，不改需求原值。
+const versionGroups = computed(() => {
+  const usable = showReleased.value ? versionCatalog.value : versionCatalog.value.filter(v => !v.released)
+  const map = new Map()
+  for (const v of usable) {
+    const head = v.project_name ? `${v.project_name} · ${v.major_version_no}` : v.major_version_no
+    const label = v.release_version_no ? `${head} · ${v.release_version_no}` : head
+    if (!map.has(label)) map.set(label, [])
+    map.get(label).push(v)
+  }
+  return Array.from(map.entries()).map(([label, options]) => ({ label, options }))
+})
 const projects = ref([])
 const activeTab = ref('product')
 // 项目标签放在这里而不是各自的 Tab 里：产品/领域两张表共用一个项目选择，
@@ -88,27 +102,17 @@ async function loadIteration() {
 }
 
 async function loadVersionGroups() {
+  if (versionLoading.value) return
+  versionLoading.value = true
   try {
     // 需求的计划交付版本填的是**迭代版本**（构建号），分组按「大版本 · 版本」两层，
     // 否则同一个大版本下几十个构建挤在一组里根本挑不出来
     const { data } = await majorVersionApi.allIterationVersions()
-    // 已发布的不再列出来：可选项只增不减的话，一年下来几百个构建里绝大多数是历史。
-    // `released` 由服务端判（构建自己发了、或它挂的版本发了），前端不重算日期——
-    // 各页面自己比 new Date() 的话，跨零点时两个页面会给出不同答案，而两边看着都对。
-    // 已经填在需求行上的版本**不会因此显示不出来**：那一列存的是版本号字符串、
-    // 下拉又是 allow-create，选项里没有也照常显示原值。
-    const usable = data.filter((v) => !v.released)
-    releasedHidden.value = data.length - usable.length
-    const map = new Map()
-    for (const v of usable) {
-      const head = v.project_name ? `${v.project_name} · ${v.major_version_no}` : v.major_version_no
-      const groupLabel = v.release_version_no ? `${head} · ${v.release_version_no}` : head
-      if (!map.has(groupLabel)) map.set(groupLabel, [])
-      map.get(groupLabel).push(v)
-    }
-    versionGroups.value = Array.from(map.entries()).map(([label, options]) => ({ label, options }))
+    versionCatalog.value = data
   } catch (e) {
-    /* 下拉为空不阻塞 */
+    ElMessage.error(apiError(e, '加载计划交付版本失败'))
+  } finally {
+    versionLoading.value = false
   }
 }
 
@@ -155,6 +159,6 @@ onMounted(() => {
   color: #909399;
   font-size: 12px;
   line-height: 1.6;
-  margin-bottom: 8px;
 }
+.version-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 </style>

@@ -689,8 +689,8 @@ def test_release_versions_all_never_filters_server_side(client, admin_headers, p
     assert rv["id"] in ids
 
 
-def test_build_is_released_when_its_release_version_is(client, admin_headers, project_id):
-    """版本一发，名下的构建就都是历史了，不可能再往里合需求。"""
+def test_build_release_state_does_not_inherit_parent_release(client, admin_headers, project_id):
+    """父版本发布后仍可安排新构建，构建自己的日期才决定它是否已发布。"""
     import datetime
     yesterday = _iso(datetime.date.today() - datetime.timedelta(days=1))
 
@@ -706,11 +706,30 @@ def test_build_is_released_when_its_release_version_is(client, admin_headers, pr
 
     rows = {r["id"]: r for r in
             client.get("/api/iteration-versions/all", headers=admin_headers).json()}
-    assert rows[under_shipped["id"]]["released"] is True    # 自己没填日期，父版本发了
+    assert rows[under_shipped["id"]]["released"] is False   # 父版本发布不替子构建判定已发布
     assert rows[own_date["id"]]["released"] is True         # 父版本没发，自己发了
     assert rows[still_open["id"]]["released"] is False
     # 同样只标不滤：问题单管理要按构建号查历史数据
     assert under_shipped["id"] in rows
+
+
+@pytest.mark.parametrize('offset, released', [(None, False), (30, False), (-1, True), (0, True)])
+def test_future_and_unreleased_builds_remain_open_under_published_parent(
+        client, admin_headers, normal_headers, project_id, offset, released):
+    import datetime
+    today = datetime.date.today()
+    suffix = str(offset) if offset is not None else 'blank'
+    mv = _major(client, admin_headers, project_id, 'STATE-' + suffix)
+    rv = _release(client, admin_headers, mv['id'], 'PARENT-' + suffix,
+                  actual_release_date=_iso(today - datetime.timedelta(days=2)))
+    actual = _iso(today + datetime.timedelta(days=offset)) if offset is not None else None
+    iv = _iter(client, admin_headers, rv['id'], 'BUILD-' + suffix,
+               actual_release_date=actual, planned_date=_iso(today + datetime.timedelta(days=60)))
+    response = client.get('/api/iteration-versions/all', headers=normal_headers)
+    assert response.status_code == 200
+    row = next(r for r in response.json() if r['id'] == iv['id'])
+    assert row['released'] is released
+    assert row['release_version_id'] == rv['id']
 
 
 def test_build_release_date_round_trips_through_edit(client, admin_headers, project_id):
