@@ -494,8 +494,7 @@ def delete_iteration_version(
 def list_all_iteration_versions(db: Session = Depends(get_db)):
     """所有迭代版本的扁平列表 —— 迭代管理「计划交付版本」下拉的数据源。
 
-    每行带一个 `released`：构建自己发布了、**或者它挂的那个版本已经发布**，都算已发布
-    （版本一发，名下的构建就都是历史了，不可能再往里合需求）。
+    每行的 `released` 只判断该构建自身的实际发布日期；父版本发布后仍可安排后续构建。
     与 `/release-versions/all` 一样只标不滤——问题单管理那边要按构建号查历史数据。
     """
     items = (
@@ -526,7 +525,6 @@ def list_all_iteration_versions(db: Session = Depends(get_db)):
             "title": it.title,
             "planned_date": it.planned_date,
             "actual_release_date": it.actual_release_date,
-            "released": (_is_released(it.actual_release_date)
-                         or (rv is not None and _is_released(rv.actual_release_date))),
+            "released": _is_released(it.actual_release_date),
         })
     return result

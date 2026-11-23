@@ -166,6 +166,7 @@
                 :value="ver.version_no"
               >
                 <span>{{ ver.version_no }}</span>
+                <el-tag v-if="ver.released" size="small" type="info" style="margin-left:6px">已发布</el-tag>
                 <span v-if="ver.title" style="color:#909399; margin-left:6px; font-size:12px">{{ ver.title }}</span>
               </el-option>
             </el-option-group>
@@ -372,6 +373,7 @@
                 :value="ver.version_no"
               >
                 <span>{{ ver.version_no }}</span>
+                <el-tag v-if="ver.released" size="small" type="info" style="margin-left:6px">已发布</el-tag>
                 <span v-if="ver.title" style="color:#909399; margin-left:6px; font-size:12px">{{ ver.title }}</span>
               </el-option>
             </el-option-group>

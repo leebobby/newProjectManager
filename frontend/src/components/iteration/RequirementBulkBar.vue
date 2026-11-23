@@ -32,6 +32,7 @@
         :value="v.version_no"
       >
         <span>{{ v.version_no }}</span>
+        <el-tag v-if="v.released" size="small" type="info" style="margin-left:6px">已发布</el-tag>
         <span v-if="v.title" class="opt-sub">{{ v.title }}</span>
       </el-option>
     </el-select>
@@ -86,6 +87,11 @@ const count = computed(() => props.rows.length)
 const buildOptions = computed(() => {
   const g = props.groups.find((x) => x.label === majorPick.value)
   return g ? g.options : []
+})
+watch(() => props.groups, () => {
+  const group = props.groups.find(g => g.label === majorPick.value)
+  if (!group) { majorPick.value = null; buildPick.value = null }
+  else if (!group.options.some(v => v.version_no === buildPick.value)) buildPick.value = null
 })
 
 // 选择被清空时把两级下拉也复位，免得下次选中几行时框里还挂着上次的版本
