@@ -87,14 +87,15 @@ class CustomerStatusCreate(CustomerStatusBase):
 
 
 class CustomerStatusUpdate(BaseModel):
-    """编辑允许的字段；机台编号/客户/型号 创建后锁定，由后端忽略。
-    管理员字段：current_stage / field_version / attention_level / issue_url
+    """编辑允许的字段；机台编号/客户创建后锁定，型号仅管理员可改。
+    管理员字段：model / current_stage / field_version / attention_level / issue_url
     所有用户：customer_status / recent_focus / key_issues
     路由层按角色再做校验。
     """
     model_config = ConfigDict(protected_namespaces=())
 
     version: int
+    model: Optional[str] = None
     current_stage: Optional[str] = None
     field_version: Optional[str] = None
     attention_level: Optional[int] = None
@@ -390,8 +391,43 @@ class MachineLicenseOut(BaseModel):
     remark: Optional[str] = ""
     uploaded_by: Optional[str] = ""
     uploaded_at: LocalDT
+    created_at: LocalDT
+    model: str = ""
+    machine_version: int = 0
+    tool_id: str = ""
+    uuid: str = ""
+    throughput_package: str = ""
+    algorithm: str = ""
+    optional_features: List[str] = []
+    version: int = 0
+    file_version: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MachineLicenseWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tool_id: str = Field("", max_length=256)
+    uuid: str = Field("", max_length=256)
+    throughput_package: str = Field("", max_length=128)
+    algorithm: str = Field("", max_length=128)
+    optional_features: List[str] = Field(default_factory=list, max_length=100)
+    remark: str = Field("", max_length=10000)
+
+
+class MachineLicenseUpdate(MachineLicenseWrite):
+    version: int = Field(ge=0)
+
+
+class MachineLicenseFileOut(BaseModel):
+    id: int
+    file_version: int
+    file_name: str
+    file_size: int
+    note: str = ""
+    uploaded_by: str = ""
+    uploaded_at: LocalDT
+    snapshot: dict
 
 
 # ===== 客户自定义信息块（如 MPH状态）=====

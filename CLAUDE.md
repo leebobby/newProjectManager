@@ -985,6 +985,20 @@ DI ＝ 按严重程度加权求和,**致命 10 / 严重 3 / 一般 1 / 提示 0.
   看板的条数是全量算的，问题跟踪页默认只看未闭环，不带的话两边条数对不上而都看着对。
 - 回归见 [tests/test_customer_issue_board.py](backend/tests/test_customer_issue_board.py)。
 
+## 客户 License：型号回源机台，文件版本与字段修订分开
+
+- `customer_status.model` 是型号的唯一存储。新增机台、总览和 License 共用
+  `customer_machine_models`；型号现允许 admin 修改，机台编号/客户仍创建后锁定。
+- 四类词表默认值收口于 `license_options.py`，通过 `/api/config` 读写。
+  新选项必须在配置中；历史自由值可原样保留；当前使用中的已配置选项不能删除。
+- `machine_licenses` 保存授权信息与当前文件指针，修改必须带 `version`。
+  `machine_license_files` 每次上传追加一行，快照与历史文件无写接口；旧文件迁为 V1。
+  字段修改走 `revisions.TRACKED` / `snapshot` / `record`，不要另存一份字段修改日志。
+- 上传先用条件更新获取版本，409 不写文件；事务失败清理新文件，旧版文件不动。
+  下载同时限定 license id 和历史文件 id，路径必须在 License 上传根目录内。
+- 读＝登录用户；写、配置与删除＝admin。显式删除会删除授权及全部文件版本，
+  页面必须说明；普通替换一律走“更新文件”。
+
 ## 枚举：单一来源
 
 所有状态 / 优先级词表收口在 [backend/enums.py](backend/enums.py)，**不要在 router 或前端

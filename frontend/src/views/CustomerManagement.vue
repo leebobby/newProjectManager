@@ -5,6 +5,7 @@
         <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openDialog()">新增客户</el-button>
         <el-button v-if="isAdmin" :icon="Setting" @click="sowDialog.visible = true">SOW 字段配置</el-button>
         <el-button v-if="isAdmin" :icon="Setting" @click="extraDialog.visible = true">信息块配置</el-button>
+        <CustomerLicenseOptions v-if="isAdmin" />
         <el-button :icon="Refresh" @click="load">刷新</el-button>
         <el-checkbox v-model="includeInactive" @change="load">显示停用</el-checkbox>
         <el-input
@@ -220,6 +221,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Setting } from '@element-plus/icons-vue'
 import { customerApi, customerExtraApi, sowApi } from '../api'
 import { auth } from '../store/auth'
+import CustomerLicenseOptions from '../components/CustomerLicenseOptions.vue'
 
 const isAdmin = computed(() => auth.isAdmin.value)
 const router = useRouter()

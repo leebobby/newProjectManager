@@ -74,6 +74,7 @@ class CustomerStatus(Base):
     milestones_json = Column(Text, default="", comment="机台里程碑 JSON：[{name,date,status}]")
     version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     sow_rows = relationship(
         "SowRow", back_populates="machine_status",
@@ -285,7 +286,7 @@ class SowRow(Base):
 
 
 class MachineLicense(Base):
-    """机台 license 文件。一台机台可以上传多个 license。"""
+    """机台授权；当前文件指针与不可变的历史文件分开保存。型号回源机台。"""
     __tablename__ = "machine_licenses"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -299,8 +300,36 @@ class MachineLicense(Base):
     remark = Column(Text, default="", comment="备注")
     uploaded_by = Column(String(64), default="", comment="上传人 username")
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    tool_id = Column(String(256), nullable=False, default="", comment="ToolID（网元名称）")
+    uuid = Column(String(256), nullable=False, default="", comment="UUID")
+    throughput_package = Column(String(128), nullable=False, default="", comment="产率包")
+    algorithm = Column(String(128), nullable=False, default="", comment="高阶算法特性")
+    optional_features_json = Column(Text, nullable=False, default="[]", comment="可选特性")
+    version = Column(Integer, nullable=False, default=0, comment="乐观锁版本号")
+    file_version = Column(Integer, nullable=False, default=0, comment="文件版本")
 
     machine_status = relationship("CustomerStatus", back_populates="licenses")
+    files = relationship("MachineLicenseFile", cascade="all, delete-orphan",
+                         order_by="MachineLicenseFile.file_version.desc()")
+
+
+class MachineLicenseFile(Base):
+    """每次上传一行；文件和授权快照只读，替换当前文件不覆盖历史。"""
+    __tablename__ = "machine_license_files"
+    __table_args__ = (UniqueConstraint("license_id", "file_version", name="uq_license_file_version"),)
+
+    id = Column(Integer, primary_key=True)
+    license_id = Column(Integer, ForeignKey("machine_licenses.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    file_version = Column(Integer, nullable=False)
+    file_name = Column(String(256), nullable=False)
+    file_path = Column(String(512), nullable=False)
+    file_size = Column(Integer, nullable=False, default=0)
+    snapshot_json = Column(Text, nullable=False, default="{}")
+    note = Column(Text, default="")
+    uploaded_by = Column(String(64), default="")
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
 
 
 class CustomerExtraField(Base):

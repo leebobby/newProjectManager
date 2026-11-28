@@ -292,53 +292,8 @@
                   </div>
                 </div>
 
-                <!-- License 管理 -->
-                <div class="block">
-                  <div class="block-head">
-                    <span>License 管理</span>
-                    <span class="muted-hint">每台机台可挂载多个 license 文件</span>
-                    <div class="actions">
-                      <el-button v-if="canEdit" size="small" :icon="Upload" @click="openLicenseUpload(m)">上传 License</el-button>
-                    </div>
-                  </div>
-                  <div class="block-body">
-                    <el-table
-                      :data="machineState[m.id].licenses"
-                      v-loading="machineState[m.id].licenseLoading"
-                      border
-                      stripe
-                      size="small"
-                      empty-text="暂无 License"
-                      style="width: 100%"
-                    >
-                      <el-table-column prop="file_name" label="文件名" min-width="220" />
-                      <el-table-column label="大小" width="100">
-                        <template #default="{ row }">{{ formatBytes(row.file_size) }}</template>
-                      </el-table-column>
-                      <el-table-column label="备注" min-width="240">
-                        <template #default="{ row }">
-                          <el-input
-                            v-model="row.remark"
-                            size="small"
-                            placeholder="—"
-                            :disabled="!canEdit"
-                            @change="saveLicenseRemark(m, row)"
-                          />
-                        </template>
-                      </el-table-column>
-                      <el-table-column prop="uploaded_by" label="上传人" width="120" />
-                      <el-table-column label="上传时间" width="170">
-                        <template #default="{ row }">{{ formatDateTime(row.uploaded_at) }}</template>
-                      </el-table-column>
-                      <el-table-column label="操作" width="160" fixed="right">
-                        <template #default="{ row }">
-                          <el-button size="small" @click="downloadLicense(row)">下载</el-button>
-                          <el-button v-if="canEdit" size="small" type="danger" @click="deleteLicense(m, row)">删除</el-button>
-                        </template>
-                      </el-table-column>
-                    </el-table>
-                  </div>
-                </div>
+                <CustomerLicenseTable v-if="activeMachine === String(m.id)" :key="m.id" :machine="m" :can-edit="canEdit"
+                                      @machine-changed="updated => Object.assign(m, updated)" />
               </div>
             </el-tab-pane>
           </el-tabs>
@@ -526,36 +481,6 @@
       </template>
     </el-dialog>
 
-    <!-- 上传 License -->
-    <el-dialog v-model="licenseDialog.visible" title="上传 License" width="480px" append-to-body>
-      <el-form label-width="80px">
-        <el-form-item label="文件">
-          <el-upload
-            :auto-upload="false"
-            :show-file-list="true"
-            :limit="1"
-            :on-change="onLicenseFileChange"
-            :on-remove="() => (licenseDialog.file = null)"
-          >
-            <el-button :icon="Upload">选择文件</el-button>
-          </el-upload>
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input
-            v-model="licenseDialog.remark"
-            type="textarea"
-            :rows="3"
-            placeholder="可填写有效期 / 授权范围 / 备注"
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="licenseDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="licenseDialog.uploading" @click="submitLicenseUpload">上传</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 编辑里程碑 -->
     <el-dialog v-model="milestoneDialog.visible" title="编辑里程碑" width="560px" append-to-body>
       <el-table :data="milestoneDialog.rows" border size="small">
         <el-table-column prop="name" label="节点" width="100" />
@@ -590,14 +515,15 @@
 <script setup>
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Paperclip, Plus, Refresh, Upload } from '@element-plus/icons-vue'
+import { Edit, Paperclip, Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  customerApi, customerCustomReqApi, customerExtraApi, customerIssueApi, customerStatusApi, downloadBlob, issueApi, licenseApi, majorVersionApi, sowApi,
+  customerApi, customerCustomReqApi, customerExtraApi, customerIssueApi, customerStatusApi, downloadBlob, issueApi, majorVersionApi, sowApi,
 } from '../api'
 import { auth } from '../store/auth'
 import HistoryActions from './HistoryActions.vue'
 import CustomerIssueCell from './CustomerIssueCell.vue'
+import CustomerLicenseTable from './CustomerLicenseTable.vue'
 import MilestoneTimeline from './MilestoneTimeline.vue'
 
 const router = useRouter()
@@ -645,7 +571,7 @@ const metaDialog = reactive({ visible: false, form: {} })
 // 机台 tabs
 const machines = ref([])
 const activeMachine = ref('')
-// machineState[machineId] = { current, sowLoading, sowRows, sowOriginals, licenseLoading, licenses }
+// machineState[machineId] = { current, sowLoading, sowRows, sowOriginals }
 const machineState = reactive({})
 // machineIssues[machineId] = { task: [...], issue: [...] }，来自 customer_issues 表
 const machineIssues = reactive({})
@@ -677,15 +603,6 @@ const issues = reactive({
   filtered: [],
   bySeverity: {},
   fileMtime: '',
-})
-
-// License 上传
-const licenseDialog = reactive({
-  visible: false,
-  uploading: false,
-  machine: null,
-  file: null,
-  remark: '',
 })
 
 // ─── 加载 ────────────────────────────────────────────────────────
@@ -759,8 +676,6 @@ async function loadMachines() {
           sowLoading: false,
           sowRows: [],
           sowOriginals: {}, // id -> JSON of original data, 用于判断 dirty
-          licenseLoading: false,
-          licenses: [],
           extra: {},        // field_id -> {id, text, file_name, file_size, has_file, version}
           extraOrig: {},    // field_id -> 原始 text，用于 dirty 判断
           extraLoaded: false,
@@ -779,7 +694,7 @@ async function loadMachines() {
       const target = data.find(m => String(m.id) === wanted) || data[0]
       activeMachine.value = String(target.id)
       // 先把目标 tab 的子数据加载出来
-      await Promise.all([loadSowRows(target.id), loadLicenses(target.id), loadExtraValues(target.id)])
+      await Promise.all([loadSowRows(target.id), loadExtraValues(target.id)])
     }
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '机台加载失败')
@@ -841,20 +756,6 @@ function fillRowData(src) {
     if (!(k in out)) out[k] = src[k]
   }
   return out
-}
-
-async function loadLicenses(mid) {
-  const st = machineState[mid]
-  if (!st) return
-  st.licenseLoading = true
-  try {
-    const { data } = await licenseApi.list(mid)
-    st.licenses = data
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || 'License 加载失败')
-  } finally {
-    st.licenseLoading = false
-  }
 }
 
 // ─── 客户定制化需求 ───────────────────────────────────────────
@@ -1011,7 +912,6 @@ watch(activeMachine, async (mid) => {
   // 切 tab 时按需加载（如果之前没加载过）
   await Promise.all([
     st.sowRows.length === 0 && !st.sowLoading ? loadSowRows(id) : Promise.resolve(),
-    st.licenses.length === 0 && !st.licenseLoading ? loadLicenses(id) : Promise.resolve(),
     !st.extraLoaded ? loadExtraValues(id) : Promise.resolve(),
   ])
 })
@@ -1275,86 +1175,6 @@ async function deleteSowRow(m, row) {
   } catch (e) {
     ElMessage.error(e.response?.data?.detail || '删除失败')
   }
-}
-
-// ─── License ──────────────────────────────────────────────────
-
-function openLicenseUpload(m) {
-  licenseDialog.machine = m
-  licenseDialog.file = null
-  licenseDialog.remark = ''
-  licenseDialog.visible = true
-}
-function onLicenseFileChange(file) {
-  licenseDialog.file = file?.raw || null
-}
-async function submitLicenseUpload() {
-  if (!licenseDialog.file) {
-    ElMessage.warning('请选择文件')
-    return
-  }
-  licenseDialog.uploading = true
-  try {
-    await licenseApi.upload({
-      machine_status_id: licenseDialog.machine.id,
-      file: licenseDialog.file,
-      remark: licenseDialog.remark || '',
-    })
-    licenseDialog.visible = false
-    await loadLicenses(licenseDialog.machine.id)
-    ElMessage.success('已上传')
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '上传失败')
-  } finally {
-    licenseDialog.uploading = false
-  }
-}
-async function saveLicenseRemark(m, row) {
-  try {
-    await licenseApi.updateRemark(row.id, row.remark || '')
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '保存备注失败')
-    await loadLicenses(m.id)
-  }
-}
-async function downloadLicense(row) {
-  try {
-    const resp = await licenseApi.download(row.id)
-    downloadBlob(resp.data, row.file_name)
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '下载失败')
-  }
-}
-async function deleteLicense(m, row) {
-  try {
-    await ElMessageBox.confirm(`确认删除 license「${row.file_name}」？`, '提示', { type: 'warning' })
-  } catch { return }
-  try {
-    await licenseApi.remove(row.id)
-    const st = machineState[m.id]
-    st.licenses = st.licenses.filter((x) => x.id !== row.id)
-    ElMessage.success('已删除')
-  } catch (e) {
-    ElMessage.error(e.response?.data?.detail || '删除失败')
-  }
-}
-
-// ─── 工具 ────────────────────────────────────────────────────
-
-function formatBytes(n) {
-  if (!n) return '—'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
-}
-function formatDateTime(s) {
-  if (!s) return '—'
-  try {
-    const d = new Date(s)
-    if (Number.isNaN(d.getTime())) return s
-    const pad = (x) => String(x).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  } catch { return s }
 }
 
 defineExpose({ reload: loadCustomer })

@@ -393,22 +393,23 @@ export const sowApi = {
 
 export const licenseApi = {
   list: (machine_status_id) => http.get('/licenses', { params: { machine_status_id } }),
-  upload: ({ machine_status_id, file, remark = '' }) => {
+  create: ({ machine_status_id, metadata, file }) => {
     const fd = new FormData()
     fd.append('machine_status_id', String(machine_status_id))
-    fd.append('remark', remark)
-    fd.append('file', file)
-    return http.post('/licenses', fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    fd.append('metadata', JSON.stringify(metadata))
+    if (file) fd.append('file', file)
+    return http.post('/licenses', fd, { timeout: 120000 })
   },
-  updateRemark: (id, remark) => {
+  update: (id, data) => http.put(`/licenses/${id}`, data),
+  uploadVersion: (id, { version, file, note = '' }) => {
     const fd = new FormData()
-    fd.append('remark', remark)
-    return http.put(`/licenses/${id}`, fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
+    fd.append('version', String(version))
+    fd.append('note', note)
+    fd.append('file', file)
+    return http.post(`/licenses/${id}/files`, fd, { timeout: 120000 })
   },
+  files: (id) => http.get(`/licenses/${id}/files`),
+  downloadVersion: (id, fid) => http.get(`/licenses/${id}/files/${fid}/download`, { responseType: 'blob' }),
   remove: (id) => http.delete(`/licenses/${id}`),
   download: (id) => http.get(`/licenses/${id}/download`, { responseType: 'blob' }),
 }
