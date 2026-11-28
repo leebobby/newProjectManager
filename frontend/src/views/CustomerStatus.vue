@@ -202,7 +202,9 @@
           </template>
         </el-form-item>
         <el-form-item label="型号">
-          <el-input v-model="form.model" :disabled="!!editing" :placeholder="editing ? '创建后不可修改' : '请输入'" />
+          <el-select v-model="form.model" aria-label="机台型号" filterable clearable style="width:100%" :disabled="!isAdmin" :persistent="false" @visible-change="v => v && loadConfig()">
+            <el-option v-for="value in modelOptions" :key="value" :value="value" :label="value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="当前阶段">
           <el-select v-model="form.current_stage" placeholder="请选择" style="width:100%">
@@ -276,7 +278,9 @@ const tableMode   = ref('compact')  // 'compact' | 'detail'
 const editMode    = ref(false)      // 顶部「编辑」开关：默认只读，开启后才可改
 const showCompleted = ref(false)    // 关键事务/软件类问题是否显示已闭环条目（默认藏起来）
 
-const ADMIN_FIELDS = ['current_stage', 'field_version', 'attention_level', 'issue_url']
+const modelConfig = ref([])
+const modelOptions = computed(() => [...new Set([...modelConfig.value, ...(form.model ? [form.model] : [])])])
+const ADMIN_FIELDS = ['model', 'current_stage', 'field_version', 'attention_level', 'issue_url']
 // recent_focus / key_issues 已迁到 customer_issues 表，不再随机台一起提交
 const USER_FIELDS  = ['customer_status']
 
@@ -410,6 +414,7 @@ async function loadConfig() {
   try {
     const { data } = await configApi.get()
     stages.value = data.current_stages || []
+    modelConfig.value = data.customer_machine_models || []
   } catch {}
 }
 
@@ -464,6 +469,7 @@ async function onSubmit() {
     if (editing.value) {
       const payload = { version: form.version }
       for (const k of [...ADMIN_FIELDS, ...USER_FIELDS]) payload[k] = form[k]
+      payload.model = form.model || ''
       await customerStatusApi.update(editing.value.id, payload)
       ElMessage.success('已更新')
       dialogVisible.value = false

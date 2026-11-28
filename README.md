@@ -213,9 +213,10 @@ npm run dev
 
 - **编辑 / 完成 开关**：默认只读，各字段纯展示、不显示行操作；点「编辑」才进入可改状态
   （新增按钮还要求 admin）。**精简 / 详细** 另一组开关控制两个清单列的展开密度。
-- **机台编号 / 客户 / 型号** 创建后锁定：编辑弹窗禁用，`CustomerStatusUpdate` schema
+- **机台编号 / 客户** 创建后锁定：编辑弹窗禁用，`CustomerStatusUpdate` schema
   也不接受，路由层再拒一次；新建时机台编号做唯一校验。
 - **仅 admin 可改**（`_ADMIN_ONLY_FIELDS`，越权返回 403）：
+  - **型号** 使用「客户管理 → 客户面信息配置」的机台类型下拉；总览和 License 共用同一字段，修改会留痕；
   - **当前阶段** 下拉，候选项来自 [backend/config.json](backend/config.json) 的 `current_stages`，运维改文件即可调整，前端无需发版；
   - **现场版本** 记录机台当前部署的软件版本号，下拉源为「大版本 + 迭代版本」合并列表，可 allow-create 手填；
   - **近期关注度** 1-5 星，点击星星即时保存（0 = 未评估）。
@@ -233,6 +234,26 @@ npm run dev
   `hw_machine_cell_na_options` 覆盖）；点数字跳到同页「硬件问题清零」Tab。
 - 表头居中，机台编号 / 客户 / 型号 / 当前阶段 四列支持排序。整行更新走乐观锁，
   冲突返回 409。
+
+### 客户详情 · License 管理
+
+表格按「机台类型 / ToolID（网元名称） / UUID / 产率包 / 高阶算法特性 /
+可选特性（多选） / License 文件」展示，延用现有客户详情风格。
+管理员可直接编辑或打开编辑弹窗；可先登记授权信息，再上传文件。
+「客户管理 → 客户面信息配置」集中维护四类下拉选项，型号默认提供
+YLS3000 / YLS5000 / YLS3000Y / YLS5000Y；其他选项按实际业务添加，正在使用的选项不能删除。
+
+机台类型直接读取 `customer_status.model`，修改同步总览和该机台的所有 License，
+不单独复制存储。授权字段修改使用乐观锁并写入统一修订历史。
+每次上传追加 V1 / V2 / …，保留原文件、上传人、时间、说明及当时完整授权快照，
+历史记录可分别下载。文件版本与字段修订历史各自独立，不因仅修改字段而增加文件版本。
+所有登录用户可查看和下载，写入、配置、删除仍仅 admin。
+
+升级启动时自动执行 Alembic `0022_customer_license`，将已有文件登记为 V1，
+保留原文件路径、备注、上传人和上传时间；不搬动或覆盖已有文件。
+新增 `machine_license_files` 表；配置新增 `customer_machine_models`、
+`license_throughput_packages`、`license_algorithms`、`license_optional_features` 四项，
+旧配置缺键时自动回落到默认值。
 
 ### 配置文件示例 [backend/config.json](backend/config.json)
 

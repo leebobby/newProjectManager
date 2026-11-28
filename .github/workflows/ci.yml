@@ -66,7 +66,8 @@ jobs:
 
   smoke:
     name: 冒烟（真开个浏览器点一遍）
-    runs-on: ubuntu-latest
+    # Playwright 1.56.1 不支持 Ubuntu 26.04，固定受支持的镜像以免 latest 漂移。
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

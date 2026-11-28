@@ -8,6 +8,7 @@ import models
 from auth import require_admin
 from database import get_db
 from op_log import log_op
+from license_options import DEFAULTS, validate_config
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
@@ -31,8 +32,8 @@ def _load() -> dict:
             with open(path, encoding="utf-8") as f:
                 cfg = json.load(f)
             # 模板里的说明键不该出现在接口响应里
-            return {k: v for k, v in cfg.items() if not k.startswith("_")}
-    return {"current_stages": []}
+            return {**DEFAULTS, **{k: v for k, v in cfg.items() if not k.startswith("_")}}
+    return {**DEFAULTS, "current_stages": []}
 
 
 @router.get("")
@@ -53,6 +54,7 @@ def save_config(
     current_admin: models.User = Depends(require_admin),
 ):
     """保存项目级配置（仅管理员）。只更新 payload 中携带的键，不影响其余字段。"""
+    validate_config(payload, db)
     try:
         cfg = _load()
         cfg.update(payload)

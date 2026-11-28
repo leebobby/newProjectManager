@@ -4,8 +4,8 @@
 - 列表 GET：所有登录用户
 - 新增 POST / 删除 DELETE：仅 admin
 - 编辑 PUT：
-    机台编号 / 客户(battlefield) / 型号(model) —— 创建后锁定，路由层拒绝任何修改
-    current_stage / field_version / attention_level —— 仅 admin 可改
+    机台编号 / 客户(battlefield) —— 创建后锁定
+    model / current_stage / field_version / attention_level —— 仅 admin 可改
     customer_status / milestones_json             —— 所有登录用户均可改
 - 导出 PPT：仅 admin
 
@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 
 import models
 import schemas
+import revisions
+from license_options import validate_choice
 from auth import get_current_user, require_admin
 from database import get_db
 from op_log import log_op
@@ -29,7 +31,7 @@ from notify import dispatch
 
 router = APIRouter(prefix="/api/customer-status", tags=["customer-status"])
 
-_ADMIN_ONLY_FIELDS = {"current_stage", "field_version", "attention_level", "issue_url"}
+_ADMIN_ONLY_FIELDS = {"model", "current_stage", "field_version", "attention_level", "issue_url"}
 _USER_FIELDS = {"customer_status", "recent_focus", "key_issues", "milestones_json"}
 
 
@@ -67,6 +69,7 @@ def create_item(
     if exists:
         raise HTTPException(status_code=400, detail="机台编号已存在")
     data = payload.model_dump()
+    data["model"] = validate_choice("customer_machine_models", data.get("model"))
     data["customer_id"] = _resolve_customer_id_by_name(db, data.get("battlefield", ""))
     item = models.CustomerStatus(**data)
     db.add(item)
@@ -94,13 +97,24 @@ def update_item(
     changes = payload.model_dump(exclude_unset=True)
     changes.pop("version", None)
     is_admin = current_user.role == "admin"
+    before = revisions.snapshot(item)
     for k, v in changes.items():
         if k in _ADMIN_ONLY_FIELDS and not is_admin:
             raise HTTPException(status_code=403, detail=f"字段「{k}」仅管理员可修改")
         if k not in _ADMIN_ONLY_FIELDS and k not in _USER_FIELDS:
             raise HTTPException(status_code=400, detail=f"字段「{k}」不允许修改")
-        setattr(item, k, v)
-    item.version += 1
+        if k == "model":
+            v = validate_choice("customer_machine_models", v, item.model)
+        changes[k] = v
+    claimed = db.query(models.CustomerStatus).filter_by(id=item_id, version=payload.version).update(
+        {"version": payload.version + 1}, synchronize_session=False)
+    if not claimed:
+        db.rollback()
+        raise HTTPException(409, "数据已被他人修改，请刷新后重试")
+    for key, value in changes.items():
+        setattr(item, key, value)
+    item.version = payload.version + 1
+    revisions.record(db, item, before, user=current_user)
     db.commit()
     db.refresh(item)
     log_op(db, action="修改", target="客户面状态", target_id=item.id,

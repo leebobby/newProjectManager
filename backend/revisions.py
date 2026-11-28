@@ -64,6 +64,16 @@ def _head(v, n: int = 120) -> str:
 
 
 TRACKED: Dict[str, dict] = {
+    "machine_license": {
+        "label": "机台 License", "model": models.MachineLicense,
+        "fields": ("tool_id", "uuid", "throughput_package", "algorithm", "optional_features_json", "remark", "file_name", "file_version"),
+        "scope": lambda o: f"customer:{o.machine_status.customer_id or 0}",
+        "title": lambda o: _head(o.tool_id or o.file_name),
+    },
+    "customer_machine": {
+        "label": "机台型号", "model": models.CustomerStatus, "fields": ("model",),
+        "scope": lambda o: f"customer:{o.customer_id or 0}", "title": lambda o: o.machine_id,
+    },
     "special_content": {
         "label": "专项内容",
         "model": models.SpecialContent,

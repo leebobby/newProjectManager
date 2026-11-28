@@ -62,5 +62,7 @@ def test_partial_save_preserves_project_identity_and_other_config(client, admin_
     real.write_text(json.dumps(cfg), encoding="utf-8")
     response = client.put("/api/config", headers=admin_headers, json={"hero_badges": []})
     assert response.status_code == 200
-    assert response.json() == dict(cfg, hero_badges=[])
+    # 客户面词表在旧配置缺键时补默认值；项目名称与其余部署配置仍原样保留。
+    from license_options import DEFAULTS
+    assert response.json() == dict(DEFAULTS, **cfg, hero_badges=[])
     assert json.loads(real.read_text(encoding="utf-8")) == response.json()
