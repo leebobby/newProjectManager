@@ -115,9 +115,12 @@ test('WBS 真接口适应宽度、固定日期轴，关闭预览后 Excel 保留
     const viewport = chart.locator('.wt-scroll')
     await expect(chart.locator('.wt-task-box')).toHaveCount(24)
     await expect.poll(() => chart.locator('.wt-svg').evaluate(svg => +svg.getAttribute('width'))).toBeGreaterThan(3000)
-    const top = await chart.locator('.wt-sticky-axis').evaluate(svg => svg.getBoundingClientRect().top)
+    // 固定的是日期轴相对滚动容器的位置；弹窗入场动画会移动整个容器的页面坐标。
+    const axisTop = () => viewport.evaluate(el =>
+      el.querySelector('.wt-sticky-axis').getBoundingClientRect().top - el.getBoundingClientRect().top)
+    const top = await axisTop()
     await viewport.evaluate(el => { el.scrollTop = 400; el.scrollLeft = 300 })
-    expect(Math.abs(await chart.locator('.wt-sticky-axis').evaluate(svg => svg.getBoundingClientRect().top) - top)).toBeLessThan(2)
+    await expect.poll(async () => Math.abs(await axisTop() - top)).toBeLessThan(2)
     await chart.getByRole('button', { name: '适应宽度', exact: true }).click()
     await expect.poll(() => viewport.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1)
     await expect(chart.locator('.wt-count')).toContainText('缩放 100%')
